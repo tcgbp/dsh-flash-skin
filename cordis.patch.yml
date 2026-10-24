@@ -1,0 +1,10 @@
+# dsh-flash-skin bundle layer — registers the HOST half into a profile.
+#
+# The BROWSER half needs no row here: the module loader auto-discovers the
+# client bundle from package.json `exports["./client"]` + `dsh.client` and
+# serves it at /plugins/<pkg>/client.js (mirrors dsh-liang-skin).
+#
+# `id` is the settings namespace for the plugin's config block.
+- insert:
+    - id: flash-skin
+      name: 'dsh-flash-skin'

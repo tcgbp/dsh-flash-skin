@@ -1,0 +1,550 @@
+.flash-skin-backdrop {
+  position: fixed;
+  z-index: -1;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background: var(--flash-page, #f5f6f8);
+  opacity: 0;
+  transition: opacity 220ms ease;
+}
+
+body[data-flash-skin="on"] .flash-skin-backdrop {
+  opacity: 1;
+}
+
+/* Portrait sequence layer: a person image that changes with the slider. */
+.flash-skin-backdrop .flash-skin-sequence-frame {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  display: block;
+  width: min(42vw, 720px);
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 42%;
+  opacity: var(--flash-portrait-opacity, 0.45);
+  transform: translateY(-50%);
+  filter: none;
+  mask-image: linear-gradient(90deg, transparent 0%, rgb(0 0 0 / 20%) 10%, black 30%, black 100%);
+  transition: filter 180ms linear;
+}
+
+.flash-skin-backdrop img {
+  display: none;
+}
+
+.flash-skin-backdrop[data-media="sequence"] .flash-skin-sequence-frame {
+  display: block;
+  opacity: var(--flash-portrait-opacity, 0.6);
+}
+
+.flash-skin-backdrop[data-media="color"] img {
+  display: none;
+}
+
+/* 主题色/按钮/accent/边框/文字/layer 等 token 染色 —— 已按要求移除，
+ * 页面恢复 App 原生主题样式。仅保留“背景透出”最小必要规则：
+ * .flash-skin-backdrop 人物照层是 z-index:-1 的底层固定层，
+ * 必须让 App 基础背景透明才能透出来（否则被原生不透明背景盖住）。
+ * body 底色仍由 backdrop 层自身的 --flash-page 提供。 */
+body[data-flash-skin="on"] {
+  --dsw-alias-bg-base: transparent !important;
+  background: var(--flash-page) !important;
+}
+
+body[data-flash-skin="on"] > #root {
+  background: transparent !important;
+}
+
+body[data-flash-skin="on"] button,
+body[data-flash-skin="on"] input,
+body[data-flash-skin="on"] textarea {
+  transition: color 160ms linear, background-color 160ms linear, border-color 160ms linear;
+}
+
+.flash-level-control {
+  --flash-control-accent: var(--flash-accent, #4176e6);
+  --flash-control-rail: var(--dsw-alias-border-l3, rgb(0 0 0 / 16%));
+  position: relative;
+  display: flex;
+  width: 124px;
+  height: 28px;
+  align-items: center;
+  margin: 0 3px;
+}
+
+.flash-level-control__range {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 28px;
+  cursor: ew-resize;
+  appearance: none;
+  background: transparent;
+  touch-action: pan-y;
+}
+
+.flash-level-control__range::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--flash-accent, #4176e6), var(--flash-ink, #191b1e));
+}
+
+.flash-level-control__range::-webkit-slider-thumb {
+  width: 15px;
+  height: 15px;
+  margin-top: -4.5px;
+  border: 2px solid var(--flash-accent, #4176e6);
+  border-radius: 50%;
+  appearance: none;
+  background: #fff;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 20%);
+}
+
+.flash-level-control__range::-moz-range-track {
+  height: 6px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--flash-accent, #4176e6), var(--flash-ink, #191b1e));
+}
+
+.flash-level-control__range::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--flash-accent, #4176e6);
+  border-radius: 50%;
+  background: #fff;
+}
+
+.flash-level-control__range:focus-visible {
+  outline: none;
+}
+
+.flash-level-control__ticks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.flash-level-control__tick {
+  position: absolute;
+  top: 11px;
+  width: 2px;
+  height: 6px;
+  border-radius: 1px;
+  background: var(--flash-control-rail, rgb(0 0 0 / 16%));
+}
+
+.flash-level-control__tooltip {
+  position: absolute;
+  bottom: 30px;
+  left: calc(var(--flash-slider-ratio, 0) * 100%);
+  transform: translateX(-50%);
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--flash-ink, #191b1e);
+  color: var(--flash-page, #f5f6f8);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.flash-appearance-binding {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  margin: 2px 0;
+}
+
+.flash-appearance-binding[data-plugin] {
+  min-width: 260px;
+}
+
+.flash-appearance-sets {
+  box-sizing: border-box;
+  display: grid;
+  gap: 12px;
+  width: 100%;
+  margin: 2px 0;
+}
+
+.flash-appearance-sets[data-plugin] {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.flash-appearance-choice {
+  box-sizing: border-box;
+  border: 1px solid var(--dsw-alias-border-l2);
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 4px;
+  padding: 20px 32px;
+  border-radius: 16px;
+  font: inherit;
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+  background: transparent;
+  font-size: 14px;
+  line-height: 22px;
+  display: flex;
+}
+
+.flash-appearance-choice:hover:not([aria-checked="true"]) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.flash-appearance-choice[aria-checked="true"],
+.flash-appearance-choice.flash-appearance-choice--on {
+  border-color: var(--dsw-static-neutral-bluish-400);
+  background: var(--dsw-alias-bg-module-platform);
+}
+
+.flash-appearance-choice__icon {
+  display: block;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  color: currentColor;
+  font-size: 16px;
+  line-height: 16px;
+}
+
+.flash-appearance-choice__label {
+  display: block;
+}
+
+.flash-appearance-choice:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+@media (max-width: 760px) {
+  .flash-level-control {
+    width: 92px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flash-skin-backdrop {
+    transition: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * 自定义配置页：肖像皮肤组管理器（plugins.bundle.config 页面视图）
+ * 沿用上层 --dsw-* 别名与 --flash-* 变量，适配明暗两套主题。
+ * ------------------------------------------------------------------------- */
+
+.flash-portrait-groups {
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.flash-portrait-groups__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.flash-portrait-groups__title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+}
+
+.flash-portrait-groups__hint,
+.flash-portrait-groups__notice {
+  margin: 6px 0 14px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.flash-portrait-groups__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 16px;
+  border: 1px dashed var(--dsw-alias-border-l2);
+  border-radius: 12px;
+}
+
+.flash-portrait-group {
+  padding: 14px 0 16px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+}
+
+.flash-portrait-group:last-child {
+  border-bottom: none;
+}
+
+.flash-portrait-group__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.flash-portrait-group__name {
+  min-width: 0;
+  flex: 1 1 auto;
+  box-sizing: border-box;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+  background: transparent;
+}
+
+.flash-portrait-group__name:hover {
+  border-color: var(--dsw-alias-border-l2);
+}
+
+.flash-portrait-group__name:focus {
+  border-color: var(--dsw-static-neutral-bluish-400);
+  background: var(--dsw-alias-bg-module-platform);
+  outline: none;
+}
+
+.flash-portrait-group__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.flash-portrait-group__actions button,
+.flash-portrait-group__image-actions button,
+.flash-portrait-groups__empty button,
+.flash-portrait-group__add button,
+.flash-portrait-groups__foot button {
+  padding: 3px 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-primary);
+  background: transparent;
+  cursor: pointer;
+}
+
+.flash-portrait-group__actions button:hover:not(:disabled),
+.flash-portrait-group__image-actions button:hover:not(:disabled),
+.flash-portrait-groups__empty button:hover:not(:disabled),
+.flash-portrait-group__add button:hover:not(:disabled),
+.flash-portrait-groups__foot button:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.flash-portrait-group__actions button:disabled,
+.flash-portrait-group__image-actions button:disabled,
+.flash-portrait-group__add button:disabled,
+.flash-portrait-groups__foot button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.flash-portrait-group__danger {
+  border-color: color-mix(in srgb, var(--dsw-static-severity-error-default, #d54343) 55%, transparent) !important;
+  color: var(--dsw-static-severity-error-default, #d54343) !important;
+}
+
+.flash-portrait-group__images {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.flash-portrait-group__image {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 128px;
+}
+
+.flash-portrait-group__image img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-module-platform);
+  transition: opacity 160ms linear;
+}
+
+.flash-portrait-group__image-index {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+  color: #fff;
+  background: rgb(0 0 0 / 55%);
+}
+
+.flash-portrait-group__image-actions {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  left: 6px;
+  display: none;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
+}
+
+.flash-portrait-group__image:hover .flash-portrait-group__image-actions {
+  display: flex;
+}
+
+.flash-portrait-group__image-actions button {
+  padding: 2px 7px;
+  font-size: 11px;
+  background: var(--dsw-alias-bg-module-platform);
+}
+
+.flash-portrait-group__url {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--dsw-static-neutral-bluish-400);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-module-platform);
+}
+
+.flash-portrait-group__url:focus {
+  outline: none;
+}
+
+.flash-portrait-group__add button {
+  align-self: stretch;
+  min-height: 128px;
+  border-style: dashed;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.flash-portrait-group__add button:hover:not(:disabled) {
+  border-style: dashed;
+  color: var(--dsw-alias-label-primary);
+}
+
+.flash-portrait-groups__foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.flash-portrait-groups__foot button {
+  padding: 5px 12px;
+}
+
+/* =========================================================================
+ * 居左布局覆盖 —— 可调宽度对话内容区（目标宿主 0.2.1-rc.2）
+ *
+ * 需覆盖的原生规则（dsh-client-ui-chat / -conversation 编译产物）：
+ *   .EvIC1a_column{max-width:var(--dsh-chat-content-width);width:100%;margin:0 auto}
+ *   .wSkVaW_widthHandle{width:min(10px,calc((100% - var(--dsh-chat-content-width)) / 2 - 24px - 24px));...}
+ *   .wSkVaW_widthHandle[data-side=left ]{right:calc(50% + var(--dsh-chat-content-width) / 2 + 24px)}
+ *   .wSkVaW_widthHandle[data-side=right]{left :calc(50% + var(--dsh-chat-content-width) / 2 + 24px)}
+ *
+ * 目标：内容列由“以视口中点为对称轴居中”改为“靠左对齐”，并在左侧预留一段
+ *       timeline 槽宽（默认 50px，可覆盖改）。只保留右侧拖把，并把右拖把重新
+ *       钉到内容列右缘。纯 CSS，右拖把沿用原生 ×2 拖拽手感。
+ * ========================================================================= */
+body[data-flash-skin="on"] {
+  /* 左侧为 timeline 预留的槽宽（px）。需要更大/更小时直接改这里。 */
+  --dsh-flash-timeline-gutter: 50px;
+  /* 右拖把与内容列右缘的间隙（继承原生 24px 手感）。 */
+  --dsh-flash-handle-gap: 24px;
+}
+
+/* 1) 内容列改为贴左：左边距 = timeline 槽 50px，右边距 auto（不再对半居中）。 */
+body[data-flash-skin="on"] .EvIC1a_column {
+  margin-right: auto !important;
+  margin-left: var(--dsh-flash-timeline-gutter, 50px) !important;
+}
+
+/* 2) 隐藏左侧拖把，只保留右侧。 */
+body[data-flash-skin="on"] .wSkVaW_widthHandle[data-side="left"] {
+  display: none !important;
+}
+
+/* 3) 右侧拖把钉到内容列右缘。
+ *    列右缘相对（全宽的）定位祖先的水平位移 =
+ *       滚动区左侧内容内边距(var(--dsh-composer-side-clearance) + 16px)
+ *     + timeline 槽 50px
+ *     + 列宽 var(--dsh-chat-content-width)
+ *     + 拖把间隙 24px
+ *    拖把自身宽度固定为 10px（原生 min(10px,…) 是专为居中布局写的）。
+ */
+body[data-flash-skin="on"] .wSkVaW_widthHandle[data-side="right"] {
+  left: calc(
+    var(--dsh-composer-side-clearance, 16px) + 16px
+    + var(--dsh-flash-timeline-gutter, 50px)
+    + var(--dsh-chat-content-width)
+    + var(--dsh-flash-handle-gap, 24px)
+  ) !important;
+  width: 10px !important;
+}
+
+/* 4) 输入卡片与内容列一起居左（同样预留左侧 timeline 槽）。
+ *    原生居中来自两层：
+ *       .uV2eYG_root{...;align-items:center}             -> 让 .uV2eYG_card 水平居中
+ *       .wSkVaW_composerHero{...;align-self:center}     -> 让 hero 输入表整体居中
+ *    输入卡宽 = 列宽 + 2×16px 侧余量（--dsh-composer-card-max-width）。
+ *    要把卡片左缘对齐到内容列左缘：
+ *       内容列左缘 = 滚动区左 padding(= 侧余量+16px) + 槽宽
+ *       卡片左缘   = 输入根左 padding(= 侧余量) + 卡片 margin
+ *       => margin = （侧余量+16px + 槽宽）- 侧余量 = 16px + 槽宽
+ *    与皮肤变量/主题耦合低，改槽宽时输入卡与内容列同步移动。
+ */
+body[data-flash-skin="on"] .uV2eYG_root {
+  align-items: flex-start !important;
+}
+body[data-flash-skin="on"] .uV2eYG_root > .uV2eYG_card {
+  margin-left: calc(16px + var(--dsh-flash-timeline-gutter, 50px)) !important;
+}
+body[data-flash-skin="on"] .wSkVaW_composerHero {
+  align-self: flex-start !important;
+}
+
+/* 5) todo 任务栏与内容列一起居左。
+ *    TodoPanel 挂载在 conversation.input.dock，与输入卡同处
+ *    .wSkVaW_composerStack；原生 .lXshSW_root{margin:0 auto} 居中。
+ *    输入卡左缘相对 stack 原点的位移 = 根 padding 左(侧余量) + 卡 margin(16+槽)
+ *      = 侧余量 + 16 + 槽。这里 TodoPanel 与输入卡同原点，
+ *    故把 margin:0 auto 改为 margin-left = 同值、margin-right 保持 auto，
+ *    让 todo 条带的左缘与输入卡左缘对齐。
+ */
+body[data-flash-skin="on"] .lXshSW_root {
+  margin-left: calc(
+    var(--dsh-composer-side-clearance, 16px) + 16px
+    + var(--dsh-flash-timeline-gutter, 50px)
+  ) !important;
+  margin-right: auto !important;
+}

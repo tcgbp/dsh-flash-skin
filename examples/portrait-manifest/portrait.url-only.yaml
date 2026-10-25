@@ -1,0 +1,14 @@
+# URL-only demo manifest: the archive ships no embedded frames,
+# so the imported group's frames come straight from these remote image URLs.
+# Replace the example.com URLs with real ones, or edit them later in the card.
+---
+id: liangshen-url-demo
+name: 梁神在线 (Liang the God online)
+zh: 梁神在线
+en: Liang the God online
+darkLevel: 5
+images:
+  - https://example.com/portrait/level-01.webp
+  - https://example.com/portrait/stage-06.webp
+  - https://example.com/portrait/level-10.webp
+...

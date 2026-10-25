@@ -1145,8 +1145,15 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
   };
 
   const addGroup = () => {
-    const label = t("defaultGroup");
-    const next = [...groups, { id: newGroupId(), name: label, zh: label, en: label, images: [] }];
+    // 新建组的默认中英文名各自取固定文案，而不是界面当前语言的 t() 单值：
+    // 否则英文界面新建时 zh 也会被记为 "New group"，切回中文界面后设置行就显示英文名。
+    const next = [...groups, {
+      id: newGroupId(),
+      name: CONFIG_TEXTS.zh.defaultGroup,
+      zh: CONFIG_TEXTS.zh.defaultGroup,
+      en: CONFIG_TEXTS.en.defaultGroup,
+      images: [],
+    }];
     void commit(next);
   };
 

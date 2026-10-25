@@ -972,7 +972,9 @@ function CompositeLevelControl({
   const frame = count > 0 ? frameIndexForScore(wSum, count) : 0;
   // 数值格式:去掉小数末尾的多余 0(0.30 → 0.3、0.00 → 0),省空间又直观。
   const fmt = (n: number) => Number(n.toFixed(2)).toString();
-  const term = (weight: number, factor: number) => `${fmt(weight)}·${fmt(factor)}`;
+  const term = (weight: number, factor: number) => (
+    <Fragment>{fmt(weight)}<b className="flash-level-control__mul">·</b>{fmt(factor)}</Fragment>
+  );
   // 公式行里给每路加名称短标,方便直接读懂每项是哪个维度。短标随活动语言
   // 中英切换(用量/压力/推理/速度 ↔ Usage/Pressure/Reasoning/Speed)。
   const terms: Array<[string, string, number, number]> = [

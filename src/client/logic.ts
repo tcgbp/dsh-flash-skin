@@ -382,3 +382,148 @@ export function compositeLevel(
     speed: tokenSpeedFactor(signals.decodeTokens ?? 0, signals.decodeMs ?? 0),
   });
 }
+
+// -----------------------------------------------------------------------------
+// Archive manifest (portrait.yaml / meta.yaml / portrait.json / meta.json)
+//
+// An imported portrait archive may carry an optional sibling manifest that
+// seeds the created group's own settings: set id, Chinese/English display
+// names and the light/dark threshold (分割点位). The manifest uses the exact
+// same sanitization rules as the config card (see `commitField`): ids must be
+// non-empty, blank zh/en just omit the override, and the dark level is clamped
+// into 0..MAX_LEVEL. Any manifest that fails to parse is ignored and the import
+// falls back to the default identity — importing never throws.
+// -----------------------------------------------------------------------------
+
+/** Seeded identity/behaviour a portrait archive manifest may carry. */
+export interface PortraitImportMeta {
+  /** Set id for the new group; must be non-empty and unique to be applied. */
+  id?: string;
+  /** Fallback display name (used when the UI shows a language other than zh/en). */
+  name?: string;
+  /** Chinese display-name override. */
+  zh?: string;
+  /** English display-name override. */
+  en?: string;
+  /** Slider level (0..MAX_LEVEL) at which this set flips to the dark shell. */
+  darkLevel?: number;
+}
+
+/**
+ * Validate and normalize the manifest's portrait-group fields. Only string
+ * fields for id/name/zh/en and a finite number for the dark level are
+ * accepted; blank strings are dropped so the group keeps its built-in
+ * defaults. Returns null when the value is not an object or carries no usable
+ * fields (so the caller falls back to defaults).
+ */
+export function normalizeImportMeta(raw: unknown): PortraitImportMeta | null {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const src = raw as Record<string, unknown>;
+  const meta: PortraitImportMeta = {};
+  if (typeof src.id === "string") {
+    const id = src.id.trim();
+    if (id) meta.id = id;
+  }
+  if (typeof src.name === "string") {
+    const name = src.name.trim();
+    if (name) meta.name = name;
+  }
+  if (typeof src.zh === "string") {
+    const zh = src.zh.trim();
+    if (zh) meta.zh = zh;
+  }
+  if (typeof src.en === "string") {
+    const en = src.en.trim();
+    if (en) meta.en = en;
+  }
+  // Accept both camelCase (`darkLevel`) and kebab-case (`dark-level`) keys.
+  const levelField = typeof src["dark-level"] === "number" ? src["dark-level"] : src.darkLevel;
+  if (typeof levelField === "number" && Number.isFinite(levelField)) {
+    meta.darkLevel = clampLevel(levelField);
+  }
+  const usable = (["id", "name", "zh", "en", "darkLevel"] as const)
+    .some((key) => meta[key] !== undefined);
+  return usable ? meta : null;
+}
+
+/**
+ * Minimal YAML-subset reader for the archive's optional `portrait.yaml`
+ * metadata. It understands only the flat `key: value` mapping a portrait-set
+ * manifest needs: single/double-quoted strings, booleans, finite numbers,
+ * `null`/`~`, `#` comments and `---`/`...` document markers. Anything richer
+ * (lists, nested maps, multi-line strings, anchors) is ignored rather than
+ * rejected, so an over-complex manifest degrades silently to the built-in
+ * defaults instead of failing the import. Returns null when no mapping line
+ * could be read.
+ */
+export function parsePortraitYaml(text: string): Record<string, unknown> | null {
+  const result: Record<string, unknown> = {};
+  let found = false;
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line === "" || /^(?:---|\.\.\.)\s*$/.test(line)) continue;
+    // Indented lines belong to a nested map/list — outside the flat contract, so
+    // skip them rather than misread sub-keys as top-level fields.
+    if (/^\s/.test(rawLine)) continue;
+    const colon = line.indexOf(":");
+    if (colon <= 0) continue; // list bullets / non-mapping lines.
+    const key = line.slice(0, colon).trim();
+    // Nested keys and flow maps (`{k: v}`, `[a, b]`) are out of scope.
+    if (key === "" || key.includes(" ") || /^[{[]/.test(key)) continue;
+    const rest = stripYamlComment(line.slice(colon + 1));
+    if (rest === "") continue;
+    const value = parseYamlScalar(rest);
+    if (value === undefined) continue;
+    result[key] = value;
+    found = true;
+  }
+  return found ? result : null;
+}
+
+// Trim a trailing ` # comment`, honouring quoted values so a quoted `#` inside
+// a string survives.
+function stripYamlComment(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.startsWith('"') || trimmed.startsWith("'")) {
+    const quote = trimmed[0];
+    let index = 1;
+    for (; index < trimmed.length; index += 1) {
+      const ch = trimmed[index];
+      if (ch === "\\" && quote === '"') { index += 1; continue; }
+      if (ch !== quote) continue;
+      if (quote === "'" && trimmed[index + 1] === "'") { index += 1; continue; }
+      break;
+    }
+    return trimmed.slice(0, index + 1).trim();
+  }
+  return trimmed.replace(/\s+#.*/, "").trim();
+}
+
+function parseYamlScalar(raw: string): unknown {
+  const value = raw.trim();
+  if (value.length >= 2 && value[0] === '"' && value[value.length - 1] === '"') {
+    return value.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  }
+  if (value.length >= 2 && value[0] === "'" && value[value.length - 1] === "'") {
+    return value.slice(1, -1).replace(/''/g, "'");
+  }
+  if (value === "null" || value === "Null" || value === "NULL" || value === "~") return null;
+  if (value === "true" || value === "True" || value === "TRUE") return true;
+  if (value === "false" || value === "False" || value === "FALSE") return false;
+  if (/^-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/.test(value)) {
+    const num = Number(value);
+    if (Number.isFinite(num)) return num;
+  }
+  return value;
+}
+
+/** Decode a metadata file: JSON first, then the flat YAML subset. */
+export function parseImportMetaText(text: string): PortraitImportMeta | null {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    raw = parsePortraitYaml(text);
+  }
+  return normalizeImportMeta(raw);
+}

@@ -32,7 +32,9 @@ import {
   type CompositeWeights,
   type EffortLike,
   type Palette,
+  type PortraitImportMeta,
   type SpeedTuning,
+  parseImportMetaText,
 } from "./logic";
 import { unzipSync, gunzipSync } from "./vendor/fflate";
 
@@ -254,6 +256,10 @@ interface RecorderProps {
    * of crashing.
    */
   useProjection?: (key: string) => unknown;
+  /** Host locale face — 渲染期读取活动语言以本地化公式短标与得分/帧文案。 */
+  locale?: LocaleFaceLike | null;
+  /** Bound translator for LOCALE_NAMESPACE; locale switch triggers re-render. */
+  t?: (key: string) => string;
 }
 
 type ProjectionApi = (key: string) => unknown;
@@ -591,6 +597,8 @@ function FlashLevelControl({
   settings,
   weights,
   useProjection,
+  locale,
+  t,
 }: RecorderProps) {
   const state = useSyncExternalStore(
     (listener) => directory.subscribe(listener),
@@ -670,6 +678,8 @@ function FlashLevelControl({
         presenter={presenter}
         load={load}
         enabled={enabled}
+        locale={locale}
+        t={t}
       />
     );
   }
@@ -685,7 +695,7 @@ function FlashLevelControl({
           value={0}
           disabled
           tabIndex={-1}
-          aria-label="综合加权"
+          aria-label={t ? t("driver.composite") : "综合加权"}
         />
       </div>
     );
@@ -851,6 +861,8 @@ function CompositeLevelControl({
   presenter,
   load,
   enabled,
+  locale,
+  t,
 }: {
   useProjection: ProjectionApi;
   weights: WeightsStore;
@@ -858,10 +870,17 @@ function CompositeLevelControl({
   presenter: SkinPresenter;
   load: () => void;
   enabled: boolean;
+  locale?: LocaleFaceLike | null;
+  t?: (key: string) => string;
 }) {
   const weightsSnapshot = useSyncExternalStore(
     (listener) => weights.subscribe(listener),
     () => weights.getSnapshot(),
+  );
+  // 订阅活动语言:切换语言时重渲染,让公式短标与得分/帧文案随之中英切换。
+  useSyncExternalStore(
+    (listener) => (locale?.subscribe ? locale.subscribe(listener) : () => undefined),
+    () => (locale?.getSnapshot ? locale.getSnapshot() : { active: "" }),
   );
   const sessionStats = useProjection("sessionStats") as SessionStatsProjection | null | undefined;
   const tokenUsage = useProjection("tokenUsage") as TokenUsageProjection | null | undefined;
@@ -954,32 +973,35 @@ function CompositeLevelControl({
   // 数值格式:去掉小数末尾的多余 0(0.30 → 0.3、0.00 → 0),省空间又直观。
   const fmt = (n: number) => Number(n.toFixed(2)).toString();
   const term = (weight: number, factor: number) => `${fmt(weight)}·${fmt(factor)}`;
-  // 公式行里给每路加名称短标,方便直接读懂每项是哪个维度。
-  const terms: Array<[string, number, number]> = [
-    ["用量", w.usage, usageF],
-    ["压力", w.pressure, pressureF],
-    ["推理", w.effort, effortF],
-    ["速度", w.speed, speedF],
+  // 公式行里给每路加名称短标,方便直接读懂每项是哪个维度。短标随活动语言
+  // 中英切换(用量/压力/推理/速度 ↔ Usage/Pressure/Reasoning/Speed)。
+  const terms: Array<[string, string, number, number]> = [
+    [t ? t("weights.usageShort") : "用量", "usage", w.usage, usageF],
+    [t ? t("weights.pressureShort") : "压力", "pressure", w.pressure, pressureF],
+    [t ? t("weights.effortShort") : "推理", "effort", w.effort, effortF],
+    [t ? t("weights.speedShort") : "速度", "speed", w.speed, speedF],
   ];
+
+  const label = (key: string, fallback: string) => (t ? t(key) : fallback);
 
   return (
     <div
       className="flash-level-control flash-level-control--composite"
       data-plugin={PACKAGE_ID}
       data-state="ready"
-      title="综合加权"
+      title={label("driver.composite", "综合加权")}
     >
       <output className="flash-level-control__gauge" aria-hidden="true">
         <span className="flash-level-control__formula">
-          {terms.map(([label, weight, factor], index) => (
-            <Fragment key={label}>
+          {terms.map(([label, id, weight, factor], index) => (
+            <Fragment key={id}>
               <span className="flash-level-control__term"><b>{label}</b>{term(weight, factor)}</span>
               {index < terms.length - 1 && <i className="flash-level-control__plus">+</i>}
             </Fragment>
           ))}
         </span>
         <span className="flash-level-control__score">
-          得分 {fmt(wSum * MAX_LEVEL)} · {count > 0 ? `帧 ${frame + 1}/${count}` : "帧 —"}
+          {label("weights.score", "得分")} {fmt(wSum * MAX_LEVEL)} · {count > 0 ? `${label("weights.frame", "帧")} ${frame + 1}/${count}` : `${label("weights.frame", "帧")} —`}
         </span>
       </output>
     </div>
@@ -1399,13 +1421,14 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "enName": "英文名称",
     "identityHint": "标识（Set ID）写入 localStorage 持久化当前选择：改名后需重新点击选中该组才生效；设置行名称按界面语言显示（中文界面中文名，英文界面英文名）。内置组的默认中/英文名会在未修改时一直作为缺省显示。",
     "importGroup": "从压缩包导入新组",
-    "importGroupTitle": "选择 .zip / .tar / .tar.gz，把其中所有图片批量导入为一个新组",
+    "importGroupTitle": "选择 .zip / .tar / .tar.gz，把其中所有图片批量导入为一个新组；若压缩包内含 portrait.yaml（或 meta.yaml / 同名 .json）元数据，会一并导入标识、中英文名称与深浅切换点",
     "fileNotZip": "请选择 .zip / .tar / .tar.gz / .gz 压缩包",
     "zipNoImages": "压缩包里没有可用的图片",
     "zipParseFailed": "无法解析压缩包，请确认它是有效的 .zip / .tar / .tar.gz 文件",
     "zipTooManyImages": "单次导入最多 64 张，已截取前 64 张",
     "zipSkippedOversize": "已跳过 {n} 张超过 2MB 的图片",
     "zipImported": "已导入 {n} 张图片，创建了新的皮肤组",
+    "zipImportedMeta": "，并按压缩包内元数据设置了标识、中英文名称与深浅切换点",
   },
   en: {
     "loading": "Loading…",
@@ -1448,13 +1471,14 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "enName": "English name",
     "identityHint": "The Set ID is persisted in localStorage for the current selection — after renaming, click the group again to take effect. The settings row shows the Chinese name in the Chinese UI and the English name in the English UI. Built-in sets keep their default Chinese/English names as fallbacks until overridden.",
     "importGroup": "Import group from archive",
-    "importGroupTitle": "Choose a .zip / .tar / .tar.gz; all images inside are batch-imported as a new group",
+    "importGroupTitle": "Choose a .zip / .tar / .tar.gz; all images inside are batch-imported as a new group. A portrait.yaml (or meta.yaml / matching .json) inside the archive also seeds the group's id, Chinese/English names and light/dark threshold",
     "fileNotZip": "Please choose a .zip / .tar / .tar.gz / .gz archive",
     "zipNoImages": "The archive contains no usable images",
     "zipParseFailed": "Could not parse the archive — make sure it is a valid .zip / .tar / .tar.gz file",
     "zipTooManyImages": "At most 64 images per import; kept the first 64",
     "zipSkippedOversize": "Skipped {n} images over 2MB",
     "zipImported": "Imported {n} images and created a new group",
+    "zipImportedMeta": ", and set the id, Chinese/English names and light/dark threshold from the archive metadata",
   },
 };
 
@@ -1526,38 +1550,52 @@ function readLocalFileAsArrayBuffer(file: File): Promise<ArrayBuffer> {
   });
 }
 
-// Parse a ZIP into the ordered list of valid image entries. `unzipSync` returns
-// an object whose insertion order mirrors the archive's entry order, so the
-// resulting list preserves the user's intended left-to-right frame sequence.
-// Directory entries and non-image members are dropped; oversized images are
-// skipped (reported via the returned skipped count).
-function extractImagesFromZip(buffer: ArrayBuffer): { entries: ZipImageEntry[]; skippedOversize: number } {
+// Parse a ZIP into its ordered list of file entries (any member type).
+// `unzipSync` returns an object whose insertion order mirrors the archive's
+// entry order, so the resulting list preserves the user's intended left-to-
+// right frame sequence; directory entries and empty members are dropped.
+// Image selection/size gating happens afterwards in `collectImages`, and the
+// optional metadata manifest is read from this same raw list.
+function entriesFromZip(buffer: ArrayBuffer): ZipImageEntry[] {
   const files = unzipSync(new Uint8Array(buffer));
   const entries: ZipImageEntry[] = [];
-  let skippedOversize = 0;
-  const nameCounts = new Map<string, number>();
   for (const raw of Object.keys(files)) {
-    if (entries.length >= MAX_IMAGES_PER_IMPORT) break;
     const bytes = files[raw];
     if (!bytes || bytes.length === 0) continue;
-    const base = raw.split("/").pop() ?? raw;
-    if (!base || /^\./.test(base)) continue;
-    const dot = base.lastIndexOf(".");
-    if (dot < 0) continue;
-    const ext = base.slice(dot).toLowerCase();
-    if (!IMAGE_EXTENSIONS.has(ext)) continue;
-    if (bytes.length > MAX_LOCAL_IMAGE_BYTES) {
-      skippedOversize += 1;
+    entries.push({ name: raw, bytes });
+  }
+  return entries;
+}
+
+// An archive may carry an optional portrait-set manifest. These basenames are
+// recognised (case-insensitively); the first entry in archive order that parses
+// to usable fields wins.
+const PORTRAIT_META_FILES = new Set([
+  "portrait.yaml",
+  "portrait.yml",
+  "portrait.json",
+  "meta.yaml",
+  "meta.yml",
+  "meta.json",
+]);
+
+// Scan the raw archive entries for a metadata manifest and normalize its
+// portrait-group fields. Returns null when none was found or none could be
+// parsed — the import then falls back to the default identity.
+function findImportMeta(rawEntries: ZipImageEntry[]): PortraitImportMeta | null {
+  for (const raw of rawEntries) {
+    const base = raw.name.split("/").pop() ?? raw.name;
+    if (!PORTRAIT_META_FILES.has(base.toLowerCase())) continue;
+    let text: string;
+    try {
+      text = new TextDecoder().decode(raw.bytes);
+    } catch {
       continue;
     }
-    // Dedupe repeated filenames (common when an archive contains `a/a.png` and
-    // `b/a.png`) so every entry keeps a unique label.
-    const stem = base.slice(0, dot);
-    const used = nameCounts.get(base) ?? 0;
-    nameCounts.set(base, used + 1);
-    entries.push({ name: used === 0 ? base : `${stem}-${used + 1}${ext}`, bytes });
+    const meta = parseImportMetaText(text);
+    if (meta) return meta;
   }
-  return { entries, skippedOversize };
+  return null;
 }
 
 // Minimal POSIX `tar` reader — fflate does not ship tar, so we parse the simple
@@ -1640,13 +1678,18 @@ function collectImages(rawEntries: ZipImageEntry[]): { entries: ZipImageEntry[];
 }
 
 // Dispatch an imported archive file by extension to the right decompressor.
-// Returns the ordered valid-image list plus how many images were skipped for
-// being too large (these are the only parts the caller turns into UI messages).
-function extractArchive(fileName: string, buffer: ArrayBuffer): { entries: ZipImageEntry[]; skippedOversize: number } {
+// Returns the ordered valid-image list (plus how many images were skipped for
+// being too large — the only parts the caller turns into UI messages) together
+// with any portrait-set metadata the archive carries.
+function extractArchive(fileName: string, buffer: ArrayBuffer): {
+  entries: ZipImageEntry[];
+  skippedOversize: number;
+  meta: PortraitImportMeta | null;
+} {
   const lower = fileName.toLowerCase();
   let rawEntries: ZipImageEntry[];
   if (lower.endsWith(".zip")) {
-    rawEntries = extractImagesFromZip(buffer);
+    rawEntries = entriesFromZip(buffer);
   } else if (lower.endsWith(".tar.gz") || lower.endsWith(".tgz")) {
     const bytes = maybeGunzip(new Uint8Array(buffer));
     rawEntries = parseTar(bytes);
@@ -1658,7 +1701,12 @@ function extractArchive(fileName: string, buffer: ArrayBuffer): { entries: ZipIm
   } else {
     rawEntries = [];
   }
-  return collectImages(rawEntries);
+  const collected = collectImages(rawEntries);
+  return {
+    entries: collected.entries,
+    skippedOversize: collected.skippedOversize,
+    meta: findImportMeta(rawEntries),
+  };
 }
 
 
@@ -1969,13 +2017,29 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
     archiveInputRef.current?.click();
   };
 
-  const insertImportedGroup = (images: string[]) => {
+  // Seed a new group from an imported archive. The (optional) archive manifest
+  // provides the set id, Chinese/English names and light/dark threshold; any
+  // absent field falls back to the built-in defaults, and the id always stays
+  // non-empty and unique among the existing groups (a colliding manifest id
+  // gets a `-2`, `-3`, … suffix). Imported values are just seeded defaults —
+  // the group remains fully editable afterwards like any other.
+  const insertImportedGroup = (images: string[], meta?: PortraitImportMeta) => {
+    const defaultZh = CONFIG_TEXTS.zh.defaultGroup;
+    const defaultEn = CONFIG_TEXTS.en.defaultGroup;
+    const baseId = meta?.id && meta.id.length > 0 ? meta.id : newGroupId();
+    const existingIds = new Set(groups.map((group) => group.id));
+    let id = baseId;
+    for (let suffix = 2; existingIds.has(id); suffix += 1) {
+      id = `${baseId}-${suffix}`;
+    }
+    const zh = meta?.zh || defaultZh;
+    const en = meta?.en || defaultEn;
     const next: PortraitGroupsConfig = [...groups, {
-      id: newGroupId(),
-      name: CONFIG_TEXTS.zh.defaultGroup,
-      zh: CONFIG_TEXTS.zh.defaultGroup,
-      en: CONFIG_TEXTS.en.defaultGroup,
-      darkLevel: MAX_LEVEL - 1,
+      id,
+      name: meta?.name || zh,
+      zh,
+      en,
+      darkLevel: meta?.darkLevel ?? MAX_LEVEL - 1,
       images,
     }];
     void commit(next);
@@ -1993,11 +2057,13 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
     }
     let entries: ZipImageEntry[];
     let skippedOversize: number;
+    let meta: PortraitImportMeta | null = null;
     try {
       const buffer = await readLocalFileAsArrayBuffer(file);
       const parsed = extractArchive(file.name, buffer);
       entries = parsed.entries;
       skippedOversize = parsed.skippedOversize;
+      meta = parsed.meta;
     } catch {
       setFileError(t("zipParseFailed"));
       return;
@@ -2017,10 +2083,13 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
       // we store as plain image refs (config never carries the raw bytes).
       const images = await uploadArchiveImages(entries);
       let notice = t("zipImported").replace("{n}", String(images.length));
+      if (meta) {
+        notice += " " + t("zipImportedMeta");
+      }
       if (skippedOversize > 0) {
         notice += " " + t("zipSkippedOversize").replace("{n}", String(skippedOversize));
       }
-      insertImportedGroup(images);
+      insertImportedGroup(images, meta ?? undefined);
       setFileError(notice);
     } catch {
       setFileError(t("zipParseFailed"));
@@ -2479,11 +2548,17 @@ export function apply(ctx: ClientContext) {
         "weights.pressure": "压力",
         "weights.effort": "推理",
         "weights.speed": "速度",
+        "weights.usageShort": "用量",
+        "weights.pressureShort": "压力",
+        "weights.effortShort": "推理",
+        "weights.speedShort": "速度",
         "weights.usageDesc": "本次已生成 token,饱和 30 万",
         "weights.pressureDesc": "上下文占用/窗口,无窗口按轮次",
         "weights.effortDesc": "当前推理档位,未设置按 0",
         "weights.speedDesc": "解码速度,饱和 80 t/s",
         "weights.reset": "恢复默认",
+        "weights.score": "得分",
+        "weights.frame": "帧",
         "weights.speedTiming": "速度衰减计时（毫秒）",
         "weights.graceMs": "停留",
         "weights.fadeMs": "衰减",
@@ -2502,11 +2577,17 @@ export function apply(ctx: ClientContext) {
         "weights.pressure": "Pressure",
         "weights.effort": "Reasoning",
         "weights.speed": "Speed",
+        "weights.usageShort": "Use",
+        "weights.pressureShort": "Press",
+        "weights.effortShort": "Reason",
+        "weights.speedShort": "Spd",
         "weights.usageDesc": "Tokens generated this turn, saturates at 300k",
         "weights.pressureDesc": "Context used / window; falls back to turns",
         "weights.effortDesc": "Current reasoning level, unknown counts as 0",
         "weights.speedDesc": "Decode speed, saturates at 80 t/s",
         "weights.reset": "Restore defaults",
+        "weights.score": "Score",
+        "weights.frame": "Frame",
         "weights.speedTiming": "Speed decay timing (ms)",
         "weights.graceMs": "Hold",
         "weights.fadeMs": "Fade",
@@ -2738,6 +2819,8 @@ export function apply(ctx: ClientContext) {
         scope,
         weights,
         settings: { level: readLevel() },
+        locale: ctx.locale,
+        t: setLabel,
         load: () => {
           if (available) void directory.load().catch(() => undefined);
         },

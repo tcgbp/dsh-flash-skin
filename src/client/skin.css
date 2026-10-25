@@ -894,7 +894,9 @@ body[data-flash-skin="on"] .EvIC1a_toBottomSlot {
 
 .flash-level-control__term b {
   margin-right: 0;
-  color: var(--flash-primary, #2b3440);
+  /* ink 为自适应正文色：浅色下近黑，深色下近白，公式才能在深色底上可读。
+   * 此前误用未定义的 --flash-primary，恒回退到深色 #2b3440，深色下与底撞色。 */
+  color: var(--flash-ink, #191b1e);
   font-weight: 600;
 }
 
@@ -908,7 +910,8 @@ body[data-flash-skin="on"] .EvIC1a_toBottomSlot {
 .flash-level-control__plus {
   display: inline-block;
   margin: 0 2px;
-  color: var(--flash-primary, #2b3440);
+  /* 同 .flash-level-control__term b，用自适应 ink 而非未定义的 --flash-primary。 */
+  color: var(--flash-ink, #191b1e);
   font-style: normal;
   font-weight: 700;
   font-size: 11px;

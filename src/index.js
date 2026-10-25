@@ -23,6 +23,11 @@ export const Config = z.object({
       id: z.string().min(1).required(),
       name: z.string().min(1).required(),
       images: z.array(z.string().min(1)).default([]),
+      // Optional per-group slider level (0..MAX_LEVEL) at which the set flips
+      // to the dark shell. Object fields are optional unless `.required()`, so
+      // an absent value resolves to the default threshold (MAX_LEVEL - 1),
+      // keeping older persisted configs working unchanged.
+      darkLevel: z.number().min(0).max(6),
     }))
     .default([])
     .volatile(),

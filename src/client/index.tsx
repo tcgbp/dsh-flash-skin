@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { Switch } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { Context as ClientContext } from "@deepseek-ai/cordis";
 import type { SnapshotStore } from "@deepseek-ai/dsh-client-store";
@@ -7,11 +8,9 @@ import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
 import type {} from "@deepseek-ai/dsh-client-ui-model-selection/client";
 import type {} from "@deepseek-ai/dsh-client-ui-theme/client";
 import styles from "./skin.css";
-import { installFlashAppearanceSets } from "./appearance";
 import { createPortraitLoader } from "./portrait-loader";
-import type { PortraitImage } from "./portrait-loader";
+import type { PortraitImage, PortraitSource } from "./portrait-loader";
 import {
-  FROZEN_PALETTE,
   MAX_LEVEL,
   PORTRAIT_MAX_LEVEL,
   clampLevel,
@@ -31,12 +30,13 @@ const SET_KEY = "dsh-flash-skin.set";
 const BIND_EFFORT_KEY = "dsh-flash-skin.bind-effort";
 const ASSET_PREFIX = `/plugins/${PACKAGE_ID}/assets`;
 
-// Level→file anchors per portrait set. Each set serves 8 distinct frames spread
-// evenly across the reasoning scale (0..30); the file names are just per-set
-// Level→file anchors per portrait set. MAX_LEVEL is 7, so the slider exposes 8
-// integer stops whose portraitLevel frames land on the evenly spaced reasoning
-// slots 0,4,9,13,17,21,26,30. Each set serves 8 distinct frames assigned one per
-// slot, ordered by the file-name number (lowest → slot 0, highest → slot 30).
+// Level→file anchors per portrait set. MAX_LEVEL is 6, so the slider exposes 7
+// integer stops (0..6); their portraitLevel frames land on the evenly spread
+// reasoning slots 0,4,9,13,17,21,26,30. Each set lists 8 frames ordered by the
+// file-name number (lowest → slot 0, highest → slot 30), but only the first 7
+// are active in display logic — the 8th (slot 30) is kept as a placeholder for
+// tuning and is excluded in sourcesForSet. Swap folder contents to point at
+// different character art.
 const PORTRAIT_ANCHORS: Record<string, { level: number; file: string }[]> = {
   storm: [
     { level: 0, file: "stage-00.webp" },
@@ -101,110 +101,9 @@ interface PreferenceStore {
 
 type NativeThemeId = "light" | "dark";
 
-interface FlashThemeDefinition {
-  id: string;
-  colorScheme: "light" | "dark";
-  // Registered theme tokens are bare per-scheme values (each registered theme
-  // already names its colorScheme; the { light, dark } pair shape only applies
-  // to overrideTokens).
-  tokens: Record<string, string>;
-}
-
 interface ThemeService {
-  getTheme(): { preference: string; themes: readonly FlashThemeDefinition[] };
+  getTheme(): { preference: string };
   setTheme(id: string): void;
-  register(definition: FlashThemeDefinition): () => void;
-}
-
-// Each portrait set is registered with the DSH theme service as its own palette
-// so the dsh-flash quick panel's 外观 (appearance) theme dropdown lists it (it
-// treats any registered theme with non-empty tokens as a palette option). The
-// quick panel reads `getTheme().themes` and labels each entry by its id, so the
-// REGISTERED id doubles as the user-facing option label. That is why the theme
-// ids below are the Chinese portrait-set names (梁圣/梁神/梁祖), not the internal
-// set keys — the quick panel shows whatever string the palette id holds.
-const FLASH_THEME_LABELS: Record<string, string> = {
-  storm: "梁圣",
-  blaze: "梁神",
-  frost: "梁祖",
-};
-// A previously shipped build registered palettes under `flash-<setId>`; keep
-// decoding that legacy form so a preference persisted before the rename still
-// round-trips to the matching portrait set.
-const FLASH_THEME_PREFIX = "flash-";
-
-function flashThemeIdForSet(setId: string): string {
-  return FLASH_THEME_LABELS[setId] ?? setId;
-}
-
-function setIdForFlashTheme(themeId: string): string | null {
-  const direct = Object.keys(FLASH_THEME_LABELS).find(
-    (setId) => FLASH_THEME_LABELS[setId] === themeId,
-  );
-  if (direct !== undefined) return direct;
-  if (themeId.startsWith(FLASH_THEME_PREFIX)) {
-    const setId = themeId.slice(FLASH_THEME_PREFIX.length);
-    return FLASH_THEME_LABELS[setId] !== undefined ? setId : null;
-  }
-  return null;
-}
-
-function isFlashThemeId(id: string): boolean {
-  return setIdForFlashTheme(id) !== null;
-}
-
-// Registered once per session and reused across apply/dispose cycles (the
-// theme service refuses duplicate ids, so the disposers below are torn down
-// together — see ThemeRuntime.register).
-const flashThemeDisposers = new Map<string, () => void>();
-
-function ensureFlashPalettes(theme: ThemeService): () => void {
-  if (typeof theme.register !== "function") return () => undefined;
-  const disposers: (() => void)[] = [];
-  for (const set of PORTRAIT_SETS) {
-    const id = flashThemeIdForSet(set.id);
-    const existing = flashThemeDisposers.get(id);
-    if (existing) {
-      disposers.push(existing);
-      continue;
-    }
-    let disposer: (() => void) | undefined;
-    try {
-      disposer = theme.register({
-        id,
-        colorScheme: "dark",
-        tokens: flashPaletteTokens(),
-      });
-    } catch {
-      disposer = undefined;
-    }
-    if (disposer) {
-      flashThemeDisposers.set(id, disposer);
-      disposers.push(disposer);
-    }
-  }
-  return () => {
-    for (const [id, disposer] of flashThemeDisposers) {
-      try { disposer(); } catch { /* noop */ }
-      flashThemeDisposers.delete(id);
-    }
-  };
-}
-
-// The palette values are frozen to the dark scheme and identical across the
-// three portrait sets (the sets only differ by the character art). The
-// registered tokens just need to be a non-empty map so the quick panel's
-// appearance dropdown lists each set as its own palette entry.
-function flashPaletteTokens(): Record<string, string> {
-  return {
-    "--flash-page": FROZEN_PALETTE.page,
-    "--flash-surface": FROZEN_PALETTE.surface,
-    "--flash-ink": FROZEN_PALETTE.ink,
-    "--flash-secondary": FROZEN_PALETTE.secondary,
-    "--flash-accent": FROZEN_PALETTE.accent,
-    "--flash-accent-hover": FROZEN_PALETTE.accentHover,
-    "--flash-portrait-opacity": FROZEN_PALETTE.portraitOpacity,
-  };
 }
 
 interface ModelSelection {
@@ -280,12 +179,63 @@ class SkinPresenter {
   private enabled = true;
   private level = 0;
   private set: PortraitSet = PORTRAIT_SETS[0];
+  // Per-group config mirrored from the persisted config card. images drive the
+  // portrait sequence; darkLevel (absent → MAX_LEVEL - 1) drives the flip to
+  // the dark shell.
+  private groupConfigs: Record<string, { images: string[]; darkLevel?: number }> = {};
+  private portraitsSources: readonly PortraitSource[] = [];
   private disposed = false;
   private unsubscribe: () => void;
 
-  private sourcesForSet(set: PortraitSet) {
+  private darkLevelForCurrentSet(): number {
+    const value = this.groupConfigs[this.set.id]?.darkLevel;
+    if (value === undefined) return MAX_LEVEL - 1;
+    return Math.min(MAX_LEVEL, Math.max(0, Math.round(value)));
+  }
+
+  // Push an updated persisted config into the presenter: swap the current set's
+  // portrait sources and re-derive its dark threshold. Image edits rebuild the
+  // sequence loader; dark-level-only edits just re-apply the palette.
+  setPortraitGroups(groups: PortraitGroupConfig[]) {
+    if (this.disposed) return;
+    const configs: Record<string, { images: string[]; darkLevel?: number }> = {};
+    for (const group of groups) {
+      configs[group.id] = { images: group.images ?? [], darkLevel: group.darkLevel };
+    }
+    const nextSources = this.sourcesForSet(this.set, configs);
+    const sourcesChanged = nextSources.length !== this.portraitsSources.length
+      || nextSources.some((source, index) => source.url !== this.portraitsSources[index]?.url);
+    this.groupConfigs = configs;
+    this.portraitsSources = nextSources;
+    if (this.enabled) {
+      if (sourcesChanged) {
+        this.portraits.dispose();
+        this.portraits = createPortraitLoader({ sources: nextSources, onChange: this.onChange });
+        this.portraits.start();
+        this.updatePortrait();
+      }
+      this.applyPalette();
+    }
+  }
+
+  private sourcesForSet(set: PortraitSet, configs = this.groupConfigs): readonly PortraitSource[] {
+    // Prefer the user-configured images for this set, spread evenly across the
+    // slider (level 0..PORTRAIT_MAX_LEVEL) so added/removed frames stay on
+    // meaningful stops. Falls back to the built-in on-disk anchors.
+    const group = configs[set.id];
+    if (group && group.images.length > 0) {
+      const count = group.images.length;
+      return group.images.map((url, index) => ({
+        level: count <= 1 ? 0 : Math.round((index / (count - 1)) * PORTRAIT_MAX_LEVEL),
+        url,
+      }));
+    }
     const anchors = PORTRAIT_ANCHORS[set.id] ?? [];
-    return anchors.map(({ level, file }) => ({
+    // The slider exposes MAX_LEVEL + 1 = 7 stops, so only the first 7 anchors
+    // drive the portrait sequence. The 8th anchor (highest frame) is kept in
+    // PORTRAIT_ANCHORS as a placeholder for tuning and never enters display
+    // logic: drop it here so the loader neither loads nor selects it.
+    return anchors.slice(0, -1).map(({ level, file }) => ({
       level,
       url: `${ASSET_PREFIX}/${set.folder}/${file}`,
     }));
@@ -294,6 +244,8 @@ class SkinPresenter {
   constructor(scope: PreferenceStore, theme: ThemeService) {
     this.scope = scope;
     this.theme = theme;
+    const initialSetId = scope.getSnapshot().set;
+    this.set = PORTRAIT_SETS.find((item) => item.id === initialSetId) ?? PORTRAIT_SETS[0];
     this.root = document.createElement("div");
     this.root.className = "flash-skin-backdrop";
     this.root.dataset.plugin = PACKAGE_ID;
@@ -315,6 +267,7 @@ class SkinPresenter {
       this.root.dataset.media = "sequence";
     };
     this.portraits = this.buildPortraits(this.set);
+    this.portraitsSources = this.sourcesForSet(this.set);
     this.unsubscribe = scope.subscribe(() => this.syncSettings());
     this.syncSettings();
   }
@@ -349,9 +302,13 @@ class SkinPresenter {
     this.set = set;
     this.portraits.dispose();
     this.portraits = this.buildPortraits(set);
+    this.portraitsSources = this.sourcesForSet(set);
     if (this.enabled) {
       this.portraits.start();
       this.updatePortrait();
+      // The dark threshold is per set; re-apply the palette so the shell
+      // reflects the newly selected set's configuration.
+      this.applyPalette();
     }
   }
 
@@ -381,10 +338,10 @@ class SkinPresenter {
 
   // The colour scheme follows the reasoning level the way dsh-liang-skin does:
   // low levels keep the native light shell, and only the highest two stops
-  // (level 6 and 7) switch to the dark shell.
+  // (level 5 and 6) switch to the dark shell.
   private applyPalette() {
     if (this.disposed || !this.enabled) return;
-    const palette = paletteForLevel(this.level);
+    const palette = paletteForLevel(this.level, this.darkLevelForCurrentSet());
     const body = document.body;
     this.syncNativeTheme(palette.stage === 1 ? "dark" : "light");
     body.dataset.flashStage = String(palette.stage);
@@ -403,14 +360,14 @@ class SkinPresenter {
     this.portraits.select(Math.round(scale * PORTRAIT_MAX_LEVEL));
   }
 
-  syncNativeTheme(theme: NativeThemeId = paletteForLevel(this.level).stage === 1 ? "dark" : "light") {
+  syncNativeTheme(theme: NativeThemeId = paletteForLevel(this.level, this.darkLevelForCurrentSet()).stage === 1 ? "dark" : "light") {
     if (!this.enabled) return;
     const preference = this.theme.getTheme().preference;
     if (preference === theme) return;
-    // A flash palette chosen through the dsh-flash quick panel's appearance
-    // dropdown sits in the same preference slot as the base colour schemes.
-    // Never trample an active flash palette back to a base scheme here.
-    if (isFlashThemeId(preference)) return;
+    // Flash no longer registers palettes into the host theme service, so the
+    // preference slot only ever holds a base scheme (light/dark/system).
+    // Pushing the matching base scheme keeps brightness in sync without ever
+    // writing anything flash-specific into the host's durable settings.
     this.theme.setTheme(theme);
   }
 
@@ -418,14 +375,10 @@ class SkinPresenter {
     const set = PORTRAIT_SETS.find((item) => item.id === setId) ?? PORTRAIT_SETS[0];
     this.setEnabled(true);
     this.setPortraitSet(set);
-    // Surface the choice in the dsh-flash quick panel appearance dropdown by
-    // moving the theme preference onto the matching flash palette. `setTheme`
-    // short-circuits when the preference is already there, so this is safe to
-    // repeat (including via the theme/change bridge below).
-    const themeId = flashThemeIdForSet(set.id);
-    if (this.theme.getTheme().preference !== themeId) {
-      try { this.theme.setTheme(themeId); } catch { /* palette may be unregistered */ }
-    }
+    // Decoupled from the host theme preference: we never write our palette ids
+    // back into the host (see apply → theme preference bridge). The host only
+    // publishes a preference change; acting on it is the bridge's job, and we
+    // stay out of the durable settings scope so no write/adopt loop can form.
     try {
       await this.scope.set(true);
       await this.scope.setSet(set.id);
@@ -436,13 +389,7 @@ class SkinPresenter {
   }
 
   async disable() {
-    // A flash palette active via the quick panel must not stay highlighted once
-    // the skin is turned off, so fall back to following the system scheme.
-    const preference = this.theme.getTheme().preference;
     this.setEnabled(false);
-    if (isFlashThemeId(preference)) {
-      try { this.theme.setTheme("system"); } catch { /* ignore */ }
-    }
     try {
       await this.scope.set(false);
     } catch (error) {
@@ -654,6 +601,55 @@ function EffortBindingRow({ scope, t }: EffortBindingRowProps) {
   );
 }
 
+interface PortraitSetRowProps {
+  scope: PreferenceStore;
+  presenter: SkinPresenter;
+  sets: readonly { id: string; label: string }[];
+  t: (key: string) => string;
+}
+
+function PortraitSetRow({ scope, presenter, sets, t }: PortraitSetRowProps) {
+  const snapshot = useSyncExternalStore(
+    (listener) => scope.subscribe(listener),
+    () => scope.getSnapshot(),
+  );
+  const [pending, setPending] = useState(false);
+  if (!snapshot.enabled) return null;
+
+  return (
+    <section className="flash-portrait-set" data-plugin={PACKAGE_ID}>
+      <div className="flash-portrait-set__label">{t("appearance")}</div>
+      <div className="flash-appearance-sets" role="radiogroup" aria-label={t("appearance")}>
+        {sets.map((set) => {
+          const selected = snapshot.set === set.id;
+          return (
+            <button
+              type="button"
+              key={set.id}
+              role="radio"
+              aria-checked={selected}
+              className={
+                selected
+                  ? "flash-appearance-choice flash-appearance-choice--on"
+                  : "flash-appearance-choice"
+              }
+              disabled={pending}
+              onClick={() => {
+                if (pending) return;
+                setPending(true);
+                void presenter.choose(set.id).catch(() => undefined).finally(() => setPending(false));
+              }}
+            >
+              <span className="flash-appearance-choice__icon" aria-hidden="true">◈</span>
+              <span className="flash-appearance-choice__label">{set.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 export const inject = [
   "slots",
   "sessions",
@@ -663,18 +659,24 @@ export const inject = [
   "configForms",
 ];
 
-function createPreferenceStore(): PreferenceStore {
-  const readSet = () => {
-    try {
-      const id = localStorage.getItem(SET_KEY);
-      return PORTRAIT_SETS.some((item) => item.id === id) ? id! : PORTRAIT_SETS[0].id;
-    } catch {
-      return PORTRAIT_SETS[0].id;
-    }
-  };
+// The active portrait set must survive both a full client (re)boot and any
+// store re-creation. The portrait set is scope-only (never written into the
+// host theme preference), so localStorage SET_KEY is the persisted source of
+// truth; fall back to the first set when it is absent or stale.
+function restoreInitialSet(): string {
+  try {
+    const id = localStorage.getItem(SET_KEY);
+    if (PORTRAIT_SETS.some((item) => item.id === id)) return id!;
+  } catch {
+    // storage may be unavailable
+  }
+  return PORTRAIT_SETS[0].id;
+}
+
+function createPreferenceStore(initialSet: string): PreferenceStore {
   let snapshot: SkinSettings = {
     enabled: true,
-    set: readSet(),
+    set: PORTRAIT_SETS.some((item) => item.id === initialSet) ? initialSet : PORTRAIT_SETS[0].id,
     bindEffort: localStorage.getItem(BIND_EFFORT_KEY) !== "0",
   };
   const listeners = new Set<() => void>();
@@ -743,6 +745,9 @@ interface PortraitGroupConfig {
   id: string;
   name: string;
   images: string[];
+  // Per-group slider level (0..MAX_LEVEL) at which this set flips to the dark
+  // shell. Absent means the default threshold (MAX_LEVEL - 1).
+  darkLevel?: number;
 }
 
 type PortraitGroupsConfig = PortraitGroupConfig[];
@@ -796,6 +801,9 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "cancel": "取消",
     "urlEmpty": "请输入图片 URL",
     "defaultGroup": "新的皮肤组",
+    "darkLevel": "深浅切换点",
+    "darkLevelHint": "分割线左侧为浅色外壳、右侧为深色外壳；从 0–6 档中哪一档起切换（留空用默认，第 5 档起）。",
+    "dividerHint": "左右拖动图片之间的分割线，设置深色外壳从第几档开始：分割线越靠右，需要更高的档位才会变深。",
   },
   en: {
     "loading": "Loading…",
@@ -820,6 +828,9 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "cancel": "Cancel",
     "urlEmpty": "Enter an image URL",
     "defaultGroup": "New group",
+    "darkLevel": "Light/dark threshold",
+    "darkLevelHint": "Images left of the divider keep the light shell, right of it the dark shell; the slider level (0–6) at which this set turns dark, empty uses the default (level 5).",
+    "dividerHint": "Drag the divider between the images left or right to pick the slider level at which the dark shell begins.",
   },
 };
 
@@ -828,6 +839,20 @@ function newGroupId(): string {
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   return `group-${random}`;
+}
+
+// Mapping shared by the divider editor: a group with `count` images has
+// `count + 1` boundaries; k is how many light (left) images sit before the
+// flip. darkLevel is the slider stop (0..MAX_LEVEL) at which the set goes
+// dark, so the boundary position maps linearly onto the slider stops.
+function darkLevelForBoundary(count: number, k: number): number {
+  if (count <= 0) return MAX_LEVEL - 1;
+  return clampLevel(Math.round((k / count) * MAX_LEVEL));
+}
+
+function boundaryForDarkLevel(count: number, level: number): number {
+  if (count <= 0) return 0;
+  return Math.min(count, Math.max(0, Math.round((level / MAX_LEVEL) * count)));
 }
 
 function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
@@ -842,13 +867,18 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
     imageIndex?: number;
     value: string;
   } | null>(null);
+  // Live drag for the light/dark divider. Kept in a ref so pointer handlers can
+  // move it without a React state update per event; dragTick only forces the
+  // divider to redraw while dragging.
+  const dragRef = useRef<{ groupIndex: number; count: number; level: number } | null>(null);
+  const [dragTick, setDragTick] = useState(0);
 
   const t = (key: string): string => {
     if (typeof localeT === "function") return localeT(key);
     return CONFIG_TEXTS.en[key] ?? key;
   };
 
-  const groups = snapshot.value ?? [];
+  const groups = snapshot.value?.portraitGroups ?? [];
   const ready = snapshot.status === "ready";
   const writable = snapshot.writable;
 
@@ -880,6 +910,74 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
     const next = groups.slice();
     next[groupIndex] = update(next[groupIndex]);
     return next;
+  };
+
+  const moveDividerFromPointer = (row: HTMLElement, clientX: number) => {
+    const drag = dragRef.current;
+    if (!drag || drag.count <= 0) return;
+    const rect = row.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    const k = Math.round(ratio * drag.count);
+    const level = darkLevelForBoundary(drag.count, k);
+    if (level !== drag.level) {
+      drag.level = level;
+      setDragTick((tick) => tick + 1);
+    }
+  };
+
+  const startDividerDrag = (event: ReactPointerEvent, groupIndex: number) => {
+    if (!writable || busy) return;
+    const count = groups[groupIndex]?.images.length ?? 0;
+    if (count <= 0) return;
+    event.preventDefault();
+    const row = event.currentTarget.closest<HTMLElement>(".flash-portrait-group__images");
+    if (!row) return;
+    try {
+      // Keep receiving moves while dragging even when the cursor leaves the
+      // row; the capture stays on the stable row element.
+      row.setPointerCapture(event.pointerId);
+    } catch {
+      // Some pointer types do not support capture; the row-bound move/up
+      // handlers below still track an in-row drag.
+    }
+    dragRef.current = {
+      groupIndex,
+      count,
+      level: groups[groupIndex]?.darkLevel ?? MAX_LEVEL - 1,
+    };
+    moveDividerFromPointer(row, event.clientX);
+  };
+
+  const endDividerDrag = (groupIndex: number) => {
+    const drag = dragRef.current;
+    if (!drag || drag.groupIndex !== groupIndex) return;
+    dragRef.current = null;
+    setDragTick((tick) => tick + 1);
+    const group = groups[groupIndex];
+    if (group && drag.level !== (group.darkLevel ?? MAX_LEVEL - 1)) {
+      void commit(withGroup(groupIndex, (g) => ({ ...g, darkLevel: drag.level })));
+    }
+  };
+
+  const cancelDividerDrag = () => {
+    if (!dragRef.current) return;
+    dragRef.current = null;
+    setDragTick((tick) => tick + 1);
+  };
+
+  const onDividerKeyDown = (event: ReactKeyboardEvent, groupIndex: number) => {
+    if (!writable || busy) return;
+    const group = groups[groupIndex];
+    const current = group?.darkLevel ?? MAX_LEVEL - 1;
+    let next: number | undefined;
+    if (event.key === "ArrowLeft") next = clampLevel(current - 1);
+    else if (event.key === "ArrowRight") next = clampLevel(current + 1);
+    else return;
+    event.preventDefault();
+    if (next !== current) {
+      void commit(withGroup(groupIndex, (g) => ({ ...g, darkLevel: next })));
+    }
   };
 
   const renameGroup = (groupIndex: number, name: string) => {
@@ -951,6 +1049,7 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
     const next: PortraitGroupsConfig = PORTRAIT_SETS.map((set) => ({
       id: set.id,
       name: t(`set.${set.id}`),
+      darkLevel: MAX_LEVEL - 1,
       images: (PORTRAIT_ANCHORS[set.id] ?? []).map((anchor) => `${ASSET_PREFIX}/${set.folder}/${anchor.file}`),
     }));
     void commit(next);
@@ -1025,14 +1124,51 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
                 </div>
               </header>
 
-              <ol className="flash-portrait-group__images">
+              <p className="flash-portrait-groups__hint flash-portrait-group__divider-hint">
+                {t("dividerHint")}
+              </p>
+              <ol
+                className={dragRef.current ? "flash-portrait-group__images flash-portrait-group__images--dragging" : "flash-portrait-group__images"}
+                onPointerMove={(event) => {
+                  if (dragRef.current?.groupIndex === groupIndex) {
+                    moveDividerFromPointer(event.currentTarget, event.clientX);
+                  }
+                }}
+                onPointerUp={() => endDividerDrag(groupIndex)}
+                onPointerCancel={cancelDividerDrag}
+              >
                 {group.images.map((src, imageIndex) => {
                   const editingReplace =
                     editing?.kind === "replace" &&
                     editing.groupIndex === groupIndex &&
                     editing.imageIndex === imageIndex;
+                  const count = group.images.length;
+                  const liveLevel =
+                    dragRef.current?.groupIndex === groupIndex && dragRef.current.count === count
+                      ? dragRef.current.level
+                      : undefined;
+                  const effectiveDark = liveLevel ?? group.darkLevel ?? MAX_LEVEL - 1;
+                  const boundary = boundaryForDarkLevel(count, effectiveDark);
+                  const dividerActive = dragRef.current?.groupIndex === groupIndex;
                   return (
-                    <li key={`${imageIndex}-${src}`} className="flash-portrait-group__image">
+                    <Fragment key={imageIndex}>
+                      {imageIndex === boundary && count > 0 && (
+                        <li
+                          className={dividerActive ? "flash-portrait-group__divider flash-portrait-group__divider--active" : "flash-portrait-group__divider"}
+                          role="slider"
+                          aria-label={t("darkLevel")}
+                          aria-valuemin={0}
+                          aria-valuemax={MAX_LEVEL}
+                          aria-valuenow={effectiveDark}
+                          title={t("darkLevelHint")}
+                          draggable={false}
+                          onPointerDown={(event) => startDividerDrag(event, groupIndex)}
+                          onKeyDown={(event) => onDividerKeyDown(event, groupIndex)}
+                        >
+                          <span className="flash-portrait-group__divider-handle" aria-hidden="true" />
+                        </li>
+                      )}
+                      <li className="flash-portrait-group__image">
                       {editingReplace ? (
                         <>
                           <input
@@ -1113,6 +1249,7 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
                         </>
                       )}
                     </li>
+                    </Fragment>
                   );
                 })}
                 {editingAdd ? (
@@ -1175,40 +1312,17 @@ export function apply(ctx: ClientContext) {
   document.head.append(style);
   ctx.effect(() => () => style.remove(), "flash-skin: scoped styles");
 
-  const scope = createPreferenceStore();
-  ctx.effect(() => () => scope.dispose(), "flash-skin: appearance preference");
   const theme = ctx.get("theme") as ThemeService;
+  const scope = createPreferenceStore(restoreInitialSet());
+  ctx.effect(() => () => scope.dispose(), "flash-skin: appearance preference");
   const presenter = new SkinPresenter(scope, theme);
   ctx.effect(() => () => presenter.dispose(), "flash-skin: backdrop presenter");
 
-  // Register the three portrait sets as theme palettes so the dsh-flash quick
-  // panel's 外观 (appearance) theme dropdown lists them (it exposes any
-  // registered theme with its own tokens). No dsh-flash dependency: this only
-  // talks to the native theme service.
-  const disposeFlashThemes = ensureFlashPalettes(theme);
-  ctx.effect(() => () => disposeFlashThemes(), "flash-skin: theme palettes");
-
-  // Bridge selection from the quick panel's appearance dropdown back to the
-  // presenter: when the preference lands on one of our flash palettes, enable
-  // Flash Skin with the matching portrait set. Base schemes are intentionally
-  // left alone — Flash Skin can be on while the native scheme stays light/dark
-  // (the Settings path), and turning it off goes through `presenter.disable()`.
-  ctx.effect(
-    () => ctx.on("theme/change", (snapshot: { preference?: string }) => {
-      const preference = snapshot?.preference;
-      if (typeof preference !== "string") return;
-      const setId = setIdForFlashTheme(preference);
-      if (setId === null) return;
-      if (!PORTRAIT_SETS.some((set) => set.id === setId)) return;
-      void presenter.choose(setId).catch(() => undefined);
-    }),
-    "flash-skin: theme preference bridge",
-  );
   ctx.effect(
     () => ctx.locale.register(LOCALE_NAMESPACE, {
       zh: {
         ...CONFIG_TEXTS.zh,
-        "appearance": "Flash Skin",
+        "appearance": "人物肖像",
         "effort.binding": "滑块绑定推理强度",
         "set.storm": "梁圣",
         "set.blaze": "梁神",
@@ -1216,7 +1330,7 @@ export function apply(ctx: ClientContext) {
       },
       en: {
         ...CONFIG_TEXTS.en,
-        "appearance": "Flash Skin",
+        "appearance": "Portrait group",
         "effort.binding": "Bind slider to reasoning level",
         "set.storm": "梁圣",
         "set.blaze": "梁神",
@@ -1227,21 +1341,36 @@ export function apply(ctx: ClientContext) {
   );
 
   const setLabel = ctx.locale.bind(LOCALE_NAMESPACE);
-  ctx.effect(
-    () => installFlashAppearanceSets(
-      scope,
-      presenter,
-      PACKAGE_ID,
-      PORTRAIT_SETS.map((set) => ({ id: set.id, label: setLabel(`set.${set.id}`) })),
-    ),
-    "flash-skin: native appearance replacement",
-  );
+  // 独立选择项：不抢占宿主的外观(theme)行，而是在通用设置里单独列出
+  // 人物肖像组（梁圣/梁神/梁祖）。选择通过 presenter.choose 落库，
+  // 持久化只走 localStorage（SET_KEY），与宿主主题服务完全解耦。
+  const sets = PORTRAIT_SETS.map((set) => ({ id: set.id, label: setLabel(`set.${set.id}`) }));
+  ctx.slots.inject("settings.general.item", () => ctx.slots.register({
+    name: "settings.general.item",
+    id: "flash-portrait-set",
+    order: 20,
+    inject: () => ({ scope, presenter, sets, t: setLabel }),
+  }, PortraitSetRow));
 
   // 自定义配置页：插件管理页在「已配置」的 bundle 上渲染 plugins.bundle.config
   // 槽位（视图为页面，key 取 bundle 包名）。表单直接对准 Host 的 volatile 设置
   // 命名空间 flash-skin，整数组原子覆写 + 修订号围栏由 FlashSkinConfigCard 内
   // 的 commit 处理。
   const configForm = ctx.configForms.get<PortraitGroupsConfig>(CONFIG_NAMESPACE);
+  // Push the persisted per-set config (images + dark threshold) into the
+  // presenter so each portrait set shows the frames and flips to the dark shell
+  // configured for it.
+  ctx.effect(() => {
+    if (!configForm || typeof configForm.subscribe !== "function") return undefined;
+    const read = () => {
+      const snapshot = configForm.getSnapshot?.();
+      const value = snapshot?.value as { portraitGroups?: PortraitGroupConfig[] } | undefined;
+      presenter.setPortraitGroups(value?.portraitGroups ?? []);
+    };
+    read();
+    const unsubscribe = configForm.subscribe(read);
+    return () => unsubscribe();
+  }, "flash-skin: portrait-groups mirror");
   ctx.slots.inject("plugins.bundle.config", () => ctx.slots.register({
     name: "plugins.bundle.config",
     key: PACKAGE_ID,

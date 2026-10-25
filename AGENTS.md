@@ -10,7 +10,11 @@ conversation UI:
 - **Portrait-driven appearance.** A fixed background layer
   (`.flash-skin-backdrop`) shows character portraits that swap as the level
   slider moves; low slider levels keep the native light shell, and only the
-  **highest two levels (slider 6 and 7)** switch to the dark shell.
+  **highest two levels (slider 5 and 6 of the 0..6 slider)** switch to the dark
+  shell. The slider exposes **7 stops** (`MAX_LEVEL = 6`); each set keeps 8
+  anchors in `PORTRAIT_ANCHORS` but only the **first 7 are active** in display
+  logic (`sourcesForSet` uses `slice(0, -1)`), the 8th being a placeholder for
+  tuning.
 - **Persisted settings.** Inputs (level, active set, bind-effort, portrait
   groups) persist through `ctx.settings`/localStorage; the config card is keyed
   by the bundle npm name `dsh-flash-skin` under namespace `flash-skin`.
@@ -51,7 +55,7 @@ reflects the change, then re-run `npm test`.
 - `src/client/index.tsx` — main bundle. `SkinPresenter` owns the backdrop,
   theme switching (`syncNativeTheme`), palette application (`applyPalette`),
   and config-form / settings slots.
-- `src/client/logic.ts` — pure level/palette math: `MAX_LEVEL = 7`,
+- `src/client/logic.ts` — pure level/palette math: `MAX_LEVEL = 6`,
   `PORTRAIT_MAX_LEVEL = 30`, `LIGHT`/`DARK` palettes, `paletteForLevel`
   (binary: `dark = level >= MAX_LEVEL - 1`), `FROZEN_PALETTE` (registration
   source only), `levelForEffort`, `selectedEffortIndex`, `nearestEffortIndex`.
@@ -86,8 +90,8 @@ These were explicit user requirements. Keep them intact and gated:
 ## Theme / palette model
 
 - `paletteForLevel` switches the **binary UI scheme**:
-  - slider levels 0–5 → **light** (native Harness light shell)
-  - slider levels 6–7 → **dark**
+  - slider levels 0–4 → **light** (native Harness light shell)
+  - slider levels 5–6 → **dark**
 - `applyPalette(level)` sets the 7 `--flash-*` CSS vars on `<body>`, sets
   `body.dataset.flashStage` (0/1), and calls
   `syncNativeTheme("light" | "dark")`.

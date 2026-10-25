@@ -1,4 +1,4 @@
-export const MAX_LEVEL = 7;
+export const MAX_LEVEL = 6;
 export const PORTRAIT_MAX_LEVEL = 30;
 
 export interface EffortLike {
@@ -78,8 +78,12 @@ const DARK = {
 // only swaps the portrait frame, it no longer blends any colours.
 export const FROZEN_PALETTE: Palette = paletteForLevel(MAX_LEVEL);
 
-export function paletteForLevel(rawLevel: number): Palette {
+export function paletteForLevel(rawLevel: number, darkLevel?: number): Palette {
   const level = clampLevel(rawLevel);
+  const darkAt = (() => {
+    if (darkLevel === undefined) return MAX_LEVEL - 1;
+    return Math.min(MAX_LEVEL, Math.max(0, Math.round(darkLevel)));
+  })();
   const t = level / MAX_LEVEL;
   const mix = (from: string, to: string, amount: number) => {
     const pa = parseInt(from.slice(1), 16);
@@ -95,10 +99,10 @@ export function paletteForLevel(rawLevel: number): Palette {
     return `#${((1 << 24) | (r << 16) | (g << 8) | blue).toString(16).slice(1)}`;
   };
   // Mirror dsh-liang-skin's binary appearance: the lowest levels keep the
-  // native light shell, and only the highest two stops (level 6 and 7 of the
-  // 0..7 slider) switch to the dark shell. The portrait frame still advances
-  // continuously with the level.
-  const dark = level >= MAX_LEVEL - 1;
+  // native light shell, and only levels at/above the (per-group, default
+  // MAX_LEVEL - 1) dark threshold switch to the dark shell. The portrait frame
+  // still advances continuously with the level.
+  const dark = level >= darkAt;
   const base = dark ? DARK : LIGHT;
   const portraitScale = level / MAX_LEVEL;
   return {

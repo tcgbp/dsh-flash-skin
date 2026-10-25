@@ -164,6 +164,20 @@ body[data-flash-skin="on"] textarea {
   min-width: 260px;
 }
 
+.flash-portrait-set[data-plugin] {
+  box-sizing: border-box;
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  margin: 2px 0;
+}
+
+.flash-portrait-set__label {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 18px;
+}
+
 .flash-appearance-sets {
   box-sizing: border-box;
   display: grid;
@@ -316,6 +330,79 @@ body[data-flash-skin="on"] textarea {
   border-color: var(--dsw-static-neutral-bluish-400);
   background: var(--dsw-alias-bg-module-platform);
   outline: none;
+}
+
+.flash-portrait-group__divider-hint {
+  margin: 0 0 10px;
+}
+
+/* Draggable light/dark divider that sits between the portrait thumbnails. */
+.flash-portrait-group__images--dragging {
+  cursor: ew-resize;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.flash-portrait-group__divider {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 128px;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: ew-resize;
+}
+
+.flash-portrait-group__divider::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: var(--dsw-alias-border-l2);
+}
+
+.flash-portrait-group__divider-handle {
+  position: relative;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-module-platform);
+  cursor: ew-resize;
+}
+
+.flash-portrait-group__divider-handle::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 10px;
+  height: 12px;
+  background: linear-gradient(
+    to right,
+    currentColor 0 1.5px,
+    transparent 1.5px 3px,
+    currentColor 3px 4.5px,
+    transparent 4.5px 6px,
+    currentColor 6px 7.5px
+  );
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.flash-portrait-group__divider:hover::before,
+.flash-portrait-group__divider--active::before {
+  background: var(--dsw-static-neutral-bluish-400);
+}
+
+.flash-portrait-group__divider--active .flash-portrait-group__divider-handle {
+  border-color: var(--dsw-static-neutral-bluish-400);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-static-neutral-bluish-400) 25%, transparent);
 }
 
 .flash-portrait-group__actions {
@@ -478,15 +565,37 @@ body[data-flash-skin="on"] textarea {
  * ========================================================================= */
 body[data-flash-skin="on"] {
   /* 左侧为 timeline 预留的槽宽（px）。需要更大/更小时直接改这里。 */
-  --dsh-flash-timeline-gutter: 50px;
+  --dsh-flash-timeline-gutter: 40px;
   /* 右拖把与内容列右缘的间隙（继承原生 24px 手感）。 */
   --dsh-flash-handle-gap: 24px;
+  /* 对齐基准轴 = “输入卡最左侧”。槽宽(50) + 内容列父滚动区左侧内边距(侧余量16 + 16)，
+   * 使内容列左缘与输入卡左缘落在同一根垂直线。残余结构差用 nudge 微调（默认 0，正右移）。 */
+  --dsh-flash-content-left: calc(
+    var(--dsh-flash-timeline-gutter, 50px)
+    + var(--dsh-composer-side-clearance, 16px) + 16px
+  );
+  --dsh-flash-align-nudge: 0px;
 }
 
-/* 1) 内容列改为贴左：左边距 = timeline 槽 50px，右边距 auto（不再对半居中）。 */
+/* 0) 输入卡与内容列“完全一样宽”。
+ *    原生 .wSkVaW_body 把 --dsh-composer-card-max-width 设为
+ *    calc(var(--dsh-chat-content-width) + 32px)，输入卡比内容列宽 32px。
+ *    此处直接在 .wSkVaW_body 级覆写为 = 内容列宽，让输入卡(+todo+排队条)
+ *    与内容列同宽、同左缘，右缘也逐点对齐。 */
+body[data-flash-skin="on"] .wSkVaW_body {
+  --dsh-composer-card-max-width: var(--dsh-chat-content-width);
+}
+
+/* 1) 内容列改为贴左：左缘对齐“输入卡最左侧”(= content-left，nudge 可微调)，
+ *    右边距 auto（不再对半居中）。
+ *    注：.EvIC1a_scroll 自带 padding:16px calc(侧余量+16)，故这里去掉父 padding，
+ *    让内容列净左缘 = content-left，与输入卡左缘同基准。 */
 body[data-flash-skin="on"] .EvIC1a_column {
   margin-right: auto !important;
-  margin-left: var(--dsh-flash-timeline-gutter, 50px) !important;
+  margin-left: calc(
+    var(--dsh-flash-timeline-gutter, 50px)
+    + var(--dsh-flash-align-nudge, 0px)
+  ) !important;
 }
 
 /* 2) 隐藏左侧拖把，只保留右侧。 */
@@ -516,12 +625,13 @@ body[data-flash-skin="on"] .wSkVaW_widthHandle[data-side="right"] {
  *    原生居中来自两层：
  *       .uV2eYG_root{...;align-items:center}             -> 让 .uV2eYG_card 水平居中
  *       .wSkVaW_composerHero{...;align-self:center}     -> 让 hero 输入表整体居中
- *    输入卡宽 = 列宽 + 2×16px 侧余量（--dsh-composer-card-max-width）。
- *    要把卡片左缘对齐到内容列左缘：
+ *    输入卡宽已由第 0 段覆盖为“与内容列同宽”(--dsh-composer-card-max-width
+ *    = --dsh-chat-content-width)，故只需对齐左缘：
  *       内容列左缘 = 滚动区左 padding(= 侧余量+16px) + 槽宽
  *       卡片左缘   = 输入根左 padding(= 侧余量) + 卡片 margin
  *       => margin = （侧余量+16px + 槽宽）- 侧余量 = 16px + 槽宽
- *    与皮肤变量/主题耦合低，改槽宽时输入卡与内容列同步移动。
+ *    与皮肤变量/主题耦合低，改槽宽时输入卡与内容列同步移动。同宽 + 同左缘
+ *    => 输入卡右缘 = 内容列右缘，滚动到最下按钮(第 7 段)即钉在其上方。
  */
 body[data-flash-skin="on"] .uV2eYG_root {
   align-items: flex-start !important;
@@ -547,4 +657,31 @@ body[data-flash-skin="on"] .lXshSW_root {
     + var(--dsh-flash-timeline-gutter, 50px)
   ) !important;
   margin-right: auto !important;
+}
+
+/* 6) 排队消息条（QueueDock，conversation.input.dock）与输入卡一起居左。
+ *    QueueDock 挂在 conversation.input.dock，与 TodoPanel(.lXshSW_root)
+ *    同处 .wSkVaW_composerStack，原生 ._7yHdaG_dock{margin:0 auto} 居中。
+ *    与 todo 用同一个 margin-left 位移，让排队条左缘与输入卡/内容列左缘对齐。
+ */
+body[data-flash-skin="on"] ._7yHdaG_dock {
+  margin-left: calc(
+    var(--dsh-composer-side-clearance, 16px) + 16px
+    + var(--dsh-flash-timeline-gutter, 50px)
+  ) !important;
+  margin-right: auto !important;
+}
+
+/* 7) “滚动到最下”按钮与左移后的内容列右缘对齐。
+ *    原生 .EvIC1a_toBottomSlot 铺满整宽(left:0 right:0)，用
+ *    justify-content:flex-end + padding-right 把按钮钉在“居中对齐时”
+ *    内容列的右缘。内容列左移槽宽后，右缘也跟着左移，故把 padding-right
+ *    改为“右侧实际空余”= 100% − 槽宽 − (侧余量+16) − 列宽。
+ */
+body[data-flash-skin="on"] .EvIC1a_toBottomSlot {
+  padding-right: calc(
+    100% - var(--dsh-flash-timeline-gutter, 50px)
+    - var(--dsh-composer-side-clearance, 16px) - 16px
+    - var(--dsh-chat-content-width)
+  ) !important;
 }

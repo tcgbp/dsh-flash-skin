@@ -167,6 +167,29 @@ export function frameIndexForLevel(level: number, count: number, maxLevel = MAX_
   return Math.max(0, Math.min(frames.length - 1, best));
 }
 
+/**
+ * Direct frame index for a continuous composite score in 0..1, mapped straight
+ * onto the group's `count` frames (no intermediate integer-level grid).
+ *
+ * This is what composite mode should use: the weighted score is continuous, so
+ * every one of the group's N frames is reachable — not just the 0..MAX_LEVEL
+ * integer stops. Semantics mirror `frameIndexForLevel`/the portrait loader's
+ * `nearestIndex`: the frame whose proportional position is closest wins, and a
+ * tie picks the higher frame so gauge and displayed portrait stay in sync.
+ */
+export function frameIndexForScore(score: number, count: number): number {
+  if (!Number.isFinite(score) || score <= 0) return 0;
+  if (!Number.isFinite(count) || count <= 1) return 0;
+  const total = Math.floor(count);
+  const t = Math.min(1, Math.max(0, score));
+  const position = t * (total - 1);
+  const lo = Math.floor(position);
+  const hi = Math.min(total - 1, Math.ceil(position));
+  const dLo = position - lo;
+  const dHi = hi - position;
+  return dLo < dHi ? lo : hi;
+}
+
 // -----------------------------------------------------------------------------
 // Composite (weighted multi-signal) level — drives the slider when the driver
 // is "composite" instead of a manually dragged/effort-bound value.
@@ -179,6 +202,27 @@ export const TURNS_FULL = 20;
 /** Decode speed saturates at this many tokens per second. */
 export const TPS_FULL = 80;
 
+/**
+ * Tunable timing for the live "speed" axis's staleness decay. Because the
+ * projection never resets its decode totals when generation stops, a finished
+ * fast run would otherwise pin the speed gauge at 100% forever.
+ * - `graceMs`: how long after the last fresh decode the gauge holds its value.
+ * - `fadeMs`:  how long it then takes to decay from full to 0.
+ * Exposed as number inputs on the plugin's detail config card.
+ */
+export interface SpeedTuning {
+  graceMs: number;
+  fadeMs: number;
+}
+
+export const DEFAULT_SPEED_TUNING: SpeedTuning = {
+  graceMs: 600,
+  fadeMs: 1500,
+};
+
+/** Back-compat aliases for code and tests that reference the old constants. */
+export const IDLE_GRACE_MS = DEFAULT_SPEED_TUNING.graceMs;
+export const IDLE_FADE_MS = DEFAULT_SPEED_TUNING.fadeMs;
 export interface CompositeWeights {
   /** share of produced tokens (sat at USAGE_FULL). */
   usage: number;
@@ -278,6 +322,50 @@ export function tokenSpeedFactor(decodeTokens: number, decodeMs: number): number
 }
 
 /**
+ * Staleness decay for the live "speed" axis. The projection only exposes the
+ * latest step's decode totals and does not reset them to zero when generation
+ * stops, so a finished fast run would otherwise pin the speed gauge at 100%
+ * forever. This multiplier ramps the speed factor down to 0 once no fresh
+ * decode data has arrived for `graceMs`, fading over `fadeMs` so "stopped"
+ * visibly relaxes the composite level.
+ */
+export function freshnessDecay(
+  elapsedMs: number,
+  graceMs: number = IDLE_GRACE_MS,
+  fadeMs: number = IDLE_FADE_MS,
+): number {
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 0) return 1;
+  if (elapsedMs <= graceMs) return 1;
+  const over = elapsedMs - graceMs;
+  if (over >= fadeMs) return 0;
+  return 1 - over / fadeMs;
+}
+
+/** Clamp an individual 0..1 factor, guarding against bad projections. */
+function clampFactor(factor: number | undefined): number {
+  return Math.min(1, Math.max(0, Number.isFinite(factor) ? factor : 0));
+}
+
+/**
+ * Core weighted combination over already-normalised factors. Factors are
+ * clamped to 0..1 here so a caller may pre-tune the speed factor with
+ * staleness decay before it enters the weighted sum.
+ */
+export function weightedLevel(
+  weights: Partial<CompositeWeights> | null | undefined,
+  factors: { usage?: number; pressure?: number; effort?: number; speed?: number } = {},
+): number {
+  const w = normalizeWeights(weights);
+  const sum = (
+    w.usage * clampFactor(factors.usage)
+    + w.pressure * clampFactor(factors.pressure)
+    + w.effort * clampFactor(factors.effort)
+    + w.speed * clampFactor(factors.speed)
+  );
+  return clampLevel(sum * MAX_LEVEL);
+}
+
+/**
  * Weighted combination of the signals → slider level 0..MAX_LEVEL.
  * Every factor is 0..1 and weights sum to 1, so the weighted sum spans [0,1];
  * scaling by MAX_LEVEL (then rounding, then clamping) keeps all 0..MAX_LEVEL
@@ -287,12 +375,10 @@ export function compositeLevel(
   weights: Partial<CompositeWeights> | null | undefined,
   signals: CompositeSignals = {},
 ): number {
-  const w = normalizeWeights(weights);
-  const sum = (
-    w.usage * usageFactor(signals.outputTokens ?? 0)
-    + w.pressure * contextPressureFactor(signals.pressureTokens, signals.contextWindow, signals.turns)
-    + w.effort * reasoningEffortFactor(signals.committedLevel ?? 0)
-    + w.speed * tokenSpeedFactor(signals.decodeTokens ?? 0, signals.decodeMs ?? 0)
-  );
-  return clampLevel(sum * MAX_LEVEL);
+  return weightedLevel(weights, {
+    usage: usageFactor(signals.outputTokens ?? 0),
+    pressure: contextPressureFactor(signals.pressureTokens, signals.contextWindow, signals.turns),
+    effort: reasoningEffortFactor(signals.committedLevel ?? 0),
+    speed: tokenSpeedFactor(signals.decodeTokens ?? 0, signals.decodeMs ?? 0),
+  });
 }

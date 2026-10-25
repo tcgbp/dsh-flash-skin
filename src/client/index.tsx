@@ -11,11 +11,14 @@ import { createPortraitLoader } from "./portrait-loader";
 import type { PortraitImage, PortraitSource } from "./portrait-loader";
 import {
   DEFAULT_COMPOSITE_WEIGHTS,
+  DEFAULT_SPEED_TUNING,
   MAX_LEVEL,
   clampLevel,
   compositeLevel,
   contextPressureFactor,
   frameIndexForLevel,
+  frameIndexForScore,
+  freshnessDecay,
   levelForEffort,
   nearestEffortIndex,
   normalizeWeights,
@@ -25,9 +28,11 @@ import {
   stagedFrames,
   tokenSpeedFactor,
   usageFactor,
+  weightedLevel,
   type CompositeWeights,
   type EffortLike,
   type Palette,
+  type SpeedTuning,
 } from "./logic";
 import { unzipSync, gunzipSync } from "./vendor/fflate";
 
@@ -40,6 +45,20 @@ const BIND_EFFORT_KEY = "dsh-flash-skin.bind-effort";
 const DRIVER_KEY = "dsh-flash-skin.driver";
 const WEIGHTS_KEY = "dsh-flash-skin.weights";
 const ASSET_PREFIX = `/plugins/${PACKAGE_ID}/assets`;
+// Host attachments route (exact path for POST upload, prefix for GET serve).
+const ATTACHMENT_PATH = `/plugins/${PACKAGE_ID}/attachment`;
+// How many extracted images the client sends per upload POST. Must stay within
+// the host attachment store's per-message limit; the rest go in extra requests.
+const MAX_UPLOAD_IMAGES_PER_BATCH = 16;
+// Archive entries carry no decoded type, so the media type is derived from the
+// file extension and must match the actual bytes (the host store verifies).
+const MEDIA_TYPE_BY_EXT: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+};
 
 // Level→file anchors per portrait set. The slider exposes MAX_LEVEL + 1 = 7
 // integer stops (0..6) that are mapped onto the configured images by the pure
@@ -262,9 +281,12 @@ interface DriverRowProps {
 
 interface WeightsStore {
   getSnapshot(): CompositeWeights;
+  getTuning(): SpeedTuning;
   subscribe(listener: () => void): () => void;
   /** Replace the composite weights (renormalized to sum 1 on write). */
   setWeights(weights: CompositeWeights): void;
+  /** Replace the speed-decay timing parameters (clamped on write). */
+  setTuning(tuning: Partial<SpeedTuning>): void;
   reset(): void;
   dispose(): void;
 }
@@ -490,6 +512,19 @@ class SkinPresenter {
     // The loader nearest-selects among the group's count-staged frames
     // (frameIndexForLevel semantics); the slider level alone drives it.
     this.portraits.select(clampLevel(this.level));
+  }
+
+  /**
+   * Composite mode: drive the portrait frame by a continuous normalized score
+   * (0..1) mapped directly onto the group's N frames. The palette level stays
+   * the integer 0..MAX_LEVEL grip; only the portrait advances freely so all N
+   * frames are reachable, not just the seven integer stops.
+   */
+  setPortraitScore(score: number) {
+    if (this.disposed) return;
+    if (!Number.isFinite(score)) return;
+    const t = Math.min(1, Math.max(0, score));
+    this.portraits.select(t * MAX_LEVEL);
   }
 
   /** Number of portrait frames currently staged for the active set (0 when none). */
@@ -843,7 +878,30 @@ function CompositeLevelControl({
   const usageF = usageFactor(outputTokens ?? 0);
   const pressureF = contextPressureFactor(pressureTokens, contextWindow, turns);
   const effortF = reasoningEffortFactor(committedLevel);
-  const speedF = tokenSpeedFactor(decodeTokens ?? 0, decodeMs ?? 0);
+  const speedBase = tokenSpeedFactor(decodeTokens ?? 0, decodeMs ?? 0);
+  const decodingActive = decodeTokens != null && Number.isFinite(decodeTokens) && decodeTokens > 0
+    && decodeMs != null && Number.isFinite(decodeMs) && decodeMs > 0;
+
+  // Staleness clock: the projection never resets its decode totals when
+  // generation stops, so we track the last time decode data changed and tick
+  // `now` while the composite gauge is mounted. Once no fresh decode has
+  // arrived for the configured grace window, the speed factor decays toward 0
+  // over the configured fade window and the composite level relaxes back down
+  // instead of pinning at the last run's saturated speed.
+  const tuning = weights.getTuning();
+  const [now, setNow] = useState(() => Date.now());
+  const lastDecodeAt = useRef<number | null>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    const id = window.setInterval(() => setNow(Date.now()), 200);
+    return () => window.clearInterval(id);
+  }, [enabled]);
+  useEffect(() => {
+    if (decodingActive) lastDecodeAt.current = Date.now();
+  }, [decodingActive, decodeTokens, decodeMs]);
+  const speedF = speedBase > 0 && lastDecodeAt.current != null
+    ? speedBase * freshnessDecay(now - lastDecodeAt.current, tuning.graceMs, tuning.fadeMs)
+    : 0;
 
   const [level, setLevel] = useState(0);
 
@@ -852,33 +910,56 @@ function CompositeLevelControl({
   }, [enabled, load]);
 
   useEffect(() => {
-    const next = compositeLevel(weightsSnapshot, {
-      outputTokens,
-      committedLevel,
-      pressureTokens,
-      contextWindow,
-      turns,
-      decodeTokens,
-      decodeMs,
+    const next = weightedLevel(weightsSnapshot, {
+      usage: usageF,
+      pressure: pressureF,
+      effort: effortF,
+      speed: speedF,
     });
-    setLevel(next);
-    presenter.setLevel(next);
+    setLevel((prev) => {
+      if (prev !== next) presenter.setLevel(next); // palette rides the 0..MAX_LEVEL grip
+      return next;
+    });
+    if (presenter.isEnabled()) {
+      // Portrait rides the continuous weighted score, mapped straight onto the
+      // group's N frames — so all N are reachable, not just the 7 integer stops.
+      presenter.setPortraitScore(
+        weightsSnapshot.usage * usageF
+        + weightsSnapshot.pressure * pressureF
+        + weightsSnapshot.effort * effortF
+        + weightsSnapshot.speed * speedF,
+      );
+    }
   }, [
     presenter,
-    enabled,
     weightsSnapshot,
-    committedLevel,
-    outputTokens,
-    pressureTokens,
-    contextWindow,
-    turns,
-    decodeTokens,
-    decodeMs,
+    usageF,
+    pressureF,
+    effortF,
+    speedF,
   ]);
 
   const count = presenter.getPortraitCount();
-  const frame = count > 0 ? frameIndexForLevel(level, count) : 0;
-  const pct = (factor: number) => `${Math.round(Math.min(1, Math.max(0, factor)) * 100)}%`;
+  const w = normalized;
+  const wSum = (
+    w.usage * usageF
+    + w.pressure * pressureF
+    + w.effort * effortF
+    + w.speed * speedF
+  );
+  // 综合加权直接按组内帧数匹配,得分 0..1 连续映射到 N 帧,不受 6 挡限制。
+  const frame = count > 0 ? frameIndexForScore(wSum, count) : 0;
+  const score = level; // palette rides the rounded 0..MAX_LEVEL grip (theme)
+  // 数值格式:去掉小数末尾的多余 0(0.30 → 0.3、0.00 → 0),省空间又直观。
+  const fmt = (n: number) => Number(n.toFixed(2)).toString();
+  const term = (weight: number, factor: number) => `${fmt(weight)}·${fmt(factor)}`;
+  // 公式行里给每路加名称短标,方便直接读懂每项是哪个维度。
+  const terms: Array<[string, number, number]> = [
+    ["用量", w.usage, usageF],
+    ["压力", w.pressure, pressureF],
+    ["推理", w.effort, effortF],
+    ["速度", w.speed, speedF],
+  ];
 
   return (
     <div
@@ -887,33 +968,18 @@ function CompositeLevelControl({
       data-state="ready"
       title="综合加权"
     >
-      <div className="flash-level-control__ticks" aria-hidden="true">
-        {Array.from({ length: MAX_LEVEL + 1 }, (_, index) => (
-          <i
-            key={index}
-            className="flash-level-control__tick"
-            style={{ left: `${(index / MAX_LEVEL) * 100}%` }}
-          />
-        ))}
-      </div>
-      <input
-        className="flash-level-control__range"
-        type="range"
-        min={0}
-        max={MAX_LEVEL}
-        step={1}
-        value={level}
-        disabled
-        readOnly
-        tabIndex={-1}
-        aria-label="综合加权"
-        aria-valuetext={`${level}/${MAX_LEVEL}`}
-      />
       <output className="flash-level-control__gauge" aria-hidden="true">
-        <span>用量 {pct(usageF)}</span>
-        <span>压力 {pct(pressureF)}</span>
-        <span>推理 {pct(effortF)}</span>
-        <span>速度 {pct(speedF)}</span>
+        <span className="flash-level-control__formula">
+          {terms.map(([label, weight, factor], index) => (
+            <span key={label} className="flash-level-control__term">
+              <b>{label}</b>{term(weight, factor)}
+              {index < terms.length - 1 && <i>+</i>}
+            </span>
+          ))}
+        </span>
+        <span className="flash-level-control__score">
+          得分 {fmt(wSum * MAX_LEVEL)} → {score}/{MAX_LEVEL}
+        </span>
         <span className="flash-level-control__frame">{count > 0 ? `帧 ${frame + 1}/${count}` : "帧 —"}</span>
       </output>
     </div>
@@ -1062,17 +1128,41 @@ function restoreDriver(): DriverMode {
   return "composite";
 }
 
-function readCompositeWeights(): CompositeWeights {
+function readWeightsState(): { weights: CompositeWeights; tuning: SpeedTuning } {
+  const fallback: { weights: CompositeWeights; tuning: SpeedTuning } = {
+    weights: { ...DEFAULT_COMPOSITE_WEIGHTS },
+    tuning: { ...DEFAULT_SPEED_TUNING },
+  };
   try {
     const raw = localStorage.getItem(WEIGHTS_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as Partial<CompositeWeights>;
-      return normalizeWeights(parsed);
+      const parsed = JSON.parse(raw) as Partial<CompositeWeights> & Partial<SpeedTuning>;
+      const tuning = normalizeTuning(parsed);
+      return {
+        weights: normalizeWeights(parsed),
+        tuning,
+      };
     }
   } catch {
     // storage may be unavailable or the JSON may be corrupt
   }
-  return { ...DEFAULT_COMPOSITE_WEIGHTS };
+  return fallback;
+}
+
+/**
+ * Clamp the speed-decay timing parameters to a sane range. A present but
+ * non-number / non-finite value falls back to that channel's default.
+ */
+function normalizeTuning(tuning: Partial<SpeedTuning> | null | undefined): SpeedTuning {
+  const clamp = (value: number | undefined, fallback: number): number => (
+    Number.isFinite(value) && (value as number) > 0
+      ? Math.min(60_000, Math.max(0, value as number))
+      : fallback
+  );
+  return {
+    graceMs: clamp(tuning?.graceMs, DEFAULT_SPEED_TUNING.graceMs),
+    fadeMs: clamp(tuning?.fadeMs, DEFAULT_SPEED_TUNING.fadeMs),
+  };
 }
 
 function createPreferenceStore(initialSet: string): PreferenceStore {
@@ -1138,55 +1228,74 @@ function createPreferenceStore(initialSet: string): PreferenceStore {
   };
 }
 
-// LocalStorage-backed store for the four composite weights. Mirrors
-// createPreferenceStore: getSnapshot returns a stable reference between
-// changes, and cross-tab edits are honoured via the storage event. Writes are
-// renormalized to sum 1 (invalid input falls back to the defaults).
+// LocalStorage-backed store for the four composite weights plus the
+// speed-decay timing. Mirrors createPreferenceStore: getSnapshot returns a
+// stable reference between changes, and cross-tab edits are honoured via the
+// storage event. Writes renormalize weights to sum 1 and clamp the timing
+// (invalid input falls back to the defaults).
 function createWeightsStore(): WeightsStore {
-  let snapshot = readCompositeWeights();
+  let state = readWeightsState();
   const listeners = new Set<() => void>();
   const onStorage = (event: StorageEvent) => {
     if (event.key !== WEIGHTS_KEY) return;
-    snapshot = readCompositeWeights();
+    state = readWeightsState();
     for (const listener of listeners) listener();
   };
   window.addEventListener("storage", onStorage);
   const notify = () => {
     for (const listener of listeners) listener();
   };
+  const persist = () => {
+    try {
+      localStorage.setItem(WEIGHTS_KEY, JSON.stringify({
+        ...state.weights,
+        ...state.tuning,
+      }));
+    } catch {
+      // storage may be unavailable
+    }
+  };
   return {
-    getSnapshot: () => snapshot,
+    getSnapshot: () => state.weights,
+    getTuning: () => state.tuning,
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
     setWeights(weights) {
       const next = normalizeWeights(weights);
-      const same = next.usage === snapshot.usage
-        && next.pressure === snapshot.pressure
-        && next.effort === snapshot.effort
-        && next.speed === snapshot.speed;
+      const same = next.usage === state.weights.usage
+        && next.pressure === state.weights.pressure
+        && next.effort === state.weights.effort
+        && next.speed === state.weights.speed;
       if (same) return;
-      try {
-        localStorage.setItem(WEIGHTS_KEY, JSON.stringify(next));
-      } catch {
-        // storage may be unavailable
-      }
-      snapshot = next;
+      state = { ...state, weights: next };
+      persist();
+      notify();
+    },
+    setTuning(tuning) {
+      const next = normalizeTuning({ ...state.tuning, ...tuning });
+      const same = next.graceMs === state.tuning.graceMs
+        && next.fadeMs === state.tuning.fadeMs;
+      if (same) return;
+      state = { ...state, tuning: next };
+      persist();
       notify();
     },
     reset() {
-      const next = { ...DEFAULT_COMPOSITE_WEIGHTS };
-      if (next.usage === snapshot.usage
-        && next.pressure === snapshot.pressure
-        && next.effort === snapshot.effort
-        && next.speed === snapshot.speed) return;
-      try {
-        localStorage.setItem(WEIGHTS_KEY, JSON.stringify(next));
-      } catch {
-        // storage may be unavailable
-      }
-      snapshot = next;
+      const next = {
+        weights: { ...DEFAULT_COMPOSITE_WEIGHTS },
+        tuning: { ...DEFAULT_SPEED_TUNING },
+      };
+      const same = next.weights.usage === state.weights.usage
+        && next.weights.pressure === state.weights.pressure
+        && next.weights.effort === state.weights.effort
+        && next.weights.speed === state.weights.speed
+        && next.tuning.graceMs === state.tuning.graceMs
+        && next.tuning.fadeMs === state.tuning.fadeMs;
+      if (same) return;
+      state = next;
+      persist();
       notify();
     },
     dispose() {
@@ -1290,10 +1399,10 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "enName": "英文名称",
     "identityHint": "标识（Set ID）写入 localStorage 持久化当前选择：改名后需重新点击选中该组才生效；设置行名称按界面语言显示（中文界面中文名，英文界面英文名）。内置组的默认中/英文名会在未修改时一直作为缺省显示。",
     "importGroup": "从压缩包导入新组",
-    "importGroupTitle": "选择 .zip，把其中所有图片批量导入为一个新组",
-    "fileNotZip": "请选择 .zip 压缩包",
+    "importGroupTitle": "选择 .zip / .tar / .tar.gz，把其中所有图片批量导入为一个新组",
+    "fileNotZip": "请选择 .zip / .tar / .tar.gz / .gz 压缩包",
     "zipNoImages": "压缩包里没有可用的图片",
-    "zipParseFailed": "无法解析压缩包，请确认它是有效的 .zip 文件",
+    "zipParseFailed": "无法解析压缩包，请确认它是有效的 .zip / .tar / .tar.gz 文件",
     "zipTooManyImages": "单次导入最多 64 张，已截取前 64 张",
     "zipSkippedOversize": "已跳过 {n} 张超过 2MB 的图片",
     "zipImported": "已导入 {n} 张图片，创建了新的皮肤组",
@@ -1339,10 +1448,10 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "enName": "English name",
     "identityHint": "The Set ID is persisted in localStorage for the current selection — after renaming, click the group again to take effect. The settings row shows the Chinese name in the Chinese UI and the English name in the English UI. Built-in sets keep their default Chinese/English names as fallbacks until overridden.",
     "importGroup": "Import group from archive",
-    "importGroupTitle": "Choose a .zip; all images inside are batch-imported as a new group",
-    "fileNotZip": "Please choose a .zip archive",
+    "importGroupTitle": "Choose a .zip / .tar / .tar.gz; all images inside are batch-imported as a new group",
+    "fileNotZip": "Please choose a .zip / .tar / .tar.gz / .gz archive",
     "zipNoImages": "The archive contains no usable images",
-    "zipParseFailed": "Could not parse the archive — make sure it is a valid .zip file",
+    "zipParseFailed": "Could not parse the archive — make sure it is a valid .zip / .tar / .tar.gz file",
     "zipTooManyImages": "At most 64 images per import; kept the first 64",
     "zipSkippedOversize": "Skipped {n} images over 2MB",
     "zipImported": "Imported {n} images and created a new group",
@@ -1381,6 +1490,32 @@ interface ZipImageEntry {
 // persisted config (localStorage-backed settings).
 const MAX_IMAGES_PER_IMPORT = 64;
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
+
+// Detect the actual image format from magic bytes. The host attachment store
+// refuses a declared media type that does not match the bytes, so prefer the
+// sniffed format and only fall back to the filename extension map.
+function mediaTypeForEntry(name: string, bytes: Uint8Array): string {
+  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50
+    && bytes[2] === 0x4e && bytes[3] === 0x47
+    && bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a) {
+    return "image/png";
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (bytes.length >= 12
+    && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 // RIFF
+    && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) {
+    return "image/webp"; // WEBP
+  }
+  if (bytes.length >= 6 && (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46
+    && (bytes[3] === 0x38 && bytes[4] === 0x37 || bytes[3] === 0x38 && bytes[4] === 0x39) && bytes[5] === 0x61)) {
+    return "image/gif"; // GIF87a / GIF89a
+  }
+  const dot = name.lastIndexOf(".");
+  const ext = dot >= 0 ? name.slice(dot).toLowerCase() : "";
+  return MEDIA_TYPE_BY_EXT[ext] ?? "image/png";
+}
 
 function readLocalFileAsArrayBuffer(file: File): Promise<ArrayBuffer> {
   return new Promise((resolve, reject) => {
@@ -1527,20 +1662,52 @@ function extractArchive(fileName: string, buffer: ArrayBuffer): { entries: ZipIm
 }
 
 
-// Convert one extracted Uint8Array into a base64 data URL for embedding (same
-// storage shape as the single-image local picker).
-function bytesToDataUrl(entry: ZipImageEntry): Promise<{ name: string; dataUrl: string }> {
-  return new Promise((resolve, reject) => {
-    try {
-      const blob = new Blob([entry.bytes]);
-      const reader = new FileReader();
-      reader.onload = () => resolve({ name: entry.name, dataUrl: String(reader.result) });
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(blob);
-    } catch (error) {
-      reject(error);
-    }
+// Chunked bytes→base64. A single String.fromCharCode(...bytes) spreads into the
+// call stack and overflows for multi-megabyte frames, so encode in 0x8000-byte
+// pieces like Uint8Array.prototype.toBase64 implementations do.
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  return btoa(binary);
+}
+
+// Push one ≤16-image batch to the host attachments store and return the
+// content-addressed serve URLs. Throws on any transport/HTTP failure so the
+// caller can fall back to the import-failed notice (the host may expose no
+// attachments store at all: the upload route answers 503).
+async function postImageBatch(
+  batch: ZipImageEntry[],
+): Promise<string[]> {
+  const images = batch.map((entry) => ({
+    name: entry.name,
+    mediaType: mediaTypeForEntry(entry.name, entry.bytes),
+    data: bytesToBase64(entry.bytes),
+  }));
+  const response = await fetch(ATTACHMENT_PATH, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ images }),
   });
+  if (!response.ok) throw new Error(`attachment upload ${response.status}`);
+  const payload = (await response.json()) as { images?: { name?: string; url: string }[] };
+  const urls = Array.isArray(payload.images)
+    ? payload.images.map((entry) => entry.url).filter((url) => typeof url === "string" && url.length > 0)
+    : [];
+  if (urls.length !== images.length) throw new Error("attachment upload truncated");
+  return urls;
+}
+
+// Upload all archive-extracted images in ordered batches, preserving entry
+// order in the returned URL list (which becomes `portraitGroups.images[]`).
+async function uploadArchiveImages(entries: ZipImageEntry[]): Promise<string[]> {
+  const urls: string[] = [];
+  for (let start = 0; start < entries.length; start += MAX_UPLOAD_IMAGES_PER_BATCH) {
+    const urlsForBatch = await postImageBatch(entries.slice(start, start + MAX_UPLOAD_IMAGES_PER_BATCH));
+    urls.push(...urlsForBatch);
+  }
+  return urls;
 }
 
 // The light/dark boundary for a group: with `count` images there are
@@ -1560,6 +1727,10 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
   const weightSnapshot = useSyncExternalStore(
     (listener) => weights.subscribe(listener),
     () => weights.getSnapshot(),
+  );
+  const tuningSnapshot = useSyncExternalStore(
+    (listener) => weights.subscribe(listener),
+    () => weights.getTuning(),
   );
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<{
@@ -1783,37 +1954,40 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
     }
   };
 
-  // ── ZIP batch import ──────────────────────────────────────────────────────
-  // A second hidden <input type=file> accepts `.zip` archives. The archive is
-  // inflated client-side (vendored fflate) and every valid image inside becomes
-  // an embedded base64 data URL on a brand-new group whose images order mirrors
-  // the archive entry order.
-  const zipInputRef = useRef<HTMLInputElement | null>(null);
+  // ── Archive batch import ──────────────────────────────────────────────────
+  // A second hidden <input type=file> accepts `.zip`, `.tar`, `.tar.gz` (and
+  // bare `.gz`) archives. The archive is inflated client-side (vendored fflate
+  // for zip/gzip, plus a tiny built-in tar reader); every valid image inside is
+  // uploaded to the host attachments store, which persists the file and returns
+  // a content-addressed serve URL. The config keeps only those URL refs, never
+  // the raw bytes, so `portraitGroups.images[]` stays URL-only like the
+  // built-in sets. Batch order mirrors the archive entry order.
+  const archiveInputRef = useRef<HTMLInputElement | null>(null);
 
-  const importZip = () => {
+  const importArchive = () => {
     if (!writable || busy) return;
-    zipInputRef.current?.click();
+    archiveInputRef.current?.click();
   };
 
-  const insertZipGroup = (dataUrls: { name: string; dataUrl: string }[]) => {
+  const insertImportedGroup = (images: string[]) => {
     const next: PortraitGroupsConfig = [...groups, {
       id: newGroupId(),
       name: CONFIG_TEXTS.zh.defaultGroup,
       zh: CONFIG_TEXTS.zh.defaultGroup,
       en: CONFIG_TEXTS.en.defaultGroup,
       darkLevel: MAX_LEVEL - 1,
-      images: dataUrls.map((item) => item.dataUrl),
+      images,
     }];
     void commit(next);
   };
 
-  const onZipInputChange = async (event: ReactChangeEvent<HTMLInputElement>) => {
+  const onArchiveInputChange = async (event: ReactChangeEvent<HTMLInputElement>) => {
     const input = event.currentTarget;
     const file = input.files?.[0];
     // Reset so picking the same archive again re-triggers change.
     input.value = "";
     if (file === undefined) return;
-    if (!/\.zip$/i.test(file.name) && file.type !== "application/zip" && file.type !== "application/x-zip-compressed") {
+    if (!/\.(zip|tar|tgz|gz|gzip)$/i.test(file.name)) {
       setFileError(t("fileNotZip"));
       return;
     }
@@ -1821,7 +1995,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
     let skippedOversize: number;
     try {
       const buffer = await readLocalFileAsArrayBuffer(file);
-      const parsed = extractImagesFromZip(buffer);
+      const parsed = extractArchive(file.name, buffer);
       entries = parsed.entries;
       skippedOversize = parsed.skippedOversize;
     } catch {
@@ -1838,16 +2012,15 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
       return;
     }
     try {
-      const dataUrls: { name: string; dataUrl: string }[] = [];
-      // Await serially so a corrupt entry can't leave a partially-built group.
-      for (const entry of entries) {
-        dataUrls.push(await bytesToDataUrl(entry));
-      }
-      let notice = t("zipImported").replace("{n}", String(dataUrls.length));
+      // Upload the extracted frames to the host attachments store; the server
+      // persists each file and replies with content-addressed serve URLs that
+      // we store as plain image refs (config never carries the raw bytes).
+      const images = await uploadArchiveImages(entries);
+      let notice = t("zipImported").replace("{n}", String(images.length));
       if (skippedOversize > 0) {
         notice += " " + t("zipSkippedOversize").replace("{n}", String(skippedOversize));
       }
-      insertZipGroup(dataUrls);
+      insertImportedGroup(images);
       setFileError(notice);
     } catch {
       setFileError(t("zipParseFailed"));
@@ -1929,13 +2102,13 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
         onChange={onFileInputChange}
       />
       <input
-        ref={zipInputRef}
+        ref={archiveInputRef}
         type="file"
-        accept=".zip,application/zip,application/x-zip-compressed"
+        accept=".zip,.tar,.tar.gz,.tgz,.gz,application/zip,application/x-zip-compressed,application/x-tar,application/gzip,application/x-gzip"
         hidden
         aria-hidden="true"
         tabIndex={-1}
-        onChange={onZipInputChange}
+        onChange={onArchiveInputChange}
       />
       {fileError && (
         <p className="flash-portrait-groups__notice flash-portrait-groups__notice--error" role="alert">
@@ -2181,7 +2354,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
         <button
           type="button"
           disabled={!writable || busy}
-          onClick={importZip}
+          onClick={importArchive}
           title={t("importGroupTitle")}
           aria-label={t("importGroupTitle")}
         >
@@ -2197,11 +2370,11 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
         <p className="flash-portrait-groups__hint">{t("weights.hint")}</p>
         <div className="flash-weights__grid">
           {([
-            ["usage", "usage", weightSnapshot.usage],
-            ["pressure", "pressure", weightSnapshot.pressure],
-            ["effort", "effort", weightSnapshot.effort],
-            ["speed", "speed", weightSnapshot.speed],
-          ] as const).map(([key, labelKey, value]) => (
+            ["usage", "usage", "usageDesc", weightSnapshot.usage],
+            ["pressure", "pressure", "pressureDesc", weightSnapshot.pressure],
+            ["effort", "effort", "effortDesc", weightSnapshot.effort],
+            ["speed", "speed", "speedDesc", weightSnapshot.speed],
+          ] as const).map(([key, labelKey, descKey, value]) => (
             <label key={key} className="flash-weights__field">
               <span className="flash-weights__caption">{t(`weights.${labelKey}`)}</span>
               <input
@@ -2218,9 +2391,37 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
                   weights.setWeights({ ...weightSnapshot, [key]: clamped });
                 }}
               />
+              <span className="flash-weights__desc">{t(`weights.${descKey}`)}</span>
             </label>
           ))}
         </div>
+
+        <p className="flash-weights__subtitle">{t("weights.speedTiming")}</p>
+        <div className="flash-weights__grid">
+          {([
+            ["graceMs", "weights.graceMs", tuningSnapshot.graceMs],
+            ["fadeMs", "weights.fadeMs", tuningSnapshot.fadeMs],
+          ] as const).map(([key, labelKey, value]) => (
+            <label key={key} className="flash-weights__field">
+              <span className="flash-weights__caption">{t(labelKey)}</span>
+              <input
+                type="number"
+                className="flash-weights__input"
+                min={0}
+                max={60000}
+                step={100}
+                value={Math.round(value)}
+                disabled={!writable || busy}
+                onChange={(event) => {
+                  const parsed = Number(event.currentTarget.value);
+                  const clamped = Number.isFinite(parsed) ? Math.min(60_000, Math.max(0, parsed)) : 0;
+                  weights.setTuning({ [key]: clamped });
+                }}
+              />
+            </label>
+          ))}
+        </div>
+
         <button
           type="button"
           className="flash-weights__reset"
@@ -2278,7 +2479,14 @@ export function apply(ctx: ClientContext) {
         "weights.pressure": "压力",
         "weights.effort": "推理",
         "weights.speed": "速度",
+        "weights.usageDesc": "本次已生成 token,饱和 30 万",
+        "weights.pressureDesc": "上下文占用/窗口,无窗口按轮次",
+        "weights.effortDesc": "当前推理档位,未设置按 0",
+        "weights.speedDesc": "解码速度,饱和 80 t/s",
         "weights.reset": "恢复默认",
+        "weights.speedTiming": "速度衰减计时（毫秒）",
+        "weights.graceMs": "停留",
+        "weights.fadeMs": "衰减",
       },
       en: {
         ...CONFIG_TEXTS.en,
@@ -2294,7 +2502,14 @@ export function apply(ctx: ClientContext) {
         "weights.pressure": "Pressure",
         "weights.effort": "Reasoning",
         "weights.speed": "Speed",
+        "weights.usageDesc": "Tokens generated this turn, saturates at 300k",
+        "weights.pressureDesc": "Context used / window; falls back to turns",
+        "weights.effortDesc": "Current reasoning level, unknown counts as 0",
+        "weights.speedDesc": "Decode speed, saturates at 80 t/s",
         "weights.reset": "Restore defaults",
+        "weights.speedTiming": "Speed decay timing (ms)",
+        "weights.graceMs": "Hold",
+        "weights.fadeMs": "Fade",
       },
     }),
     "flash-skin: settings locale",

@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_LEVEL,
+  IDLE_GRACE_MS,
+  IDLE_FADE_MS,
   DEFAULT_COMPOSITE_WEIGHTS,
+  DEFAULT_SPEED_TUNING,
   normalizeWeights,
   usageFactor,
   contextPressureFactor,
   reasoningEffortFactor,
   tokenSpeedFactor,
+  freshnessDecay,
+  weightedLevel,
   compositeLevel,
   stagedFrames,
   frameIndexForLevel,
@@ -262,5 +267,74 @@ describe("frameIndexForLevel", () => {
         expect(small).not.toBe(large); // the sweep differs between the two sizes
       }
     }
+  });
+});
+
+describe("freshnessDecay — stale-forgiving live speed", () => {
+  it("stays at 1 while within the grace window", () => {
+    expect(freshnessDecay(0, 600, 1500)).toBe(1);
+    expect(freshnessDecay(600, 600, 1500)).toBe(1);
+  });
+
+  it("fades linearly across the fade window", () => {
+    // 600..2100ms → 1..0
+    expect(freshnessDecay(600 + 750, 600, 1500)).toBeCloseTo(0.5);
+    expect(freshnessDecay(610, 600, 1500)).toBeCloseTo(1 - 10 / 1500);
+  });
+
+  it("reaches exactly 0 once stale beyond grace + fade", () => {
+    expect(freshnessDecay(2100, 600, 1500)).toBe(0);
+    expect(freshnessDecay(1e6, 600, 1500)).toBe(0);
+  });
+
+  it("treats negative/NaN/Infinity elapsed as fresh (1)", () => {
+    expect(freshnessDecay(-5, 600, 1500)).toBe(1);
+    expect(freshnessDecay(Number.NaN, 600, 1500)).toBe(1);
+    expect(freshnessDecay(Number.POSITIVE_INFINITY, 600, 1500)).toBe(1);
+  });
+});
+
+describe("weightedLevel — factor-level composite with staleness tuning", () => {
+  const FULL = DEFAULT_COMPOSITE_WEIGHTS;
+
+  it("matches compositeLevel for the same saturated factors", () => {
+    const level = weightedLevel(FULL, { usage: 1, pressure: 1, effort: 1, speed: 1 });
+    expect(level).toBe(MAX_LEVEL);
+    expect(level).toBe(compositeLevel(FULL, {
+      outputTokens: 1e6,
+      pressureTokens: 1e6,
+      contextWindow: 1000,
+      turns: 99,
+      committedLevel: MAX_LEVEL,
+      decodeTokens: 10_000,
+      decodeMs: 1000,
+    }));
+  });
+
+  it("clamps out-of-range factors to 0..1", () => {
+    expect(weightedLevel(FULL, { usage: 5, pressure: -1, effort: 2, speed: 0 }))
+      .toBe(weightedLevel(FULL, { usage: 1, pressure: 0, effort: 1, speed: 0 }));
+  });
+
+  it("a stale (decayed) speed factor reduces the level vs a fresh one", () => {
+    const fresh = weightedLevel(FULL, { usage: 1, pressure: 1, effort: 1, speed: 1 });
+    const stale = weightedLevel(FULL, { usage: 1, pressure: 1, effort: 1, speed: 0 });
+    expect(stale).toBeLessThan(fresh);
+  });
+
+  it("decayed speed still keeps one full axis of influence", () => {
+    // speed-only weight: fresh → max, fully stale → min
+    expect(weightedLevel({ ...FULL, usage: 0, pressure: 0, effort: 0, speed: 1 }, { speed: 1 })).toBe(MAX_LEVEL);
+    expect(weightedLevel({ ...FULL, usage: 0, pressure: 0, effort: 0, speed: 1 }, { speed: 0 })).toBe(0);
+  });
+});
+
+describe("DEFAULT_SPEED_TUNING wiring", () => {
+  it("exposes the defaults used by freshnessDecay", () => {
+    expect(IDLE_GRACE_MS).toBe(DEFAULT_SPEED_TUNING.graceMs);
+    expect(IDLE_FADE_MS).toBe(DEFAULT_SPEED_TUNING.fadeMs);
+    expect(freshnessDecay(0)).toBe(1); // default grace => fresh
+    // just after grace+fade with defaults => fully stale
+    expect(freshnessDecay(IDLE_GRACE_MS + IDLE_FADE_MS + 1)).toBe(0);
   });
 });

@@ -1827,8 +1827,8 @@ export function apply(ctx: ClientContext) {
     }
   };
 
-  ctx.slots.inject("conversation.input.right", () => ctx.slots.register({
-    name: "conversation.input.right",
+  ctx.slots.inject("conversation.input.left", () => ctx.slots.register({
+    name: "conversation.input.left",
     id: "flash-level-control",
     order: 10,
     inject: (sessionId: string) => {

@@ -199,6 +199,34 @@ export function frameIndexForLevel(level: number, count: number, maxLevel = MAX_
 }
 
 /**
+ * Frame index for a continuous slider level in 0..maxLevel, snapped only onto
+ * the nearest STAGED frame — never onto an intermediate integer-level grid.
+ * This is the two-way counterpart a fine-grained panel slider needs: it is
+ * exactly what the portrait loader's `nearestIndex` lands on, so the slider
+ * thumb and the displayed portrait agree at every position, and every frame of
+ * a group with more images than integer stops (N > maxLevel + 1) stays
+ * reachable. Ties pick the higher frame, mirroring `frameIndexForLevel` and
+ * the portrait loader.
+ */
+export function frameIndexForContinuousLevel(level: number, count: number, maxLevel = MAX_LEVEL): number {
+  if (!Number.isFinite(level)) return 0;
+  if (!Number.isFinite(count) || count <= 1) return 0;
+  const frames = stagedFrames(count, maxLevel);
+  const safeMax = Number.isFinite(maxLevel) ? Math.max(0, Math.round(maxLevel)) : MAX_LEVEL;
+  const target = Math.min(safeMax, Math.max(0, level));
+  let best = 0;
+  let distance = Math.abs(target - frames[0]);
+  for (let index = 1; index < frames.length; index += 1) {
+    const next = Math.abs(target - frames[index]);
+    if (next < distance || (next === distance && frames[index] > frames[best])) {
+      best = index;
+      distance = next;
+    }
+  }
+  return Math.max(0, Math.min(frames.length - 1, best));
+}
+
+/**
  * Direct frame index for a continuous composite score in 0..1, mapped straight
  * onto the group's `count` frames (no intermediate integer-level grid).
  *

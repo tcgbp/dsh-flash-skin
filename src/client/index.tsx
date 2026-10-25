@@ -19,6 +19,7 @@ import {
   contextPressureFactor,
   dividerStepFor,
   frameIndexForLevel,
+  frameIndexForContinuousLevel,
   frameIndexForScore,
   freshnessDecay,
   levelForEffort,
@@ -454,7 +455,10 @@ class SkinPresenter {
 
   setLevel(level: number) {
     if (this.disposed) return;
-    this.level = clampLevel(level);
+    // Accept continuous values so a fine-grained slider can land on every
+    // staged frame; the palette clamps internally and existing integer callers
+    // (composer rail, effort binding) are unchanged.
+    this.level = clampLevelContinuous(level);
     if (this.enabled) this.applyPalette();
   }
 
@@ -478,9 +482,10 @@ class SkinPresenter {
   }
 
   private updatePortrait() {
-    // The loader nearest-selects among the group's count-staged frames
-    // (frameIndexForLevel semantics); the slider level alone drives it.
-    this.portraits.select(clampLevel(this.level));
+    // The loader nearest-selects continuous staged frame levels, so a
+    // fine-grained slider level can settle on every frame of the group; the
+    // composer's integer 0..MAX_LEVEL grip keeps snapping there, unchanged.
+    this.portraits.select(clampLevelContinuous(this.level));
   }
 
   /**
@@ -2751,7 +2756,7 @@ export function apply(ctx: ClientContext) {
         ...CONFIG_TEXTS.zh,
         "appearance": "人物肖像",
         "portraitSet": "人物肖像组",
-        "portraitSwitch": "切换人物",
+        "portraitSwitch": "人物强度",
         "driver.title": "强度驱动",
         "driver.manual": "手动",
         "driver.effort": "跟随推理",
@@ -2781,7 +2786,7 @@ export function apply(ctx: ClientContext) {
         ...CONFIG_TEXTS.en,
         "appearance": "Portrait group",
         "portraitSet": "Portrait set",
-        "portraitSwitch": "Switch person",
+        "portraitSwitch": "Person level",
         "driver.title": "Level driver",
         "driver.manual": "Manual",
         "driver.effort": "Follow reasoning",
@@ -2923,46 +2928,52 @@ export function apply(ctx: ClientContext) {
         },
         visible: () => presenter.isEnabled(),
       });
-      // Person-switch slider directly UNDER the portrait-set dropdown (26.5,
-      // between the select at 26 and the open-details action at 27): one stop
-      // per portrait group. Options are re-read on every render so detail-page
-      // renames/additions surface without a re-register; `max` is a registration
-      // snapshot, but getValue/setValue clamp against the live options length so
-      // a stale bound stays harmless. Hidden when there is nothing to switch
-      // between (single group).
+      // Level slider directly UNDER the portrait-set dropdown (26.5, between
+      // the select at 26 and the open-details action at 27): it switches the
+      // ACTIVE person's level and gives one stop per frame of that group, so
+      // sliding walks through every image of the current person. For a group
+      // with more frames than integer stops (N > MAX_LEVEL + 1) a plain
+      // 0..MAX_LEVEL grip could not reach every image — e.g. a 9-frame group
+      // leaves two frames unreachable — so the slider targets the same
+      // continuous staged levels the portrait loader nearest-selects on, which
+      // makes every frame its own reachable stop. `max` is a registration
+      // snapshot, but getValue/setValue/formatLabel clamp against the live
+      // frame count, so a stale bound stays harmless. Hidden for groups with
+      // fewer than two frames (nothing to slide through) or when disabled.
       const sliderDispose = reg.registerSwitch?.({
         id: PORTRAIT_SLIDER_SWITCH_ID,
         label: () => setLabel("portraitSwitch"),
-        icon: "palette",
+        icon: "sliders",
         type: "slider",
         group: "appearance",
         order: 26.5,
         min: 0,
-        max: Math.max(0, portraitSetOptions().length - 1),
+        max: Math.max(0, presenter.getPortraitCount() - 1),
         step: 1,
-        getValue: () => {
-          const opts = portraitSetOptions();
-          const active = presenter.getSet().id;
-          const idx = opts.findIndex((option) => option.value === active);
-          if (idx < 0) return 0;
-          return Math.min(idx, Math.max(0, opts.length - 1));
-        },
+        getValue: () => frameIndexForContinuousLevel(presenter.getLevel(), presenter.getPortraitCount()),
         setValue: (value) => {
-          const opts = portraitSetOptions();
-          if (opts.length <= 1) return;
-          const idx = Math.min(opts.length - 1, Math.max(0, Math.round(Number(value) || 0)));
-          void presenter.choose(opts[idx].value).catch(() => undefined)
-            .finally(() => quickControl?.notifyChange?.(PORTRAIT_SLIDER_SWITCH_ID));
+          const count = presenter.getPortraitCount();
+          if (count < 2) return;
+          const index = Math.min(count - 1, Math.max(0, Math.round(Number(value) || 0)));
+          const next = stagedFrames(count)[index] ?? 0;
+          presenter.setLevel(next);
+          try {
+            localStorage.setItem(LEVEL_KEY, String(next));
+          } catch {
+            // storage may be unavailable
+          }
+          quickControl?.notifyChange?.(PORTRAIT_SLIDER_SWITCH_ID);
         },
-        // Right-hand value label shows the group at the current stop, so the
-        // slider always reads as "switching person X".
+        // Right-hand value label shows the currently displayed frame (1-based
+        // over the group's image count) so "every image is slide-reachable"
+        // reads directly off the control.
         formatLabel: (value) => {
-          const opts = portraitSetOptions();
-          if (opts.length <= 0) return "";
-          const idx = Math.min(opts.length - 1, Math.max(0, Math.round(Number(value) || 0)));
-          return opts[idx].label;
+          const count = presenter.getPortraitCount();
+          if (count < 2) return "";
+          const index = Math.min(count - 1, Math.max(0, Math.round(Number(value) || 0)));
+          return `${index + 1}/${count}`;
         },
-        visible: () => presenter.isEnabled() && portraitSetOptions().length > 1,
+        visible: () => presenter.isEnabled() && presenter.getPortraitCount() >= 2,
       });
       const openDispose = reg.registerSwitch?.({
         id: OPEN_DETAILS_SWITCH_ID,

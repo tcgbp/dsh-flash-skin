@@ -15,6 +15,7 @@ import {
   compositeLevel,
   stagedFrames,
   frameIndexForLevel,
+  frameIndexForContinuousLevel,
   frameIndexForScore,
   dividerStepFor,
 } from "../src/client/logic.ts";
@@ -267,6 +268,55 @@ describe("frameIndexForLevel", () => {
       expect(small).toBeLessThan(4);
       if (level === 4) {
         expect(small).not.toBe(large); // the sweep differs between the two sizes
+      }
+    }
+  });
+});
+
+describe("frameIndexForContinuousLevel — every frame reachable by sliding", () => {
+  it("guards NaN / infinities / degenerate counts to frame 0", () => {
+    expect(frameIndexForContinuousLevel(Number.NaN, 5)).toBe(0);
+    expect(frameIndexForContinuousLevel(Infinity, 5)).toBe(0);
+    expect(frameIndexForContinuousLevel(-Infinity, 5)).toBe(0);
+    expect(frameIndexForContinuousLevel(3, 0)).toBe(0);
+    expect(frameIndexForContinuousLevel(3, 1)).toBe(0);
+  });
+
+  it("pins endpoints and matches the loader's staged frame levels", () => {
+    for (let n = 2; n <= 12; n += 1) {
+      const frames = stagedFrames(n);
+      expect(frameIndexForContinuousLevel(0, n)).toBe(0);
+      expect(frameIndexForContinuousLevel(MAX_LEVEL, n)).toBe(n - 1);
+      // Each staged level lands on exactly its own frame (roundtrip).
+      for (let index = 0; index < n; index += 1) {
+        expect(frameIndexForContinuousLevel(frames[index], n)).toBe(index);
+      }
+    }
+  });
+
+  it("reaches every frame of a large group across the continuous slider sweep", () => {
+    // Regression for the 9-frame case (N > MAX_LEVEL + 1): with a 0..MAX_LEVEL
+    // integer grip frames 2 and 6 are unreachable; landing on staged levels
+    // must cover all of them.
+    for (const n of [8, 9, 12]) {
+      const seen = new Set();
+      const frames = stagedFrames(n);
+      for (let index = 0; index < n; index += 1) {
+        seen.add(frameIndexForContinuousLevel(frames[index], n));
+        expect(seen.size).toBe(index + 1);
+      }
+      expect(seen.size).toBe(n);
+    }
+  });
+
+  it("stays monotone nondecreasing over a fine-grained level pass", () => {
+    for (const n of [3, 9]) {
+      let previous = 0;
+      const step = 1 / 24; // 25 samples across the 0..MAX_LEVEL range
+      for (let level = 0; level <= MAX_LEVEL; level += step) {
+        const index = frameIndexForContinuousLevel(level, n);
+        expect(index).toBeGreaterThanOrEqual(previous);
+        previous = index;
       }
     }
   });

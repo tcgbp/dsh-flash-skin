@@ -1,0 +1,11 @@
+# Liang portrait archive example manifest
+# Imported via dsh-flash-skin: seeds the new group's set id, names and
+# light/dark threshold. The manifest is optional; every field below can be
+# omitted to fall back to the built-in defaults.
+---
+id: liangsheng-demo
+name: 梁圣 (Liang the Saint)
+zh: 梁圣
+en: Liang the Saint
+darkLevel: 5
+...

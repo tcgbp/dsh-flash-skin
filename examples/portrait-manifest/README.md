@@ -4,11 +4,14 @@ Example `portrait.yaml` manifests for dsh-flash-skin's archive import.
 The manifest is **optional**: an archive with no manifest imports images with
 the built-in defaults (auto id, fallback names, default threshold).
 
-Two ready-made example archives live at the repo root:
+Three ready-made example archives live at the repo root, one per built-in
+Liang set, plus a URL-only one:
 
 | Archive | What it demonstrates |
 | --- | --- |
-| `liangshen-demo.zip` | Embedded-image archive (8 webp frames) + `portrait.yaml` seeded metadata |
+| `liangsheng-demo.zip` | 梁圣 / Liang the Saint — embedded-image archive (8 webp) + `portrait.yaml` metadata |
+| `liangshen-demo.zip` | 梁神 / Liang the God — embedded-image archive (8 webp) + `portrait.yaml` metadata |
+| `liangzu-demo.zip` | 梁祖 / Liang the Ancestor — embedded-image archive (8 webp) + `portrait.yaml` metadata |
 | `liangshen-url-demo.zip` | URL-only archive: **no embedded images**, frames come from the manifest's `images:` list |
 
 ## Accepted fields

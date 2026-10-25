@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import type { ChangeEvent as ReactChangeEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
+import type { ChangeEvent as ReactChangeEvent } from "react";
 import { Switch } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { Context as ClientContext } from "@deepseek-ai/cordis";
 import type { SnapshotStore } from "@deepseek-ai/dsh-client-store";
@@ -907,8 +907,10 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "readFailed": "读取图片失败，请重试",
     "defaultGroup": "新的皮肤组",
     "darkLevel": "深浅切换点",
-    "darkLevelHint": "拖动此分割线设置深浅切换档位：左侧为浅色外壳，右侧为深色外壳。",
-    "dividerHint": "左右拖动图片之间的分割线，设置深色外壳从第几档开始：分割线越靠右，需要更高的档位才会变深。",
+    "darkLevelHint": "用左右箭头逐档移动深浅切换点：箭头左侧为浅色外壳，右侧为深色外壳。",
+    "dividerHint": "点击分割线两侧的左右箭头，把深色外壳的起始档位逐档调低或调高。",
+    "dividerLeft": "深色切换点左移一档",
+    "dividerRight": "深色切换点右移一档",
     "setId": "标识（Set ID）",
     "setIdPlaceholder": "标识，如 liangsheng",
     "zhName": "中文名称",
@@ -946,8 +948,10 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "readFailed": "Failed to read the image, please retry",
     "defaultGroup": "New group",
     "darkLevel": "Light/dark threshold",
-    "darkLevelHint": "Drag this divider to set the light/dark threshold: images to its left keep the light shell, images to its right switch to dark.",
-    "dividerHint": "Drag the divider between the images left or right to pick the slider level at which the dark shell begins.",
+    "darkLevelHint": "Use the arrows to move the light/dark threshold one level at a time: images to their left keep the light shell, images to their right switch to dark.",
+    "dividerHint": "Click the arrows beside the divider to raise or lower the slider level at which the dark shell begins.",
+    "dividerLeft": "Move threshold left",
+    "dividerRight": "Move threshold right",
     "setId": "Set ID (identifier)",
     "setIdPlaceholder": "Identifier, e.g. liangsheng",
     "zhName": "Chinese name",
@@ -976,15 +980,10 @@ function readLocalFile(file: File): Promise<string> {
   });
 }
 
-// Mapping shared by the divider editor: a group with `count` images has
-// `count + 1` boundaries; k is how many light (left) images sit before the
-// flip. darkLevel is the slider stop (0..MAX_LEVEL) at which the set goes
-// dark, so the boundary position maps linearly onto the slider stops.
-function darkLevelForBoundary(count: number, k: number): number {
-  if (count <= 0) return MAX_LEVEL - 1;
-  return clampLevel(Math.round((k / count) * MAX_LEVEL));
-}
-
+// The light/dark boundary for a group: with `count` images there are
+// `count + 1` boundaries, and darkLevel (0..MAX_LEVEL) is the slider stop at
+// which the set goes dark, so the boundary position maps linearly onto the
+// slider stops.
 function boundaryForDarkLevel(count: number, level: number): number {
   if (count <= 0) return 0;
   return Math.min(count, Math.max(0, Math.round((level / MAX_LEVEL) * count)));
@@ -1002,11 +1001,6 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
     imageIndex?: number;
     value: string;
   } | null>(null);
-  // Live drag for the light/dark divider. Kept in a ref so pointer handlers can
-  // move it without a React state update per event; dragTick only forces the
-  // divider to redraw while dragging.
-  const dragRef = useRef<{ groupIndex: number; count: number; level: number } | null>(null);
-  const [dragTick, setDragTick] = useState(0);
   // Hidden <input type=file> backing the "本地选图" buttons; pendingPick records
   // which slot the picked image should land in (add → append, replace → swap).
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1052,69 +1046,13 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
     return next;
   };
 
-  const moveDividerFromPointer = (row: HTMLElement, clientX: number) => {
-    const drag = dragRef.current;
-    if (!drag || drag.count <= 0) return;
-    const rect = row.getBoundingClientRect();
-    if (rect.width <= 0) return;
-    const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-    const k = Math.round(ratio * drag.count);
-    const level = darkLevelForBoundary(drag.count, k);
-    if (level !== drag.level) {
-      drag.level = level;
-      setDragTick((tick) => tick + 1);
-    }
-  };
-
-  const startDividerDrag = (event: ReactPointerEvent, groupIndex: number) => {
-    if (!writable || busy) return;
-    const count = groups[groupIndex]?.images.length ?? 0;
-    if (count <= 0) return;
-    event.preventDefault();
-    const row = event.currentTarget.closest<HTMLElement>(".flash-portrait-group__images");
-    if (!row) return;
-    try {
-      // Keep receiving moves while dragging even when the cursor leaves the
-      // row; the capture stays on the stable row element.
-      row.setPointerCapture(event.pointerId);
-    } catch {
-      // Some pointer types do not support capture; the row-bound move/up
-      // handlers below still track an in-row drag.
-    }
-    dragRef.current = {
-      groupIndex,
-      count,
-      level: groups[groupIndex]?.darkLevel ?? MAX_LEVEL - 1,
-    };
-    moveDividerFromPointer(row, event.clientX);
-  };
-
-  const endDividerDrag = (groupIndex: number) => {
-    const drag = dragRef.current;
-    if (!drag || drag.groupIndex !== groupIndex) return;
-    dragRef.current = null;
-    setDragTick((tick) => tick + 1);
-    const group = groups[groupIndex];
-    if (group && drag.level !== (group.darkLevel ?? MAX_LEVEL - 1)) {
-      void commit(withGroup(groupIndex, (g) => ({ ...g, darkLevel: drag.level })));
-    }
-  };
-
-  const cancelDividerDrag = () => {
-    if (!dragRef.current) return;
-    dragRef.current = null;
-    setDragTick((tick) => tick + 1);
-  };
-
-  const onDividerKeyDown = (event: ReactKeyboardEvent, groupIndex: number) => {
+  // Click-driven threshold: move the light/dark boundary one slider stop at a
+  // time with the left/right arrows that flank the divider. No mouse drag.
+  const stepDivider = (groupIndex: number, delta: -1 | 1) => {
     if (!writable || busy) return;
     const group = groups[groupIndex];
     const current = group?.darkLevel ?? MAX_LEVEL - 1;
-    let next: number | undefined;
-    if (event.key === "ArrowLeft") next = clampLevel(current - 1);
-    else if (event.key === "ArrowRight") next = clampLevel(current + 1);
-    else return;
-    event.preventDefault();
+    const next = clampLevel(current + delta);
     if (next !== current) {
       void commit(withGroup(groupIndex, (g) => ({ ...g, darkLevel: next })));
     }
@@ -1370,14 +1308,7 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
                 {t("dividerHint")}
               </p>
               <ol
-                className={dragRef.current ? "flash-portrait-group__images flash-portrait-group__images--dragging" : "flash-portrait-group__images"}
-                onPointerMove={(event) => {
-                  if (dragRef.current?.groupIndex === groupIndex) {
-                    moveDividerFromPointer(event.currentTarget, event.clientX);
-                  }
-                }}
-                onPointerUp={() => endDividerDrag(groupIndex)}
-                onPointerCancel={cancelDividerDrag}
+                className="flash-portrait-group__images"
               >
                 {group.images.map((src, imageIndex) => {
                   const editingReplace =
@@ -1385,29 +1316,35 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
                     editing.groupIndex === groupIndex &&
                     editing.imageIndex === imageIndex;
                   const count = group.images.length;
-                  const liveLevel =
-                    dragRef.current?.groupIndex === groupIndex && dragRef.current.count === count
-                      ? dragRef.current.level
-                      : undefined;
-                  const effectiveDark = liveLevel ?? group.darkLevel ?? MAX_LEVEL - 1;
+                  const effectiveDark = group.darkLevel ?? MAX_LEVEL - 1;
                   const boundary = boundaryForDarkLevel(count, effectiveDark);
-                  const dividerActive = dragRef.current?.groupIndex === groupIndex;
                   return (
                     <Fragment key={imageIndex}>
                       {imageIndex === boundary && count > 0 && (
                         <li
-                          className={dividerActive ? "flash-portrait-group__divider flash-portrait-group__divider--active" : "flash-portrait-group__divider"}
-                          role="slider"
+                          className="flash-portrait-group__divider"
                           aria-label={t("darkLevel")}
-                          aria-valuemin={0}
-                          aria-valuemax={MAX_LEVEL}
-                          aria-valuenow={effectiveDark}
                           title={t("darkLevelHint")}
-                          draggable={false}
-                          onPointerDown={(event) => startDividerDrag(event, groupIndex)}
-                          onKeyDown={(event) => onDividerKeyDown(event, groupIndex)}
                         >
+                          <button
+                            type="button"
+                            className="flash-portrait-group__divider-arrow"
+                            aria-label={t("dividerLeft")}
+                            disabled={!writable || busy || effectiveDark <= 0}
+                            onClick={() => stepDivider(groupIndex, -1)}
+                          >
+                            ◀
+                          </button>
                           <span className="flash-portrait-group__divider-handle" aria-hidden="true" />
+                          <button
+                            type="button"
+                            className="flash-portrait-group__divider-arrow"
+                            aria-label={t("dividerRight")}
+                            disabled={!writable || busy || effectiveDark >= MAX_LEVEL}
+                            onClick={() => stepDivider(groupIndex, +1)}
+                          >
+                            ▶
+                          </button>
                         </li>
                       )}
                       <li className="flash-portrait-group__image">

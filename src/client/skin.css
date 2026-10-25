@@ -187,24 +187,27 @@ body[data-flash-skin="on"] textarea {
 }
 
 .flash-appearance-sets[data-plugin] {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: 1fr;
 }
 
+/* 每组人物肖像占一整行：左侧为身份（◈ + 组名），右侧胶片条铺满剩余宽度，
+ * 逐帧展示该组的全部素材；窄屏/长列表时胶片条横向滚动。 */
 .flash-appearance-choice {
   box-sizing: border-box;
   border: 1px solid var(--dsw-alias-border-l2);
-  flex-direction: column;
-  justify-content: center;
+  flex-direction: row;
+  justify-content: flex-start;
   align-items: center;
-  gap: 4px;
-  padding: 20px 32px;
-  border-radius: 16px;
+  gap: 14px;
+  padding: 12px 14px;
+  border-radius: 14px;
   font: inherit;
   color: var(--dsw-alias-label-primary);
   cursor: pointer;
   background: transparent;
   font-size: 14px;
   line-height: 22px;
+  text-align: left;
   display: flex;
 }
 
@@ -216,6 +219,35 @@ body[data-flash-skin="on"] textarea {
 .flash-appearance-choice.flash-appearance-choice--on {
   border-color: var(--dsw-static-neutral-bluish-400);
   background: var(--dsw-alias-bg-module-platform);
+}
+
+.flash-appearance-choice__identity {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 92px;
+  white-space: nowrap;
+}
+
+.flash-appearance-choice__filmstrip {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 2px 2px 6px;
+}
+
+.flash-appearance-choice__frame {
+  display: block;
+  flex: 0 0 auto;
+  width: 52px;
+  height: 52px;
+  border-radius: 6px;
+  object-fit: cover;
+  object-position: 50% 30%;
 }
 
 .flash-appearance-choice__icon {
@@ -310,19 +342,41 @@ body[data-flash-skin="on"] textarea {
   margin-bottom: 10px;
 }
 
-/* 身份行：set id + 中英文名称三个内联输入，id 输入窄一些以示其为持久化标识。 */
+/* 身份行：set id + 中英文名称三个内联输入卡，id 输入窄一些以示其为持久化标识。
+   每张输入卡自带一个可见的文字标签（caption），说明该字段是什么。 */
 .flash-portrait-group__identity {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: flex-end;
+  gap: 10px;
   flex: 1 1 auto;
   min-width: 0;
 }
 
+.flash-portrait-group__field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.flash-portrait-group__field-caption {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary));
+  text-transform: none;
+  user-select: none;
+}
+
 .flash-portrait-group__name--id {
-  flex: 0 1 220px;
   font-family: ui-monospace, SFMono-Regular, Consolas, Menlo, monospace;
   font-size: 12px;
+}
+
+/* id 列稍窄，保持三个输入卡的横向辨识度（整卡宽度由 label 控制）。 */
+.flash-portrait-group__field--id {
+  flex: 0 1 220px;
 }
 
 .flash-portrait-group__name--lang {

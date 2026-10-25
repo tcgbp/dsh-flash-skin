@@ -113,6 +113,24 @@ function setDisplayName(set: { id?: string; name?: string; zh?: string; en?: str
   return zh || en || set.name || "";
 }
 
+// Resolve the full ordered frame list for a portrait set, for the general
+// settings preview strip. Configured groups (including built-in-seeded ones)
+// expose their whole image list; untouched built-in sets fall back to the
+// on-disk anchors — mirroring sourcesForSet, which leaves the 8th anchor (a
+// tuning placeholder) out of display logic. Returns [] when the set has
+// nothing to show yet (e.g. a brand-new image-less group).
+function setFrames(set: PortraitGroupConfig | DefaultPortraitSet): string[] {
+  const configuredImages = (set as PortraitGroupConfig).images;
+  if (Array.isArray(configuredImages) && configuredImages.length > 0) {
+    return configuredImages.slice();
+  }
+  const anchors = PORTRAIT_ANCHORS[set.id] ?? [];
+  const folder = (set as PortraitSet).folder;
+  if (!folder || anchors.length === 0) return [];
+  // Only the first 7 of the 8 anchors drive display; drop the placeholder.
+  return anchors.slice(0, -1).map(({ file }) => `${ASSET_PREFIX}/${folder}/${file}`);
+}
+
 interface PortraitSet {
   id: string;
   /** Built-in anchor folder; undefined for fully custom (user-created) sets. */
@@ -704,6 +722,7 @@ function PortraitSetRow({ scope, presenter, form, locale, t }: PortraitSetRowPro
   const sets = (configured.length > 0 ? configured : DEFAULT_PORTRAIT_SETS).map((set) => ({
     id: set.id,
     label: setDisplayName(set, localeSnapshot.active),
+    frames: setFrames(set),
   }));
 
   return (
@@ -712,6 +731,7 @@ function PortraitSetRow({ scope, presenter, form, locale, t }: PortraitSetRowPro
       <div className="flash-appearance-sets" role="radiogroup" aria-label={t("appearance")}>
         {sets.map((set) => {
           const selected = snapshot.set === set.id;
+          const frames = set.frames;
           return (
             <button
               type="button"
@@ -730,8 +750,28 @@ function PortraitSetRow({ scope, presenter, form, locale, t }: PortraitSetRowPro
                 void presenter.choose(set.id).catch(() => undefined).finally(() => setPending(false));
               }}
             >
-              <span className="flash-appearance-choice__icon" aria-hidden="true">◈</span>
-              <span className="flash-appearance-choice__label">{set.label}</span>
+              <span className="flash-appearance-choice__identity">
+                <span className="flash-appearance-choice__icon" aria-hidden="true">◈</span>
+                <span className="flash-appearance-choice__label">{set.label}</span>
+              </span>
+              {frames.length > 0 && (
+                <span className="flash-appearance-choice__filmstrip" aria-hidden="true">
+                  {frames.map((url, index) => (
+                    <img
+                      key={index}
+                      className="flash-appearance-choice__frame"
+                      src={url}
+                      alt=""
+                      loading="lazy"
+                      decoding="async"
+                      onError={(event) => {
+                        // Drop a broken frame from the strip.
+                        event.currentTarget.style.display = "none";
+                      }}
+                    />
+                  ))}
+                </span>
+              )}
             </button>
           );
         })}
@@ -1058,6 +1098,40 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
     }
   };
 
+  // The light/dark divider for one group: two arrow buttons flanking the
+  // handle, plus the handle itself. Render it wherever the threshold lands —
+  // between images, after the last image at the far-right edge, or as a
+  // still-usable placeholder on a brand-new (image-less) group so the
+  // threshold control is always present and adjustable.
+  const renderDivider = (dividerKey: string | number, groupIndex: number, effectiveDark: number) => (
+    <li
+      key={dividerKey}
+      className="flash-portrait-group__divider"
+      aria-label={t("darkLevel")}
+      title={t("darkLevelHint")}
+    >
+      <button
+        type="button"
+        className="flash-portrait-group__divider-arrow"
+        aria-label={t("dividerLeft")}
+        disabled={!writable || busy || effectiveDark <= 0}
+        onClick={() => stepDivider(groupIndex, -1)}
+      >
+        ◀
+      </button>
+      <span className="flash-portrait-group__divider-handle" aria-hidden="true" />
+      <button
+        type="button"
+        className="flash-portrait-group__divider-arrow"
+        aria-label={t("dividerRight")}
+        disabled={!writable || busy || effectiveDark >= MAX_LEVEL}
+        onClick={() => stepDivider(groupIndex, +1)}
+      >
+        ▶
+      </button>
+    </li>
+  );
+
   const commitField = (groupIndex: number, kind: "id" | "zh" | "en", raw: string) => {
     const trimmed = raw.trim();
     const group = groups[groupIndex];
@@ -1194,7 +1268,9 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
     void commit(next);
   };
 
-  // One inline input per identity field (set id / Chinese name / English name).
+  // One inline input per identity field (set id / Chinese name / English name),
+  // each wrapped in a <label> so the field shows a visible caption (Set ID /
+  // 中文名称 / 英文名称) and clicking the caption focuses the input.
   // IME-friendly: edits buffer in `editing` and commit to the config on blur or
   // Enter; renaming the id only affects persistence once that group is selected
   // again, as the identityHint explains. Clearing zh/en removes the override
@@ -1209,28 +1285,32 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
       kind === "id" ? group.id
         : kind === "zh" ? (group.zh?.trim() ?? def?.zh ?? group.name)
         : (group.en?.trim() ?? def?.en ?? group.name);
+    const caption = kind === "id" ? t("setId") : kind === "zh" ? t("zhName") : t("enName");
     return (
-      <input
-        key={kind}
-        className={
-          kind === "id"
-            ? "flash-portrait-group__name flash-portrait-group__name--id"
-            : "flash-portrait-group__name flash-portrait-group__name--lang"
-        }
-        aria-label={kind === "id" ? t("setId") : kind === "zh" ? t("zhName") : t("enName")}
-        placeholder={kind === "id" ? t("setIdPlaceholder") : undefined}
-        value={editingField ? editing.value : current}
-        disabled={!writable || busy}
-        onFocus={() => setEditing({ kind, groupIndex, value: current })}
-        onChange={(event) => setEditing({ kind, groupIndex, value: event.currentTarget.value })}
-        onBlur={() => {
-          if (editingField) commitField(groupIndex, kind, editing.value);
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") event.currentTarget.blur();
-          if (event.key === "Escape") setEditing(null);
-        }}
-      />
+      <label key={kind} className={kind === "id"
+        ? "flash-portrait-group__field flash-portrait-group__field--id"
+        : "flash-portrait-group__field"}>
+        <span className="flash-portrait-group__field-caption">{caption}</span>
+        <input
+          className={
+            kind === "id"
+              ? "flash-portrait-group__name flash-portrait-group__name--id"
+              : "flash-portrait-group__name flash-portrait-group__name--lang"
+          }
+          placeholder={kind === "id" ? t("setIdPlaceholder") : undefined}
+          value={editingField ? editing.value : current}
+          disabled={!writable || busy}
+          onFocus={() => setEditing({ kind, groupIndex, value: current })}
+          onChange={(event) => setEditing({ kind, groupIndex, value: event.currentTarget.value })}
+          onBlur={() => {
+            if (editingField) commitField(groupIndex, kind, editing.value);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") event.currentTarget.blur();
+            if (event.key === "Escape") setEditing(null);
+          }}
+        />
+      </label>
     );
   };
 
@@ -1321,31 +1401,7 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
                   return (
                     <Fragment key={imageIndex}>
                       {imageIndex === boundary && count > 0 && (
-                        <li
-                          className="flash-portrait-group__divider"
-                          aria-label={t("darkLevel")}
-                          title={t("darkLevelHint")}
-                        >
-                          <button
-                            type="button"
-                            className="flash-portrait-group__divider-arrow"
-                            aria-label={t("dividerLeft")}
-                            disabled={!writable || busy || effectiveDark <= 0}
-                            onClick={() => stepDivider(groupIndex, -1)}
-                          >
-                            ◀
-                          </button>
-                          <span className="flash-portrait-group__divider-handle" aria-hidden="true" />
-                          <button
-                            type="button"
-                            className="flash-portrait-group__divider-arrow"
-                            aria-label={t("dividerRight")}
-                            disabled={!writable || busy || effectiveDark >= MAX_LEVEL}
-                            onClick={() => stepDivider(groupIndex, +1)}
-                          >
-                            ▶
-                          </button>
-                        </li>
+                        renderDivider(imageIndex, groupIndex, effectiveDark)
                       )}
                       <li className="flash-portrait-group__image">
                       {editingReplace ? (
@@ -1439,6 +1495,18 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
                     </Fragment>
                   );
                 })}
+                {(() => {
+                  const count = group.images.length;
+                  const effectiveDark = group.darkLevel ?? MAX_LEVEL - 1;
+                  // A threshold that would land on/after the trailing edge (few
+                  // images in the group, or the dark shell tuned to the highest
+                  // slider level) and an image-less brand-new group both render
+                  // the divider at the head of the add-slot, so the light/dark
+                  // threshold control stays visible and adjustable for every group.
+                  return boundaryForDarkLevel(count, effectiveDark) >= count
+                    ? renderDivider(count, groupIndex, effectiveDark)
+                    : null;
+                })()}
                 {editingAdd ? (
                   <li className="flash-portrait-group__image flash-portrait-group__add">
                     <input

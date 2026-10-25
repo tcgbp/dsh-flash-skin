@@ -920,6 +920,8 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "title": "Portrait groups",
     "hint": "Each group is an ordered set of images; slots run from low to high reasoning level left to right. Empty slots fall back to the default art.",
     "readOnly": "The current document does not accept writes; connect or grant permission first.",
+    "openDetails": "Flash Skin plugin settings",
+    "openDetailsHint": "Open this plugin's (dsh-flash-skin) detail page in the plugin manager.",
     "empty": "No portrait groups yet — initialize from the built-in art, or create one from scratch.",
     "loadDefaults": "Initialize from built-in art",
     "addGroup": "New group",

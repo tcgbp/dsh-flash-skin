@@ -1,4 +1,6 @@
 import { createReadStream, statSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import z from "@deepseek-ai/schemastery";
 import { parseSingleRange } from "./range.js";
 
@@ -34,6 +36,154 @@ const SLUG_BY_MEDIA_TYPE = Object.freeze(
   Object.fromEntries(Object.entries(MEDIA_TYPE_BY_SLUG).map(([slug, mediaType]) => [mediaType, slug])),
 );
 const HEX64_RE = /^[0-9a-f]{64}$/;
+
+// ── Bundled example archives ────────────────────────────────────────────────
+// The four/ﬁve demo archives ship inside the package (`examples/portrait-archives/`,
+// whitelisted in package.json `files`) and are served back to any client over the
+// webServer so the picker can import them from a plain same-origin URL. The file
+// list is an allowlist, so the handler never touches anything outside these exact
+// names (no path traversal, no sibling reads).
+const EXAMPLES_PATH = `/plugins/${PACKAGE_ID}/examples`;
+const EXAMPLES_PREFIX = `${EXAMPLES_PATH}/`;
+const EXAMPLES_DIR = fileURLToPath(new URL("../examples/portrait-archives/", import.meta.url));
+const EXAMPLE_FILES = Object.freeze([
+  "liangsheng-demo.zip",
+  "liangshen-demo.zip",
+  "liangzu-demo.zip",
+  "liangshen-url-demo.zip",
+  "hanli-demo.zip",
+]);
+
+// ── Remote archive proxy ────────────────────────────────────────────────────
+// Lets the user import any archive reachable over http(s) by pasting its URL. The
+// server fetches it (so a hosting site's CORS policy never blocks the browser) and
+// returns the raw bytes; the client then runs the normal parse/upload pipeline. A
+// size cap and an http(s)-only scheme guard keep this a bounded, proxy-shaped helper
+// rather than an open SSRF fleecing endpoint.
+const REMOTE_ARCHIVE_PATH = `/plugins/${PACKAGE_ID}/archive`;
+const MAX_REMOTE_ARCHIVE_BYTES = 64 * 1024 * 1024;
+const REMOTE_FETCH_TIMEOUT_MS = 20_000;
+
+// Handlers for the two "import from network" routes. `example` streams the
+// allow-listed bundled archive back over HTTP; `remote` proxies an arbitrary
+// http(s) archive URL so a hosting site's CORS policy cannot block the browser
+// import. `activeStreams` tracks in-flight reads so teardown can drain them.
+function createNetworkHandlers(activeStreams) {
+  const example = (req, res) => {
+    const method = req.method ?? "GET";
+    if (method !== "GET" && method !== "HEAD") {
+      send(res, 405, { Allow: "GET, HEAD" });
+      return;
+    }
+    let pathname;
+    try {
+      pathname = new URL(req.url ?? "/", "http://dsh.local").pathname;
+    } catch {
+      send(res, 404);
+      return;
+    }
+    if (!pathname.startsWith(EXAMPLES_PREFIX)) {
+      send(res, 404);
+      return;
+    }
+    const file = pathname.slice(EXAMPLES_PREFIX.length);
+    if (!EXAMPLE_FILES.includes(file)) {
+      send(res, 404);
+      return;
+    }
+    const assetPath = join(EXAMPLES_DIR, file);
+    let info;
+    try {
+      info = statSync(assetPath);
+    } catch {
+      send(res, 404);
+      return;
+    }
+    if (!info.isFile()) {
+      send(res, 404);
+      return;
+    }
+    writeAsset(req, res, method, {
+      path: assetPath,
+      type: "application/octet-stream",
+      size: info.size,
+      etag: `W/"${info.size.toString(16)}-${Math.trunc(info.mtimeMs).toString(16)}"`,
+    }, activeStreams);
+  };
+
+  const remote = async (req, res) => {
+    const method = req.method ?? "GET";
+    if (method !== "GET" && method !== "HEAD") {
+      send(res, 405, { Allow: "GET, HEAD" });
+      return;
+    }
+    let url;
+    try {
+      url = new URL(req.url ?? "/", "http://dsh.local");
+    } catch {
+      send(res, 400);
+      return;
+    }
+    const rawTarget = url.searchParams.get("url") ?? "";
+    let target;
+    try {
+      target = rawTarget ? new URL(rawTarget) : null;
+    } catch {
+      target = null;
+    }
+    if (!target || (target.protocol !== "http:" && target.protocol !== "https:")) {
+      send(res, 400);
+      return;
+    }
+    if (typeof fetch !== "function") {
+      send(res, 501);
+      return;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REMOTE_FETCH_TIMEOUT_MS);
+    let remoteRes;
+    try {
+      remoteRes = await fetch(target, { redirect: "follow", signal: controller.signal });
+    } catch {
+      clearTimeout(timer);
+      send(res, 503);
+      return;
+    }
+    clearTimeout(timer);
+    if (!remoteRes.ok) {
+      send(res, remoteRes.status >= 500 ? 502 : 400);
+      return;
+    }
+    let body;
+    try {
+      body = Buffer.from(await remoteRes.arrayBuffer());
+    } catch {
+      send(res, 503);
+      return;
+    }
+    if (body.byteLength > MAX_REMOTE_ARCHIVE_BYTES) {
+      send(res, 413);
+      return;
+    }
+    if (method === "HEAD") {
+      send(res, 200, {
+        "Content-Type": "application/octet-stream",
+        "Content-Length": String(body.byteLength),
+        "Cache-Control": "private, max-age=3600, must-revalidate",
+      });
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type": "application/octet-stream",
+      "Content-Length": String(body.byteLength),
+      "Cache-Control": "private, max-age=3600, must-revalidate",
+      "X-Content-Type-Options": "nosniff",
+    });
+    res.end(body);
+  };
+
+  return { example, remote };
+}
 
 /**
  * The plugin's settings section (settings namespace `flash-skin`), surfaced
@@ -310,9 +460,15 @@ export function apply(ctx, config) {
     // pathname.startsWith(path + "/")`), so both coexist on the same router.
     const uploadRoute = ctx.webServer.register({ kind: "exact", path: ATTACHMENT_PATH, handler: upload });
     const serveRoute = ctx.webServer.register({ kind: "prefixes", path: ATTACHMENT_PATH, handler: serve });
+    // Network-import routes: bundled example archives plus the remote-URL proxy.
+    const { example, remote } = createNetworkHandlers(activeStreams);
+    const exampleRoute = ctx.webServer.register({ kind: "prefixes", path: EXAMPLES_PATH, handler: example });
+    const remoteRoute = ctx.webServer.register({ kind: "exact", path: REMOTE_ARCHIVE_PATH, handler: remote });
     return () => {
       uploadRoute();
       serveRoute();
+      exampleRoute();
+      remoteRoute();
     };
   }, "flash-skin: attachment import & serve routes");
 }

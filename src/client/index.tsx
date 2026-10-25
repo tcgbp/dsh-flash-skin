@@ -14,8 +14,10 @@ import {
   DEFAULT_SPEED_TUNING,
   MAX_LEVEL,
   clampLevel,
+  clampLevelContinuous,
   compositeLevel,
   contextPressureFactor,
+  dividerStepFor,
   frameIndexForLevel,
   frameIndexForScore,
   freshnessDecay,
@@ -48,6 +50,22 @@ const DRIVER_KEY = "dsh-flash-skin.driver";
 const WEIGHTS_KEY = "dsh-flash-skin.weights";
 // Host attachments route (exact path for POST upload, prefix for GET serve).
 const ATTACHMENT_PATH = `/plugins/${PACKAGE_ID}/attachment`;
+// Network-import routes: bundled example archives (served by the plugin over
+// this prefix) and a server-side proxy for pasting any http(s) archive URL.
+const EXAMPLES_PREFIX = `/plugins/${PACKAGE_ID}/examples/`;
+const REMOTE_ARCHIVE_PATH = `/plugins/${PACKAGE_ID}/archive`;
+// Archives bundled into the package (whitelisted in package.json `files`) and
+// offered as one-tap quick imports. Labels are shown in both languages so the
+// picker is usable regardless of the current UI language.
+const EXAMPLE_ARCHIVES = Object.freeze([
+  { file: "liangsheng-demo.zip", zh: "梁圣", en: "Liang the Saint" },
+  { file: "liangshen-demo.zip", zh: "梁神", en: "Liang the God" },
+  { file: "liangzu-demo.zip", zh: "梁祖", en: "Liang the Ancestor" },
+  { file: "liangshen-url-demo.zip", zh: "梁神在线（URL 示例）", en: "Liang the God (URL-only)" },
+  { file: "hanli-demo.zip", zh: "韩立", en: "Han Li" },
+]);
+// Image extensions an archive URL/name may end with to be accepted as importable.
+const ARCHIVE_EXT_RE = /\.(zip|tar|tgz|gz|gzip)$/i;
 // How many extracted images the client sends per upload POST. Must stay within
 // the host attachment store's per-message limit; the rest go in extra requests.
 const MAX_UPLOAD_IMAGES_PER_BATCH = 16;
@@ -1379,6 +1397,13 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "importIdConflict": "标识（Set ID）「{id}」已被占用，请换一个唯一标识再导入",
     "importConfirm": "导入",
     "importCancel": "取消",
+    "importExamplesTitle": "内置示例包",
+    "importExamplesHint": "点击即可把内置示例包导入为一个新组：",
+    "importNetTitle": "或从网络导入任意压缩包",
+    "netUrlPlaceholder": "粘贴压缩包 URL（http/https，.zip/.tar/.tar.gz）",
+    "importNet": "从网络导入",
+    "netEmpty": "请输入要导入的压缩包 URL",
+    "zipBadLink": "无法导入：请输入指向 .zip / .tar / .tar.gz 的 http/https 链接",
   },
   en: {
     "loading": "Loading…",
@@ -1432,6 +1457,13 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "importIdConflict": "Set ID \"{id}\" is already in use — pick a unique one before importing",
     "importConfirm": "Import",
     "importCancel": "Cancel",
+    "importExamplesTitle": "Bundled examples",
+    "importExamplesHint": "Click to import a bundled example as a new group:",
+    "importNetTitle": "Or import any archive from the network",
+    "netUrlPlaceholder": "Paste an archive URL (http/https, .zip/.tar/.tar.gz)",
+    "importNet": "Import from network",
+    "netEmpty": "Enter the archive URL to import",
+    "zipBadLink": "Could not import: please paste an http(s) link to a .zip / .tar / .tar.gz archive",
   },
 };
 
@@ -1801,7 +1833,14 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
     if (!writable || busy) return;
     const group = groups[groupIndex];
     const current = group?.darkLevel ?? MAX_LEVEL - 1;
-    const next = clampLevel(current + delta);
+    // With more frames than integer slider stops (N > MAX_LEVEL + 1) a plain
+    // one-stop bump can never land the divider on some gaps — e.g. a 9-frame
+    // group leaves the 1/4/7 boundary slots unreachable. Once the frame count
+    // exceeds the stops, step by a single image gap instead so every
+    // frame-to-frame position is reachable; smaller sets keep the original
+    // one-stop step and do not regress.
+    const step = dividerStepFor(group?.images?.length ?? 0);
+    const next = Math.round(clampLevelContinuous(current + delta * step) * 1000) / 1000;
     if (next !== current) {
       void commit(withGroup(groupIndex, (g) => ({ ...g, darkLevel: next })));
     }
@@ -2017,77 +2056,158 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
     // Reset so picking the same archive again re-triggers change.
     input.value = "";
     if (file === undefined) return;
-    if (!/\.(zip|tar|tgz|gz|gzip)$/i.test(file.name)) {
+    if (!ARCHIVE_EXT_RE.test(file.name)) {
       setFileError(t("fileNotZip"));
       return;
     }
-    let entries: ZipImageEntry[];
-    let skippedOversize: number;
-    let meta: PortraitImportMeta | null = null;
+    let buffer: ArrayBuffer;
     try {
-      const buffer = await readLocalFileAsArrayBuffer(file);
-      const parsed = extractArchive(file.name, buffer);
-      entries = parsed.entries;
-      skippedOversize = parsed.skippedOversize;
-      meta = parsed.meta;
+      buffer = await readLocalFileAsArrayBuffer(file);
     } catch {
       setFileError(t("zipParseFailed"));
+      return;
+    }
+    await runArchiveImport(file.name, buffer);
+  };
+
+  // Shared engine for every archive-import source in the card: local picker,
+  // bundled examples and pasted network URLs all funnel into this so they
+  // behave identically (same parse, same upload, same conflict handling).
+  // Handles the parse → upload → insert pipeline and any error/conflict notice.
+  const runArchiveImport = async (name: string, buffer: ArrayBuffer) => {
+    if (!writable || busy) return;
+    setBusy(true);
+    try {
+      let entries: ZipImageEntry[];
+      let skippedOversize: number;
+      let meta: PortraitImportMeta | null = null;
+      try {
+        const parsed = extractArchive(name, buffer);
+        entries = parsed.entries;
+        skippedOversize = parsed.skippedOversize;
+        meta = parsed.meta;
+      } catch {
+        setFileError(t("zipParseFailed"));
+        return;
+      }
+      // The manifest may carry `images:` URLs to seed the group when the archive
+      // itself ships no embedded frames (a tiny, URL-only manifest archive).
+      // When the archive does carry frames those always win — the manifest list
+      // is only a fallback for archives that contain no bytes at all.
+      const manifestImages = meta?.images ?? [];
+      if (entries.length === 0 && manifestImages.length === 0) {
+        setFileError(
+          skippedOversize > 0
+            ? t("zipSkippedOversize").replace("{n}", String(skippedOversize))
+            : t("zipNoImages"),
+        );
+        return;
+      }
+      try {
+        let images: string[];
+        let notice: string;
+        if (entries.length > 0) {
+          // Upload the extracted frames to the host attachments store; the server
+          // persists each file and replies with content-addressed serve URLs that
+          // we store as plain image refs (config never carries the raw bytes).
+          images = await uploadArchiveImages(entries);
+          notice = t("zipImported").replace("{n}", String(images.length));
+        } else {
+          // No embedded frames — seed the group straight from the manifest's
+          // URL list (kept URL-only like every other group's images).
+          images = manifestImages;
+          notice = t("metaImported").replace("{n}", String(images.length));
+        }
+        if (meta) {
+          notice += " " + t("zipImportedMeta");
+        }
+        if (skippedOversize > 0) {
+          notice += " " + t("zipSkippedOversize").replace("{n}", String(skippedOversize));
+        }
+        if (meta?.id && groups.some((group) => group.id === meta.id)) {
+          // The manifest's set id collides with an existing group: surface the
+          // conflict and let the user confirm a unique id, rather than silently
+          // renaming it. The uploaded images are kept until then.
+          setPendingImport({
+            images,
+            meta,
+            originalId: meta.id,
+            draftId: suggestUniqueId(meta.id),
+            notice,
+          });
+          return;
+        }
+        insertImportedGroup(images, meta ?? undefined);
+        setFileError(notice);
+      } catch {
+        setFileError(t("zipParseFailed"));
+      } finally {
+        setBusy(false);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Fetch and import an archive from a pasted http(s) URL. The fetch goes
+  // through the server-side proxy route so a hosting site's CORS policy never
+  // blocks the request; the returned bytes hit the same engine as a local pick.
+  const importFromUrl = async (rawUrl: string) => {
+    if (!writable || busy) return;
+    const trimmed = rawUrl.trim();
+    if (!trimmed) {
+      setFileError(t("netEmpty"));
+      return;
+    }
+    let name: string;
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        setFileError(t("zipBadLink"));
+        return;
+      }
+      name = decodeURIComponent(parsed.pathname.split("/").filter(Boolean).pop() ?? "");
+    } catch {
+      setFileError(t("zipBadLink"));
+      return;
+    }
+    if (!ARCHIVE_EXT_RE.test(name)) {
+      setFileError(t("zipBadLink"));
       return;
     }
     setFileError(null);
-    // The manifest may carry `images:` URLs to seed the group when the archive
-    // itself ships no embedded frames (a tiny, URL-only manifest archive).
-    // When the archive does carry frames those always win — the manifest list
-    // is only a fallback for archives that contain no bytes at all.
-    const manifestImages = meta?.images ?? [];
-    if (entries.length === 0 && manifestImages.length === 0) {
-      setFileError(
-        skippedOversize > 0
-          ? t("zipSkippedOversize").replace("{n}", String(skippedOversize))
-          : t("zipNoImages"),
-      );
-      return;
-    }
+    setBusy(true);
     try {
-      let images: string[];
-      let notice: string;
-      if (entries.length > 0) {
-        // Upload the extracted frames to the host attachments store; the server
-        // persists each file and replies with content-addressed serve URLs that
-        // we store as plain image refs (config never carries the raw bytes).
-        images = await uploadArchiveImages(entries);
-        notice = t("zipImported").replace("{n}", String(images.length));
-      } else {
-        // No embedded frames — seed the group straight from the manifest's
-        // URL list (kept URL-only like every other group's images).
-        images = manifestImages;
-        notice = t("metaImported").replace("{n}", String(images.length));
-      }
-      if (meta) {
-        notice += " " + t("zipImportedMeta");
-      }
-      if (skippedOversize > 0) {
-        notice += " " + t("zipSkippedOversize").replace("{n}", String(skippedOversize));
-      }
-      if (meta?.id && groups.some((group) => group.id === meta.id)) {
-        // The manifest's set id collides with an existing group: surface the
-        // conflict and let the user confirm a unique id, rather than silently
-        // renaming it. The uploaded images are kept until then.
-        setPendingImport({
-          images,
-          meta,
-          originalId: meta.id,
-          draftId: suggestUniqueId(meta.id),
-          notice,
-        });
-        return;
-      }
-      insertImportedGroup(images, meta ?? undefined);
-      setFileError(notice);
+      const response = await fetch(`${REMOTE_ARCHIVE_PATH}?url=${encodeURIComponent(trimmed)}`);
+      if (!response.ok) throw new Error(`archive fetch ${response.status}`);
+      const buffer = await response.arrayBuffer();
+      await runArchiveImport(name, buffer);
     } catch {
       setFileError(t("zipParseFailed"));
+    } finally {
+      setBusy(false);
     }
   };
+
+  // One-tap import of a bundled example archive served by this plugin over the
+  // same-origin examples route; bytes then flow through the shared engine.
+  const importExample = async (file: string) => {
+    if (!writable || busy) return;
+    setFileError(null);
+    setBusy(true);
+    try {
+      const response = await fetch(EXAMPLES_PREFIX + file);
+      if (!response.ok) throw new Error(`example fetch ${response.status}`);
+      const buffer = await response.arrayBuffer();
+      await runArchiveImport(file, buffer);
+    } catch {
+      setFileError(t("zipParseFailed"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const [netUrl, setNetUrl] = useState("");
 
   // Smallest unique variant of `baseId` against the current groups: the id itself
   // when free, else `-2`, `-3`, …
@@ -2484,6 +2604,46 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
         </button>
         {busy && <span className="flash-portrait-groups__notice" role="status">…</span>}
       </footer>
+
+      <div className="flash-import-net">
+        <div className="flash-import-net__examples">
+          <span className="flash-import-net__label">{t("importExamplesTitle")}</span>
+          <div className="flash-import-net__row">
+            {EXAMPLE_ARCHIVES.map((example) => (
+              <button
+                key={example.file}
+                type="button"
+                className="flash-import-net__example"
+                disabled={!writable || busy}
+                onClick={() => void importExample(example.file)}
+                title={`${example.file} — ${example.zh} · ${example.en}`}
+              >
+                {example.zh} <em>{example.en}</em>
+              </button>
+            ))}
+          </div>
+        </div>
+        <form
+          className="flash-import-net__url"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void importFromUrl(netUrl);
+          }}
+        >
+          <span className="flash-import-net__label">{t("importNetTitle")}</span>
+          <input
+            type="text"
+            className="flash-weights__input"
+            placeholder={t("netUrlPlaceholder")}
+            value={netUrl}
+            disabled={!writable || busy}
+            onChange={(event) => setNetUrl(event.currentTarget.value)}
+          />
+          <button type="submit" disabled={!writable || busy || netUrl.trim() === ""}>
+            {t("importNet")}
+          </button>
+        </form>
+      </div>
 
       <section className="flash-weights" data-plugin={PACKAGE_ID}>
         <header className="flash-weights__head">

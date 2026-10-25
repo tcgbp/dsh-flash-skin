@@ -16,6 +16,7 @@ import {
   stagedFrames,
   frameIndexForLevel,
   frameIndexForScore,
+  dividerStepFor,
 } from "../src/client/logic.ts";
 
 describe("normalizeWeights", () => {
@@ -376,5 +377,69 @@ describe("frameIndexForScore (composite rides N frames directly)", () => {
       if (d < bestDist) { bestDist = d; best = index; }
     });
     expect(direct).toBe(best);
+  });
+});
+
+describe("light/dark divider reachability (dividerStepFor)", () => {
+  // Mirrors boundaryForDarkLevel in src/client/index.tsx — the divider sits at
+  // round(darkLevel / MAX_LEVEL * count) inside a `count`-frame group.
+  const boundaryForDarkLevel = (count, level) =>
+    count <= 0 ? 0 : Math.min(count, Math.max(0, Math.round((level / MAX_LEVEL) * count)));
+
+  // The integer slider stops alone: which boundary slots can they ever land on?
+  const reachableByStops = (count) => {
+    const out = new Set();
+    for (let stop = 0; stop <= MAX_LEVEL; stop += 1) {
+      out.add(boundaryForDarkLevel(count, stop));
+    }
+    return out;
+  };
+
+  it("keeps the per-stop step while the frame count does not exceed the stops", () => {
+    for (let count = 2; count <= MAX_LEVEL + 1; count += 1) {
+      expect(dividerStepFor(count)).toBe(1);
+    }
+    // degenerate / empty groups keep the plain stop step too
+    expect(dividerStepFor(0)).toBe(1);
+    expect(dividerStepFor(1)).toBe(1);
+    expect(dividerStepFor(NaN)).toBe(1);
+    expect(dividerStepFor(Infinity)).toBe(1);
+  });
+
+  it("small sets without collisions (N ≤ stops) already reach every boundary", () => {
+    for (let count = 2; count <= MAX_LEVEL; count += 1) {
+      expect(reachableByStops(count).size).toBe(count + 1);
+    }
+  });
+
+  it("7 frames keep the historical one-step behavior (gap 3 stays unreachable)", () => {
+    // 7 frames → 8 slots but only 7 integer stops; gap 3 is skipped today and
+    // the one-stop step is retained for N ≤ stops + 1 so nothing regresses.
+    expect(dividerStepFor(7)).toBe(1);
+    expect(reachableByStops(7).has(3)).toBe(false);
+    expect(reachableByStops(7).size).toBe(7);
+  });
+
+  it("9 frames used to skip gaps (1/4/7) that the fine step now makes reachable", () => {
+    expect(dividerStepFor(9)).toBeCloseTo(MAX_LEVEL / 9);
+    // the seven integer stops alone miss slots — the reported "6,7" gap is slot 7
+    expect(reachableByStops(9).has(7)).toBe(false);
+    // walking the fine step from one end covers every slot 0..count
+    const covered = new Set();
+    for (let k = 0; k <= 9; k += 1) {
+      const level = Math.round(k * dividerStepFor(9) * 1000) / 1000;
+      covered.add(boundaryForDarkLevel(9, level));
+    }
+    for (let gap = 0; gap <= 9; gap += 1) expect(covered.has(gap)).toBe(true);
+  });
+
+  it("stays consistent on 8 frames (just above the stops) as well", () => {
+    expect(dividerStepFor(8)).toBeCloseTo(MAX_LEVEL / 8);
+    const covered = new Set();
+    for (let k = 0; k <= 8; k += 1) {
+      const level = Math.round(k * dividerStepFor(8) * 1000) / 1000;
+      covered.add(boundaryForDarkLevel(8, level));
+    }
+    for (let gap = 0; gap <= 8; gap += 1) expect(covered.has(gap)).toBe(true);
   });
 });

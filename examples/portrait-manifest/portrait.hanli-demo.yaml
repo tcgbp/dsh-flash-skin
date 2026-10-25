@@ -1,0 +1,10 @@
+# Han Li portrait archive example manifest
+# Imported via dsh-flash-skin: seeds the new group's set id, the required
+# zh/en display names and the light/dark threshold. Every optional field (id,
+# darkLevel, images) can be omitted to fall back to the built-in defaults.
+---
+id: hanli-demo
+zh: 韩立
+en: Han Li
+darkLevel: 5
+...

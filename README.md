@@ -4,8 +4,8 @@
 
 ## 特性
 
-- 服务端 host 插件：注册 `/plugins/dsh-flash-skin/attachment` 导入与图片托管路由（从压缩包导入肖像组）。
-- 浏览器端 client 插件：向「设置 → 外观」注入第四个外观选项（Flash Skin），并向外观下方的输入区注入一个强度滑块。
+- 服务端 host 插件：注册 `/plugins/dsh-flash-skin/attachment` 导入与图片托管路由（从压缩包导入肖像组），外加 `/plugins/dsh-flash-skin/examples`（内置示例压缩包）与 `/plugins/dsh-flash-skin/archive?url=`（任意网络压缩包代理抓取）两条网络导入路由。
+- 浏览器端 client 插件：向「设置 → 外观」注入第四个外观选项（Flash Skin），并向外观下方的输入区注入一个强度滑块；肖像组配置卡提供「内置示例包」一键导入与「从网络导入任意压缩包 URL」两个网络导入入口。
 - 纯 CSS 渐变色板（浅色 ↔ 深色），通过 `--dsw-alias-*` 主题 token 覆盖宿主界面。
 
 ## 本地安装（开发迭代）

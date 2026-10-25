@@ -26,7 +26,9 @@
     "src/index.js",
     "src/range.js",
     "icon.svg",
-    "README.md"
+    "README.md",
+    "examples/portrait-archives",
+    "examples/portrait-manifest/README.md"
   ],
   "icon": "./icon.svg",
   "engines": {

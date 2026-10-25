@@ -667,6 +667,58 @@ body[data-flash-skin="on"] textarea {
   padding: 5px 12px;
 }
 
+/* Network import: bundled example-archive quick picks (left) and a paste-any-URL
+ * field (right). Both funnel into the same archive-import engine as the local
+ * picker, so presentation stays light: flex rows + the shared input style. */
+.flash-import-net {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+  margin-top: 12px;
+}
+
+.flash-import-net__label {
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary, #7a818b);
+  margin-right: 2px;
+}
+
+.flash-import-net__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.flash-import-net__example {
+  padding: 3px 10px;
+}
+
+.flash-import-net__example em {
+  font-style: normal;
+  opacity: 0.72;
+  margin-left: 2px;
+}
+
+.flash-import-net__url {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.flash-import-net__url .flash-weights__input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.flash-import-net__url button {
+  padding: 5px 12px;
+  flex: 0 0 auto;
+}
+
 /* =========================================================================
  * 居左布局覆盖 —— 可调宽度对话内容区（目标宿主 0.2.1-rc.2）
  *

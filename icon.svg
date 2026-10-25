@@ -5,6 +5,10 @@
       <stop offset="1" stop-color="#c19a49"/>
     </linearGradient>
   </defs>
+  <!-- 圆角方块底,保留原有的电光蓝→金渐变 -->
   <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#g)"/>
-  <path d="M20 40 L32 20 L44 40 Z" fill="#fff" opacity="0.92"/>
+  <!-- 闪光星:右上角的小四角星光 -->
+  <path d="M46 7 L48.5 15.5 L57 18 L48.5 20.5 L46 29 L43.5 20.5 L35 18 L43.5 15.5 Z" fill="#fff" opacity="0.95"/>
+  <!-- 中心闪电形状 -->
+  <path d="M35 7 L14 38 L26 38 L21 58 L50 22 L35 22 Z" fill="#fff" opacity="0.95"/>
 </svg>

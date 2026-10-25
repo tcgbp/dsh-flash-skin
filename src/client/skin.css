@@ -535,9 +535,24 @@ body[data-flash-skin="on"] textarea {
   color: var(--dsw-alias-label-tertiary);
 }
 
+.flash-portrait-group__add button.flash-portrait-group__add-pick {
+  align-self: auto;
+  min-height: 0;
+  border-style: solid;
+  color: var(--dsw-alias-label-primary);
+}
+
 .flash-portrait-group__add button:hover:not(:disabled) {
   border-style: dashed;
   color: var(--dsw-alias-label-primary);
+}
+
+.flash-portrait-group__add button.flash-portrait-group__add-pick:hover:not(:disabled) {
+  border-style: solid;
+}
+
+.flash-portrait-groups__notice--error {
+  color: var(--dsw-static-severity-error-default, #d54343);
 }
 
 .flash-portrait-groups__foot {

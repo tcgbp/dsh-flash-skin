@@ -40,6 +40,9 @@ const RETRY_DELAYS = [500, 1500, 3000] as const;
 
 function retryUrl(source: string, retry: number) {
   if (retry === 0) return source;
+  // Data URLs (embedded base64) carry no query/hash space and degenerate under
+  // retry query injection; treat them as non-retryable.
+  if (source.startsWith("data:")) return source;
   const hashIndex = source.indexOf("#");
   const hash = hashIndex < 0 ? "" : source.slice(hashIndex);
   const base = hashIndex < 0 ? source : source.slice(0, hashIndex);

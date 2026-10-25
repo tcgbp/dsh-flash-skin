@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
+import type { ChangeEvent as ReactChangeEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { Switch } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { Context as ClientContext } from "@deepseek-ai/cordis";
 import type { SnapshotStore } from "@deepseek-ai/dsh-client-store";
@@ -37,8 +37,10 @@ const ASSET_PREFIX = `/plugins/${PACKAGE_ID}/assets`;
 // are active in display logic — the 8th (slot 30) is kept as a placeholder for
 // tuning and is excluded in sourcesForSet. Swap folder contents to point at
 // different character art.
+// Portrait set ids follow the Chinese display names (梁圣 → liangsheng,
+// 梁神 → liangshen, 梁祖 → liangzu). PORTRAIT_ANCHORS is keyed by the same ids.
 const PORTRAIT_ANCHORS: Record<string, { level: number; file: string }[]> = {
-  storm: [
+  liangsheng: [
     { level: 0, file: "stage-00.webp" },
     { level: 4, file: "level-04.webp" },
     { level: 9, file: "level-09.webp" },
@@ -48,7 +50,7 @@ const PORTRAIT_ANCHORS: Record<string, { level: number; file: string }[]> = {
     { level: 26, file: "stage-24.webp" },
     { level: 30, file: "level-28.webp" },
   ],
-  blaze: [
+  liangshen: [
     { level: 0, file: "level-01.webp" },
     { level: 4, file: "stage-06.webp" },
     { level: 9, file: "level-10.webp" },
@@ -58,7 +60,7 @@ const PORTRAIT_ANCHORS: Record<string, { level: number; file: string }[]> = {
     { level: 26, file: "level-25.webp" },
     { level: 30, file: "level-29.webp" },
   ],
-  frost: [
+  liangzu: [
     { level: 0, file: "level-03.webp" },
     { level: 4, file: "level-07.webp" },
     { level: 9, file: "stage-12.webp" },
@@ -70,6 +72,22 @@ const PORTRAIT_ANCHORS: Record<string, { level: number; file: string }[]> = {
   ],
 };
 
+// The set ids were renamed from English (storm/blaze/frost) to the pinyin of
+// the Chinese names. Old persisted values (localStorage SET_KEY and saved
+// portraitGroups group ids) still carry the legacy ids, so keep a mapping and
+// normalize them whenever a persisted value is read back.
+const LEGACY_SET_IDS: Record<string, string> = {
+  storm: "liangsheng",
+  blaze: "liangshen",
+  frost: "liangzu",
+};
+
+function normalizeSetId(id: string | null | undefined): string | undefined {
+  if (!id) return undefined;
+  const mapped = LEGACY_SET_IDS[id];
+  return mapped !== undefined ? mapped : id;
+}
+
 interface PortraitSet {
   id: string;
   folder: string;
@@ -79,9 +97,9 @@ interface PortraitSet {
 // the system's default appearance slots. Demo uses three sets; swap the
 // folder contents to point at different character art.
 const PORTRAIT_SETS: PortraitSet[] = [
-  { id: "storm", folder: "portrait-source-v2" },
-  { id: "blaze", folder: "portrait-source-v3" },
-  { id: "frost", folder: "portrait-source-v4" },
+  { id: "liangsheng", folder: "portrait-source-v2" },
+  { id: "liangshen", folder: "portrait-source-v3" },
+  { id: "liangzu", folder: "portrait-source-v4" },
 ];
 
 interface SkinSettings {
@@ -200,7 +218,7 @@ class SkinPresenter {
     if (this.disposed) return;
     const configs: Record<string, { images: string[]; darkLevel?: number }> = {};
     for (const group of groups) {
-      configs[group.id] = { images: group.images ?? [], darkLevel: group.darkLevel };
+      configs[normalizeSetId(group.id)] = { images: group.images ?? [], darkLevel: group.darkLevel };
     }
     const nextSources = this.sourcesForSet(this.set, configs);
     const sourcesChanged = nextSources.length !== this.portraitsSources.length
@@ -662,10 +680,11 @@ export const inject = [
 // The active portrait set must survive both a full client (re)boot and any
 // store re-creation. The portrait set is scope-only (never written into the
 // host theme preference), so localStorage SET_KEY is the persisted source of
-// truth; fall back to the first set when it is absent or stale.
+// truth; fall back to the first set when it is absent or stale. Legacy ids
+// (storm/blaze/frost) from before the rename are normalized on read.
 function restoreInitialSet(): string {
   try {
-    const id = localStorage.getItem(SET_KEY);
+    const id = normalizeSetId(localStorage.getItem(SET_KEY));
     if (PORTRAIT_SETS.some((item) => item.id === id)) return id!;
   } catch {
     // storage may be unavailable
@@ -682,10 +701,11 @@ function createPreferenceStore(initialSet: string): PreferenceStore {
   const listeners = new Set<() => void>();
   const onStorage = (event: StorageEvent) => {
     if (event.key !== SET_KEY && event.key !== BIND_EFFORT_KEY) return;
+    const nextSetId = event.key === SET_KEY ? normalizeSetId(event.newValue) : undefined;
     const next = {
       enabled: snapshot.enabled,
       set: event.key === SET_KEY
-        ? (PORTRAIT_SETS.some((item) => item.id === event.newValue) ? event.newValue! : snapshot.set)
+        ? (PORTRAIT_SETS.some((item) => item.id === (nextSetId ?? null)) ? nextSetId! : snapshot.set)
         : snapshot.set,
       bindEffort: event.key === BIND_EFFORT_KEY ? event.newValue !== "0" : snapshot.bindEffort,
     };
@@ -798,10 +818,15 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "replaceImage": "替换",
     "removeImage": "移除",
     "addImage": "添加图片",
+    "pickLocalImage": "本地选图",
+    "pickLocalImageHint": "从本机选择一张图片，自动转为内嵌 base64 填入。",
     "imageUrlPlaceholder": "图片 URL（http/https 或 /plugins/dsh-flash-skin/assets/…）",
     "confirm": "确定",
     "cancel": "取消",
     "urlEmpty": "请输入图片 URL",
+    "fileNotImage": "请选择图片文件",
+    "fileTooLarge": "图片不能超过 2MB",
+    "readFailed": "读取图片失败，请重试",
     "defaultGroup": "新的皮肤组",
     "darkLevel": "深浅切换点",
     "darkLevelHint": "拖动此分割线设置深浅切换档位：左侧为浅色外壳，右侧为深色外壳。",
@@ -825,10 +850,15 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "replaceImage": "Replace",
     "removeImage": "Remove",
     "addImage": "Add image",
+    "pickLocalImage": "Pick local image",
+    "pickLocalImageHint": "Choose an image from this device; it is embedded as base64 automatically.",
     "imageUrlPlaceholder": "Image URL (http/https or /plugins/dsh-flash-skin/assets/…)",
     "confirm": "OK",
     "cancel": "Cancel",
     "urlEmpty": "Enter an image URL",
+    "fileNotImage": "Please choose an image file",
+    "fileTooLarge": "Image must be 2MB or smaller",
+    "readFailed": "Failed to read the image, please retry",
     "defaultGroup": "New group",
     "darkLevel": "Light/dark threshold",
     "darkLevelHint": "Drag this divider to set the light/dark threshold: images to its left keep the light shell, images to its right switch to dark.",
@@ -841,6 +871,19 @@ function newGroupId(): string {
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   return `group-${random}`;
+}
+
+// Local image picker: cap file size so the embedded base64 never blows up the
+// persisted config (localStorage-backed settings).
+const MAX_LOCAL_IMAGE_BYTES = 2 * 1024 * 1024;
+
+function readLocalFile(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
 }
 
 // Mapping shared by the divider editor: a group with `count` images has
@@ -874,6 +917,11 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
   // divider to redraw while dragging.
   const dragRef = useRef<{ groupIndex: number; count: number; level: number } | null>(null);
   const [dragTick, setDragTick] = useState(0);
+  // Hidden <input type=file> backing the "本地选图" buttons; pendingPick records
+  // which slot the picked image should land in (add → append, replace → swap).
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const pendingPick = useRef<{ kind: "add" | "replace"; groupIndex: number; imageIndex?: number } | null>(null);
+  const [fileError, setFileError] = useState<string | null>(null);
 
   const t = (key: string): string => {
     if (typeof localeT === "function") return localeT(key);
@@ -1047,6 +1095,42 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
     void commit(next);
   };
 
+  const openLocalPicker = (kind: "add" | "replace", groupIndex: number, imageIndex?: number) => {
+    if (!writable || busy) return;
+    pendingPick.current = { kind, groupIndex, imageIndex };
+    fileInputRef.current?.click();
+  };
+
+  const onFileInputChange = async (event: ReactChangeEvent<HTMLInputElement>) => {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    // Reset so picking the same file again re-triggers change.
+    input.value = "";
+    if (file === undefined) return;
+    const pick = pendingPick.current;
+    pendingPick.current = null;
+    if (!pick) return;
+    if (!file.type.startsWith("image/")) {
+      setFileError(t("fileNotImage"));
+      return;
+    }
+    if (file.size > MAX_LOCAL_IMAGE_BYTES) {
+      setFileError(t("fileTooLarge"));
+      return;
+    }
+    try {
+      const dataUrl = await readLocalFile(file);
+      setFileError(null);
+      if (pick.kind === "replace" && pick.imageIndex !== undefined) {
+        replaceImage(pick.groupIndex, pick.imageIndex, dataUrl);
+      } else {
+        addImage(pick.groupIndex, dataUrl);
+      }
+    } catch {
+      setFileError(t("readFailed"));
+    }
+  };
+
   const loadBuiltinGroups = () => {
     const next: PortraitGroupsConfig = PORTRAIT_SETS.map((set) => ({
       id: set.id,
@@ -1064,6 +1148,20 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
         {!writable && <p className="flash-portrait-groups__notice" role="status">{t("readOnly")}</p>}
       </header>
       <p className="flash-portrait-groups__hint">{t("hint")}</p>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        hidden
+        aria-hidden="true"
+        tabIndex={-1}
+        onChange={onFileInputChange}
+      />
+      {fileError && (
+        <p className="flash-portrait-groups__notice flash-portrait-groups__notice--error" role="alert">
+          {fileError}
+        </p>
+      )}
 
       {groups.length === 0 && (
         <div className="flash-portrait-groups__empty">
@@ -1198,6 +1296,14 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
                           >
                             {t("confirm")}
                           </button>
+                          <button
+                            type="button"
+                            title={t("pickLocalImageHint")}
+                            disabled={!writable || busy}
+                            onClick={() => openLocalPicker("replace", groupIndex, imageIndex)}
+                          >
+                            {t("pickLocalImage")}
+                          </button>
                           <button type="button" disabled={busy} onClick={() => setEditing(null)}>
                             {t("cancel")}
                           </button>
@@ -1276,6 +1382,14 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
                     >
                       {t("confirm")}
                     </button>
+                    <button
+                      type="button"
+                      title={t("pickLocalImageHint")}
+                      disabled={!writable || busy}
+                      onClick={() => openLocalPicker("add", groupIndex)}
+                    >
+                      {t("pickLocalImage")}
+                    </button>
                     <button type="button" disabled={busy} onClick={() => setEditing(null)}>
                       {t("cancel")}
                     </button>
@@ -1288,6 +1402,15 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
                       onClick={() => setEditing({ kind: "add", groupIndex, value: "" })}
                     >
                       + {t("addImage")}
+                    </button>
+                    <button
+                      type="button"
+                      className="flash-portrait-group__add-pick"
+                      title={t("pickLocalImageHint")}
+                      disabled={!writable || busy}
+                      onClick={() => openLocalPicker("add", groupIndex)}
+                    >
+                      {t("pickLocalImage")}
                     </button>
                   </li>
                 )}
@@ -1339,17 +1462,17 @@ export function apply(ctx: ClientContext) {
         ...CONFIG_TEXTS.zh,
         "appearance": "人物肖像",
         "effort.binding": "滑块绑定推理强度",
-        "set.storm": "梁圣",
-        "set.blaze": "梁神",
-        "set.frost": "梁祖",
+        "set.liangsheng": "Liang the Saint",
+        "set.liangshen": "Liang the God",
+        "set.liangzu": "Liang the Ancestor",
       },
       en: {
         ...CONFIG_TEXTS.en,
         "appearance": "Portrait group",
         "effort.binding": "Bind slider to reasoning level",
-        "set.storm": "梁圣",
-        "set.blaze": "梁神",
-        "set.frost": "梁祖",
+        "set.liangsheng": "Liang the Saint",
+        "set.liangshen": "Liang the God",
+        "set.liangzu": "Liang the Ancestor",
       },
     }),
     "flash-skin: settings locale",

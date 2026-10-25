@@ -47,7 +47,7 @@ export function getPortraitGroups() {
 // asset keys; the client anchors them to evenly spaced reasoning levels.
 export const PORTRAIT_SETS = [
   {
-    id: "storm",
+    id: "liangsheng",
     folder: "portrait-source-v2",
     files: [
       "stage-00.webp",
@@ -61,7 +61,7 @@ export const PORTRAIT_SETS = [
     ],
   },
   {
-    id: "blaze",
+    id: "liangshen",
     folder: "portrait-source-v3",
     files: [
       "level-01.webp",
@@ -75,7 +75,7 @@ export const PORTRAIT_SETS = [
     ],
   },
   {
-    id: "frost",
+    id: "liangzu",
     folder: "portrait-source-v4",
     files: [
       "level-03.webp",

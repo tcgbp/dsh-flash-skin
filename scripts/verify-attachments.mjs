@@ -234,13 +234,6 @@ try {
     s2.close();
   }
 
-  // 12. Builtin asset routes still serve (no regression)
-  {
-    const r = await fetch(new URL("plugins/dsh-flash-skin/assets/portrait-source-v2/stage-00.webp", base));
-    assert.equal(r.status, 200);
-    assert.equal(r.headers.get("content-type"), "image/webp");
-  }
-
   console.log("ALL ATTACHMENT ROUTE CHECKS PASSED");
 } finally {
   server.close();

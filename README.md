@@ -4,7 +4,7 @@
 
 ## 特性
 
-- 服务端 host 插件：注册 `/plugins/dsh-flash-skin/assets` 静态路由挂载点。
+- 服务端 host 插件：注册 `/plugins/dsh-flash-skin/attachment` 导入与图片托管路由（从压缩包导入肖像组）。
 - 浏览器端 client 插件：向「设置 → 外观」注入第四个外观选项（Flash Skin），并向外观下方的输入区注入一个强度滑块。
 - 纯 CSS 渐变色板（浅色 ↔ 深色），通过 `--dsw-alias-*` 主题 token 覆盖宿主界面。
 
@@ -32,7 +32,7 @@ dsh --profile web --dump-config | grep -B1 -A2 flash-skin
 
 | 文件 | 作用 |
 | --- | --- |
-| `src/index.js` | host 端入口：`webServer` 静态路由 |
+| `src/index.js` | host 端入口：portrait 组镜像 + attachment 归档导入/托管路由 |
 | `src/client/index.tsx` | client 入口：应用样式、注入外观项与滑块 |
 | `src/client/appearance.ts` | 注入原生外观第四选项 |
 | `src/client/logic.ts` | 色板计算 |

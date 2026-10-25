@@ -46,7 +46,6 @@ const SET_KEY = "dsh-flash-skin.set";
 const BIND_EFFORT_KEY = "dsh-flash-skin.bind-effort";
 const DRIVER_KEY = "dsh-flash-skin.driver";
 const WEIGHTS_KEY = "dsh-flash-skin.weights";
-const ASSET_PREFIX = `/plugins/${PACKAGE_ID}/assets`;
 // Host attachments route (exact path for POST upload, prefix for GET serve).
 const ATTACHMENT_PATH = `/plugins/${PACKAGE_ID}/attachment`;
 // How many extracted images the client sends per upload POST. Must stay within
@@ -62,54 +61,19 @@ const MEDIA_TYPE_BY_EXT: Record<string, string> = {
   ".gif": "image/gif",
 };
 
-// Level→file anchors per portrait set. The slider exposes MAX_LEVEL + 1 = 7
-// integer stops (0..6) that are mapped onto the configured images by the pure
-// count-driven stagedFrames() helper — every anchor below is active and drives
-// one portrait frame, spreading evenly from slot 0 to the highest slot. Swap
-// folder contents to point at different character art.
-// Portrait set ids follow the Chinese display names (梁圣 → liangsheng,
-// 梁神 → liangshen, 梁祖 → liangzu). PORTRAIT_ANCHORS is keyed by the same ids.
-const PORTRAIT_ANCHORS: Record<string, { level: number; file: string }[]> = {
-  liangsheng: [
-    { level: 0, file: "stage-00.webp" },
-    { level: 4, file: "level-04.webp" },
-    { level: 9, file: "level-09.webp" },
-    { level: 13, file: "level-13.webp" },
-    { level: 17, file: "level-16.webp" },
-    { level: 21, file: "level-19.webp" },
-    { level: 26, file: "stage-24.webp" },
-    { level: 30, file: "level-28.webp" },
-  ],
-  liangshen: [
-    { level: 0, file: "level-01.webp" },
-    { level: 4, file: "stage-06.webp" },
-    { level: 9, file: "level-10.webp" },
-    { level: 13, file: "level-14.webp" },
-    { level: 17, file: "level-17.webp" },
-    { level: 21, file: "level-21.webp" },
-    { level: 26, file: "level-25.webp" },
-    { level: 30, file: "level-29.webp" },
-  ],
-  liangzu: [
-    { level: 0, file: "level-03.webp" },
-    { level: 4, file: "level-07.webp" },
-    { level: 9, file: "stage-12.webp" },
-    { level: 13, file: "bridge-15.webp" },
-    { level: 17, file: "stage-18.webp" },
-    { level: 21, file: "level-22.webp" },
-    { level: 26, file: "bridge-27.webp" },
-    { level: 30, file: "stage-30.webp" },
-  ],
-};
-
-// The set ids were renamed from English (storm/blaze/frost) to the pinyin of
-// the Chinese names. Old persisted values (localStorage SET_KEY and saved
-// portraitGroups group ids) still carry the legacy ids, so keep a mapping and
-// normalize them whenever a persisted value is read back.
+// The three original built-in sets (storm/blaze/frost, later renamed to
+// liangsheng/liangshen/liangzu) were archived out of the plugin: their art now
+// ships as importable example zip archives, so there are no on-disk anchors.
+// Old persisted values (localStorage SET_KEY and saved portraitGroups group
+// ids) still carry those ids, so keep a mapping and fold them into the single
+// default set whenever one is read back.
 const LEGACY_SET_IDS: Record<string, string> = {
-  storm: "liangsheng",
-  blaze: "liangshen",
-  frost: "liangzu",
+  storm: "default",
+  blaze: "default",
+  frost: "default",
+  liangsheng: "default",
+  liangshen: "default",
+  liangzu: "default",
 };
 
 function normalizeSetId(id: string | null | undefined): string | undefined {
@@ -126,12 +90,11 @@ function normalizeSetId(id: string | null | undefined): string | undefined {
 // binding. The settings-row selector shows the Chinese name in the Chinese UI
 // and the English name in the English UI; any locale that is not English
 // (including custom language packs) reads the Chinese name first. Built-in ids
-// fall back to the DEFAULT_PORTRAIT_SETS defaults when the persisted config
-// predates zh/en (older configs only stored `name`), so the original default
-// English names never disappear merely because a stale config lacks them.
+// resolve to the single default-set identity when the persisted config predates
+// the bilingual names (older configs only stored `name`), so a display name
+// never disappears merely because a stale config lacks it.
 function defaultSetIdentity(id: string | undefined): DefaultPortraitSet | undefined {
-  if (!id) return undefined;
-  return DEFAULT_PORTRAIT_SETS.find((item) => item.id === id);
+  return id === DEFAULT_PORTRAIT_SET.id ? DEFAULT_PORTRAIT_SET : undefined;
 }
 
 function setDisplayName(set: { id?: string; name?: string; zh?: string; en?: string }, active: string): string {
@@ -144,43 +107,34 @@ function setDisplayName(set: { id?: string; name?: string; zh?: string; en?: str
 }
 
 // Resolve the full ordered frame list for a portrait set, for the general
-// settings preview strip. Configured groups (including built-in-seeded ones)
-// expose their whole image list; untouched built-in sets fall back to the
-// on-disk anchors — every configured/on-disk image is active, mapped onto the
-// 0..MAX_LEVEL slider by the count-driven stagedFrames() helper. Returns []
-// when the set has nothing to show yet (e.g. a brand-new image-less group).
+// settings preview strip. Configured groups expose their whole image list,
+// mapped onto the 0..MAX_LEVEL slider by the count-driven stagedFrames()
+// helper. Returns [] when the set has nothing to show yet (e.g. a brand-new
+// image-less group, or the untouched default set).
 function setFrames(set: PortraitGroupConfig | DefaultPortraitSet): string[] {
   const configuredImages = (set as PortraitGroupConfig).images;
-  if (Array.isArray(configuredImages) && configuredImages.length > 0) {
-    return configuredImages.slice();
-  }
-  const anchors = PORTRAIT_ANCHORS[set.id] ?? [];
-  const folder = (set as PortraitSet).folder;
-  if (!folder || anchors.length === 0) return [];
-  return anchors.map(({ file }) => `${ASSET_PREFIX}/${folder}/${file}`);
+  return Array.isArray(configuredImages) ? configuredImages.slice() : [];
 }
 
 interface PortraitSet {
   id: string;
-  /** Built-in anchor folder; undefined for fully custom (user-created) sets. */
-  folder?: string;
 }
 
-// The set ids, the Chinese display names (梁圣/梁神/梁祖) and the English display
-// names are all seeded into the user-editable `portraitGroups` config (see
-// FlashSkinConfigCard / setDisplayName below), so the user can rename any of
-// them from the plugin detail page. These code constants are only the fallback
-// identity used while no config has been written yet.
+// The previous three built-in portrait sets (梁圣/梁神/梁祖) were archived into
+// the example import archives and their on-disk art removed. Only a single
+// fallback identity remains, shown while no portraitGroups config has been
+// written yet; it carries no images, so the untouched state shows the flat
+// shell placeholder instead of built-in art.
 interface DefaultPortraitSet extends PortraitSet {
   zh: string;
   en: string;
 }
 
-const DEFAULT_PORTRAIT_SETS: DefaultPortraitSet[] = [
-  { id: "liangsheng", folder: "portrait-source-v2", zh: "梁圣", en: "Liang the Saint" },
-  { id: "liangshen", folder: "portrait-source-v3", zh: "梁神", en: "Liang the God" },
-  { id: "liangzu", folder: "portrait-source-v4", zh: "梁祖", en: "Liang the Ancestor" },
-];
+const DEFAULT_PORTRAIT_SET: DefaultPortraitSet = {
+  id: "default",
+  zh: "默认",
+  en: "Default",
+};
 
 // How the level slider is driven:
 // - "manual"  → user drags the slider; the value persists across sessions.
@@ -328,7 +282,7 @@ class SkinPresenter {
   private portraits: ReturnType<typeof createPortraitLoader>;
   private enabled = true;
   private level = 0;
-  private set: PortraitSet = DEFAULT_PORTRAIT_SETS[0];
+  private set: PortraitSet = DEFAULT_PORTRAIT_SET;
   // Per-group config mirrored from the persisted config card. images drive the
   // portrait sequence; darkLevel (absent → MAX_LEVEL - 1) drives the flip to
   // the dark shell.
@@ -372,8 +326,6 @@ class SkinPresenter {
     // Prefer the user-configured images for this set, staged by the pure
     // count-driven stagedFrames() helper so added/removed frames re-spread
     // automatically across the 0..MAX_LEVEL slider (no fixed number of stops).
-    // Falls back to the built-in on-disk anchors, staged the same way — every
-    // anchor image is active.
     const group = configs[set.id];
     if (group && group.images.length > 0) {
       const frames = stagedFrames(group.images.length);
@@ -382,22 +334,15 @@ class SkinPresenter {
         url,
       }));
     }
-    const anchors = PORTRAIT_ANCHORS[set.id] ?? [];
-    if (!set.folder || anchors.length === 0) return [];
-    const frames = stagedFrames(anchors.length);
-    return anchors.map(({ file }, index) => ({
-      level: frames[index] ?? 0,
-      url: `${ASSET_PREFIX}/${set.folder}/${file}`,
-    }));
+    return [];
   }
 
   // Resolve a persisted/selected set id to a PortraitSet. Configured (custom)
-  // ids must survive anyway: they have no built-in anchors, so they resolve to
-  // `{ id }` with no folder and rely on the configured group images.
+  // ids must survive anyway: they carry their own configured group images, so
+  // any unknown id resolves to `{ id }` and simply has nothing to show until a
+  // group with that id exists. Only the default set is pre-registered.
   private resolveSet(setId: string | undefined | null): PortraitSet {
-    const found = DEFAULT_PORTRAIT_SETS.find((item) => item.id === setId);
-    if (found) return { id: found.id, folder: found.folder };
-    return { id: setId || DEFAULT_PORTRAIT_SETS[0].id };
+    return { id: setId || DEFAULT_PORTRAIT_SET.id };
   }
 
   constructor(scope: PreferenceStore, theme: ThemeService) {
@@ -1028,7 +973,7 @@ interface PortraitSetRowProps {
 // 人物肖像选择行：组的身份（set id + 中英文名称）完全来自可配置的
 // portraitGroups，订阅配置表单以实时反映详情页的改名；名称按活动语言在渲染
 // 期解析（中文界面中文名、英文界面英文名），语言切换通过 locale face 触发
-// 重渲染。未写入过配置时回落内建三组默认身份（DEFAULT_PORTRAIT_SETS）。
+// 重渲染。未写入过配置时回落单一默认身份（DEFAULT_PORTRAIT_SET）。
 function PortraitSetRow({ scope, presenter, form, locale, t }: PortraitSetRowProps) {
   const snapshot = useSyncExternalStore(
     (listener) => scope.subscribe(listener),
@@ -1049,7 +994,7 @@ function PortraitSetRow({ scope, presenter, form, locale, t }: PortraitSetRowPro
     groupsSnapshot?.status === "ready"
       ? ((groupsSnapshot.value as { portraitGroups?: readonly PortraitGroupConfig[] } | undefined)?.portraitGroups ?? [])
       : [];
-  const sets = (configured.length > 0 ? configured : DEFAULT_PORTRAIT_SETS).map((set) => ({
+  const sets = (configured.length > 0 ? configured : [DEFAULT_PORTRAIT_SET]).map((set) => ({
     id: set.id,
     label: setDisplayName(set, localeSnapshot.active),
     frames: setFrames(set),
@@ -1128,13 +1073,13 @@ function restoreInitialSet(): string {
   try {
     // Any persisted set id is honored — configured sets may carry arbitrary ids
     // (the detail page can rename them). Legacy ids (storm/blaze/frost) from
-    // before the rename are normalized to their pinyin equivalents on read.
+    // before the archive-out are normalized to the default set on read.
     const id = normalizeSetId(localStorage.getItem(SET_KEY));
     if (id) return id;
   } catch {
     // storage may be unavailable
   }
-  return DEFAULT_PORTRAIT_SETS[0].id;
+  return DEFAULT_PORTRAIT_SET.id;
 }
 
 // Restore the driver mode. The old bind-effort toggle (BIND_EFFORT_KEY) is
@@ -1192,7 +1137,7 @@ function normalizeTuning(tuning: Partial<SpeedTuning> | null | undefined): Speed
 function createPreferenceStore(initialSet: string): PreferenceStore {
   let snapshot: SkinSettings = {
     enabled: true,
-    set: initialSet ? initialSet : DEFAULT_PORTRAIT_SETS[0].id,
+    set: initialSet ? initialSet : DEFAULT_PORTRAIT_SET.id,
     driver: restoreDriver(),
   };
   const listeners = new Set<() => void>();
@@ -1389,8 +1334,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "readOnly": "当前文档不允许写入，请先开启连接或权限。",
     "openDetails": "Flash皮肤插件配置",
     "openDetailsHint": "在插件管理页打开本插件（dsh-flash-skin）的详情。",
-    "empty": "还没有任何肖像皮肤组，可以先用内置素材初始化，再从零创建。",
-    "loadDefaults": "使用内置素材初始化",
+    "empty": "还没有任何肖像皮肤组，从压缩包导入、或手动添加图片来创建一个。",
     "addGroup": "新建皮肤组",
     "renameGroup": "重命名皮肤组",
     "namePlaceholder": "皮肤组名称",
@@ -1404,7 +1348,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "addImage": "添加图片",
     "pickLocalImage": "本地选图",
     "pickLocalImageHint": "从本机选择一张图片，自动转为内嵌 base64 填入。",
-    "imageUrlPlaceholder": "图片 URL（http/https 或 /plugins/dsh-flash-skin/assets/…）",
+    "imageUrlPlaceholder": "图片 URL（http/https）",
     "confirm": "确定",
     "cancel": "取消",
     "urlEmpty": "请输入图片 URL",
@@ -1440,8 +1384,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "readOnly": "The current document does not accept writes; connect or grant permission first.",
     "openDetails": "Flash Skin plugin settings",
     "openDetailsHint": "Open this plugin's (dsh-flash-skin) detail page in the plugin manager.",
-    "empty": "No portrait groups yet — initialize from the built-in art, or create one from scratch.",
-    "loadDefaults": "Initialize from built-in art",
+    "empty": "No portrait groups yet — import an archive, or create one from scratch.",
     "addGroup": "New group",
     "renameGroup": "Rename group",
     "namePlaceholder": "Group name",
@@ -1455,7 +1398,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "addImage": "Add image",
     "pickLocalImage": "Pick local image",
     "pickLocalImageHint": "Choose an image from this device; it is embedded as base64 automatically.",
-    "imageUrlPlaceholder": "Image URL (http/https or /plugins/dsh-flash-skin/assets/…)",
+    "imageUrlPlaceholder": "Image URL (http/https)",
     "confirm": "OK",
     "cancel": "Cancel",
     "urlEmpty": "Enter an image URL",
@@ -2114,18 +2057,6 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
     }
   };
 
-  const loadBuiltinGroups = () => {
-    const next: PortraitGroupsConfig = DEFAULT_PORTRAIT_SETS.map((set) => ({
-      id: set.id,
-      name: set.zh,
-      zh: set.zh,
-      en: set.en,
-      darkLevel: MAX_LEVEL - 1,
-      images: (PORTRAIT_ANCHORS[set.id] ?? []).map((anchor) => `${ASSET_PREFIX}/${set.folder}/${anchor.file}`),
-    }));
-    void commit(next);
-  };
-
   // One inline input per identity field (set id / Chinese name / English name),
   // each wrapped in a <label> so the field shows a visible caption (Set ID /
   // 中文名称 / 英文名称) and clicking the caption focuses the input.
@@ -2206,9 +2137,6 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
       {groups.length === 0 && (
         <div className="flash-portrait-groups__empty">
           <p>{t("empty")}</p>
-          <button type="button" disabled={!writable || busy} onClick={loadBuiltinGroups}>
-            {t("loadDefaults")}
-          </button>
         </div>
       )}
 
@@ -2675,7 +2603,7 @@ export function apply(ctx: ClientContext) {
     } catch {
       // host locale missing — defaults are shown
     }
-    const list = configured.length > 0 ? configured : DEFAULT_PORTRAIT_SETS;
+    const list = configured.length > 0 ? configured : [DEFAULT_PORTRAIT_SET];
     return list.map((set) => ({
       label: setDisplayName(set, active),
       value: normalizeSetId(set.id) ?? set.id,

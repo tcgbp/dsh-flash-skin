@@ -35,10 +35,11 @@ conversation UI:
   (`.flash-skin-backdrop`) shows character portraits that swap as the level
   slider moves; low slider levels keep the native light shell, and only the
   **highest two levels (slider 5 and 6 of the 0..6 slider)** switch to the dark
-  shell. The slider exposes **7 stops** (`MAX_LEVEL = 6`); each set keeps 8
-  anchors in `PORTRAIT_ANCHORS` but only the **first 7 are active** in display
-  logic (`sourcesForSet` uses `slice(0, -1)`), the 8th being a placeholder for
-  tuning.
+  shell. The slider exposes **7 stops** (`MAX_LEVEL = 6`); each portrait group
+  lists its frames in rank order, staged across the levels by the count-driven
+  `stagedFrames()` helper. No portrait art ships on disk: the original three
+  sets (梁圣/梁神/梁祖) are importable example archives, and an untouched install
+  falls back to a single image-less `default` identity (flat shell).
 - **Persisted settings.** Inputs (level, active set, bind-effort, portrait
   groups) persist through `ctx.settings`/localStorage; the config card is keyed
   by the bundle npm name `dsh-flash-skin` under namespace `flash-skin`.
@@ -75,7 +76,8 @@ reflects the change, then re-run `npm test`.
 ## Source map
 
 - `src/index.js` — plugin entry. Registers `PACKAGE_ID`, mirrors portrait
-  groups via `ctx.settings` (`"flash-skin: portrait groups mirror"`).
+  groups via `ctx.settings` (`"flash-skin: portrait groups mirror"`), and
+  exposes the attachment-backed archive-import & image-serve routes.
 - `src/client/index.tsx` — main bundle. `SkinPresenter` owns the backdrop,
   theme switching (`syncNativeTheme`), palette application (`applyPalette`),
   and config-form / settings slots.
@@ -129,5 +131,6 @@ These were explicit user requirements. Keep them intact and gated:
 
 - User-facing UI copy is Chinese; code, comments, and file content are English.
 - Config-card identity is the bundle npm name `dsh-flash-skin`; namespace is
-  `flash-skin`; portrait-group images are URL-only; 24 webp assets on disk.
+  `flash-skin`; portrait-group images are URL-only, hosted by the
+  attachment-backed `/plugins/dsh-flash-skin/attachment` import & serve route.
 - Do not modify the DeepSeek Harness implementation checkout outside this repo.

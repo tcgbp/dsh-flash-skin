@@ -1,5 +1,4 @@
 import { createReadStream, statSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import z from "@deepseek-ai/schemastery";
 import { parseSingleRange } from "./range.js";
 
@@ -7,7 +6,6 @@ export { parseSingleRange } from "./range.js";
 
 export const PACKAGE_ID = "dsh-flash-skin";
 export const SETTINGS_NAMESPACE = "flash-skin";
-export const ASSET_PREFIX = `/plugins/${PACKAGE_ID}/assets/`;
 
 // Attachment-backed routes used by the client's archive importer. The client
 // strips images out of a .zip/.tar archive locally and POSTs them here in
@@ -74,62 +72,6 @@ export function getPortraitGroups() {
   return portraitGroupsSnapshot;
 }
 
-// Demo: three portrait sets (each a distinct "appearance"), served at levels
-// 0..30. Each set maps to its own source asset directory under /assets and
-// serves exactly the 8 distinct frames inside it. The file names are per-set
-// asset keys; the client anchors them to evenly spaced reasoning levels.
-export const PORTRAIT_SETS = [
-  {
-    id: "liangsheng",
-    folder: "portrait-source-v2",
-    files: [
-      "stage-00.webp",
-      "level-04.webp",
-      "level-09.webp",
-      "level-13.webp",
-      "level-16.webp",
-      "level-19.webp",
-      "stage-24.webp",
-      "level-28.webp",
-    ],
-  },
-  {
-    id: "liangshen",
-    folder: "portrait-source-v3",
-    files: [
-      "level-01.webp",
-      "stage-06.webp",
-      "level-10.webp",
-      "level-14.webp",
-      "level-17.webp",
-      "level-21.webp",
-      "level-25.webp",
-      "level-29.webp",
-    ],
-  },
-  {
-    id: "liangzu",
-    folder: "portrait-source-v4",
-    files: [
-      "level-03.webp",
-      "level-07.webp",
-      "stage-12.webp",
-      "bridge-15.webp",
-      "stage-18.webp",
-      "level-22.webp",
-      "bridge-27.webp",
-      "stage-30.webp",
-    ],
-  },
-];
-
-const ASSET_SPECS = [];
-for (const { folder, files } of PORTRAIT_SETS) {
-  for (const file of files) {
-    ASSET_SPECS.push([`${folder}/${file}`, "image/webp"]);
-  }
-}
-
 function send(res, status, headers = {}) {
   res.writeHead(status, {
     "X-Content-Type-Options": "nosniff",
@@ -138,55 +80,10 @@ function send(res, status, headers = {}) {
   res.end();
 }
 
-function buildAssets() {
-  const assets = new Map();
-  for (const [name, type] of ASSET_SPECS) {
-    const path = fileURLToPath(new URL(`../assets/${name}`, import.meta.url));
-    try {
-      const info = statSync(path);
-      if (!info.isFile()) continue;
-      assets.set(`${ASSET_PREFIX}${name}`, {
-        path,
-        type,
-        size: info.size,
-        etag: `W/"${info.size.toString(16)}-${Math.trunc(info.mtimeMs).toString(16)}"`,
-      });
-    } catch {
-      // A missing optional medium is handled by the browser fallback chain.
-    }
-  }
-  return { assets };
-}
-
-function createAssetHandler(assets, activeStreams) {
-  return (req, res) => {
-    const method = req.method ?? "GET";
-    if (method !== "GET" && method !== "HEAD") {
-      send(res, 405, { Allow: "GET, HEAD" });
-      return;
-    }
-
-    let pathname;
-    try {
-      pathname = new URL(req.url ?? "/", "http://dsh.local").pathname;
-    } catch {
-      send(res, 404);
-      return;
-    }
-    const asset = assets.get(pathname);
-    if (asset === undefined) {
-      send(res, 404);
-      return;
-    }
-
-    writeAsset(req, res, method, asset, activeStreams);
-  };
-}
-
 // Stream a stat'd file asset with full HTTP semantics — GET/HEAD only, ETag
 // revalidation (304), If-Range, single byte ranges (206/416) and stream
-// lifetime tracking so teardown can drain/abort in-flight reads. Shared by the
-// static asset route and the attachment-backed serve route.
+// lifetime tracking so teardown can drain/abort in-flight reads. Used by the
+// attachment-backed serve route.
 function writeAsset(req, res, method, asset, activeStreams) {
   if (req.headers["if-none-match"] === asset.etag) {
     send(res, 304, { ETag: asset.etag });
@@ -405,22 +302,7 @@ export function apply(ctx, config) {
     return () => unregister();
   }, "flash-skin: portrait groups mirror");
 
-  const { assets } = buildAssets();
   const activeStreams = new Set();
-  ctx.effect(() => {
-    const handler = createAssetHandler(assets, activeStreams);
-    const unregister = [...assets.keys()].map((path) => ctx.webServer.register({
-      kind: "exact",
-      path,
-      handler,
-    }));
-    return () => {
-      for (const dispose of unregister) dispose();
-      for (const stream of activeStreams) stream.destroy();
-      activeStreams.clear();
-    };
-  }, "flash-skin: static media route");
-
   ctx.effect(() => {
     const { upload, serve } = createAttachmentHandlers(ctx, activeStreams);
     // The upload route is an exact match on the bare path; the serve route

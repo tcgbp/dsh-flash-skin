@@ -1368,13 +1368,17 @@ export function apply(ctx: ClientContext) {
   }, PortraitSetRow));
 
   // ── Optional dsh-flash integration: quick-control switch ─────────────────
-  // Third-party action switch in dsh-flash's ⚡ panel (Extensions tab, source
-  // heading "dsh-flash-skin") that opens this plugin's detail page. Rule G §4:
-  // fully feature-detected — no import, no inject declaration, only the
-  // `quickControl` runtime service probed defensively. If dsh-flash (hence
-  // `quickControl` and the `dock-flash:ready` event) never appears, this whole
-  // block stays inert and the plugin keeps working standalone. The row is shown
-  // only while this skin is enabled (`presenter.isEnabled()`).
+  // Action switch in dsh-flash's ⚡ panel that opens this plugin's detail page.
+  // It lands in the built-in Workbench tab's Appearance group — rendered directly
+  // under the「皮肤主题」skin-theme cluster (order 26, past the cluster at 25) — by
+  // virtue of dsh-flash shipping `dsh-flash-skin:` in its `_COMPANIONS` whitelist
+  // (the same mechanism dsh-flash-ctx-mon / -mem-mon / -net-mon / -proxy use to be
+  // treated as built-in). Without that whitelist entry the same switch would fall
+  // back to the Extensions tab. Rule G §4: fully feature-detected — no import, no
+  // inject declaration, only the `quickControl` runtime service probed defensively.
+  // If dsh-flash (hence `quickControl` and the `dock-flash:ready` event) never
+  // appears, this whole block stays inert and the plugin keeps working standalone.
+  // The row is shown only while this skin is enabled (`presenter.isEnabled()`).
   const OPEN_DETAILS_SWITCH_ID = `${PACKAGE_ID}:open-details`;
   let quickControl: {
     registerSwitch?: (def: unknown) => (() => void) | void;
@@ -1408,7 +1412,10 @@ export function apply(ctx: ClientContext) {
         label: () => setLabel("openDetails"),
         icon: "doc",
         type: "action",
-        order: 100,
+        // Built-in Appearance group (under the skin-theme cluster at order 25),
+        // via the `dsh-flash-skin:` entry in dsh-flash's `_COMPANIONS` whitelist.
+        group: "appearance",
+        order: 26,
         hideLabel: true,
         actionLabel: () => setLabel("openDetails"),
         visible: () => presenter.isEnabled(),

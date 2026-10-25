@@ -2885,6 +2885,51 @@ export function apply(ctx: ClientContext) {
     }));
   };
 
+  // Slot picked up by the portrait-groups settings mirror below (registered in
+  // the enclosing scope): re-registering the panel slider keeps its bounds in
+  // step with the active group's live frame count (see registerQuickSwitches).
+  let refreshPortraitSlider: (() => void) | undefined;
+
+  const buildPortraitSliderSwitch = () => {
+    const count = presenter.getPortraitCount();
+    const max = Math.max(0, count - 1);
+    return {
+      id: PORTRAIT_SLIDER_SWITCH_ID,
+      label: () => setLabel("portraitSwitch"),
+      icon: "sliders",
+      type: "slider",
+      group: "appearance",
+      order: 26.5,
+      min: 0,
+      max,
+      step: 1,
+      getValue: () => frameIndexForContinuousLevel(presenter.getLevel(), presenter.getPortraitCount()),
+      setValue: (value) => {
+        const c = presenter.getPortraitCount();
+        if (c < 2) return;
+        const index = Math.min(c - 1, Math.max(0, Math.round(Number(value) || 0)));
+        const next = stagedFrames(c)[index] ?? 0;
+        presenter.setLevel(next);
+        try {
+          localStorage.setItem(LEVEL_KEY, String(next));
+        } catch {
+          // storage may be unavailable
+        }
+        quickControl?.notifyChange?.(PORTRAIT_SLIDER_SWITCH_ID);
+      },
+      // Right-hand value label shows the currently displayed frame (1-based
+      // over the group's image count) so "every image is slide-reachable"
+      // reads directly off the control.
+      formatLabel: (value) => {
+        const c = presenter.getPortraitCount();
+        if (c < 2) return "";
+        const index = Math.min(c - 1, Math.max(0, Math.round(Number(value) || 0)));
+        return `${index + 1}/${c}`;
+      },
+      visible: () => presenter.isEnabled() && presenter.getPortraitCount() >= 2,
+    };
+  };
+
   const registerQuickSwitches = (registry: unknown) => {
     if (quickSwitchesRegistered) return;
     const reg = registry as typeof quickControl;
@@ -2892,12 +2937,36 @@ export function apply(ctx: ClientContext) {
     quickSwitchesRegistered = true;
     quickControl = reg;
 
+    // The panel snapshots the slider's min/max/step as PLAIN values at
+    // register time (registerSwitch copies the definition), while the active
+    // group's frame count is not settled at first enable: the persisted
+    // portrait groups hydrate asynchronously (the presenter starts from an
+    // empty map) and later image edits or set switches change the count
+    // again. Registering the same id REPLACES the stored definition (and
+    // re-renders the panel), so re-register whenever the live count changes —
+    // `max` then always spans the current group's frames, while the effect
+    // teardown below still unregisters by id.
+    let sliderCount = -1;
+    let sliderDisposeFn: (() => void) | undefined;
+    refreshPortraitSlider = () => {
+      const count = presenter.getPortraitCount();
+      if (count === sliderCount) return sliderDisposeFn;
+      sliderCount = count;
+      const dispose = quickControl?.registerSwitch?.(buildPortraitSliderSwitch());
+      quickControl?.notifyChange?.(PORTRAIT_SLIDER_SWITCH_ID);
+      sliderDisposeFn = typeof dispose === "function" ? dispose : undefined;
+      return sliderDisposeFn;
+    };
+
     // Keep both rows in sync with the skin's own enabled state: the panel only
     // re-runs `visible()` after a registry version bump, so push one whenever
     // the enabled flag flips (choose/disable) so rows appear/disappear without
     // a panel reload.
     let lastEnabled = presenter.isEnabled();
     const offScope = scope.subscribe(() => {
+      // A scope change may have switched the active set, changing the number
+      // of frames its group stages — re-sync the slider bounds opportunistically.
+      refreshPortraitSlider?.();
       const enabled = presenter.isEnabled();
       if (enabled === lastEnabled) return;
       lastEnabled = enabled;
@@ -2936,45 +3005,14 @@ export function apply(ctx: ClientContext) {
       // 0..MAX_LEVEL grip could not reach every image — e.g. a 9-frame group
       // leaves two frames unreachable — so the slider targets the same
       // continuous staged levels the portrait loader nearest-selects on, which
-      // makes every frame its own reachable stop. `max` is a registration
-      // snapshot, but getValue/setValue/formatLabel clamp against the live
-      // frame count, so a stale bound stays harmless. Hidden for groups with
-      // fewer than two frames (nothing to slide through) or when disabled.
-      const sliderDispose = reg.registerSwitch?.({
-        id: PORTRAIT_SLIDER_SWITCH_ID,
-        label: () => setLabel("portraitSwitch"),
-        icon: "sliders",
-        type: "slider",
-        group: "appearance",
-        order: 26.5,
-        min: 0,
-        max: Math.max(0, presenter.getPortraitCount() - 1),
-        step: 1,
-        getValue: () => frameIndexForContinuousLevel(presenter.getLevel(), presenter.getPortraitCount()),
-        setValue: (value) => {
-          const count = presenter.getPortraitCount();
-          if (count < 2) return;
-          const index = Math.min(count - 1, Math.max(0, Math.round(Number(value) || 0)));
-          const next = stagedFrames(count)[index] ?? 0;
-          presenter.setLevel(next);
-          try {
-            localStorage.setItem(LEVEL_KEY, String(next));
-          } catch {
-            // storage may be unavailable
-          }
-          quickControl?.notifyChange?.(PORTRAIT_SLIDER_SWITCH_ID);
-        },
-        // Right-hand value label shows the currently displayed frame (1-based
-        // over the group's image count) so "every image is slide-reachable"
-        // reads directly off the control.
-        formatLabel: (value) => {
-          const count = presenter.getPortraitCount();
-          if (count < 2) return "";
-          const index = Math.min(count - 1, Math.max(0, Math.round(Number(value) || 0)));
-          return `${index + 1}/${count}`;
-        },
-        visible: () => presenter.isEnabled() && presenter.getPortraitCount() >= 2,
-      });
+      // makes every frame its own reachable stop. The panel snapshots the
+      // bounds at register time, so the row is registered through
+      // `refreshPortraitSlider()`, which re-registers with a fresh `max`
+      // whenever the live frame count changes (hydration, image edits, set
+      // switches) — a stale max of 0 would otherwise pin the thumb and make
+      // the slider undraggable. Hidden for groups with fewer than two frames
+      // (nothing to slide through) or when disabled.
+      const sliderDispose = refreshPortraitSlider?.();
       const openDispose = reg.registerSwitch?.({
         id: OPEN_DETAILS_SWITCH_ID,
         label: () => setLabel("openDetails"),
@@ -3044,6 +3082,9 @@ export function apply(ctx: ClientContext) {
       const snapshot = configForm.getSnapshot?.();
       const value = snapshot?.value as { portraitGroups?: PortraitGroupConfig[] } | undefined;
       presenter.setPortraitGroups(value?.portraitGroups ?? []);
+      // Image edits change the active group's frame count; keep the panel
+      // slider's registration bounds in step (no-op if the count is unchanged).
+      refreshPortraitSlider?.();
     };
     read();
     const unsubscribe = configForm.subscribe(read);

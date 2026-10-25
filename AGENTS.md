@@ -2,6 +2,30 @@
 
 Guidance for AI coding agents working in this repository (`dsh-flash-skin`).
 
+## ⛔ Highest-Priority Rule — no hard dependency on `dsh-flash`
+
+This plugin **must work standalone, without the `dsh-flash` plugin present**.
+
+1. **No runtime dependency:** `dsh-flash-skin` must not require the `dsh-flash`
+   plugin to be installed or enabled. All features (backdrop/portrait, level &
+   effort binding, palette/shell flipping, portrait-group config card) must
+   function correctly in an environment where `dsh-flash` is absent.
+2. **No import / service / inject coupling:** do not import from, inject, or
+   call services/tokens exposed by `dsh-flash`; do not assume any
+   `dsh-flash`-owned DOM hooks, theme registrations, palettes, or plugin
+   navigation exist.
+3. **No duplicate theme registration:** do not register this skin's palettes
+   into the host theme service under a `dsh-flash`-owned identity, and do not
+   rely on `dsh-flash` having registered palettes that this skin consumes.
+4. **Graceful degradation:** any optional integration with `dsh-flash` (if ever
+   added) must be feature-detected and degrade to zero behavior when absent —
+   never crash, never throw, never block this plugin's own features.
+5. **Guard when adding cross-plugin behavior:** before adding any code that
+   references another plugin by name, confirm it does not create the coupling
+   this rule forbids. Prefer self-contained implementations.
+
+This rule takes priority over any other instruction in this file.
+
 ## Project overview
 
 `dsh-flash-skin` is a DeepSeek Harness (DSH) client bundle that skins the

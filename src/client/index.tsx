@@ -783,6 +783,8 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "title": "肖像皮肤组",
     "hint": "每个组是一组有序图片，槽位从左到右对应推理等级由低到高，空槽位会回退到默认素材。",
     "readOnly": "当前文档不允许写入，请先开启连接或权限。",
+    "openDetails": "打开插件详情",
+    "openDetailsHint": "在插件管理页打开本插件（dsh-flash-skin）的详情。",
     "empty": "还没有任何肖像皮肤组，可以先用内置素材初始化，再从零创建。",
     "loadDefaults": "使用内置素材初始化",
     "addGroup": "新建皮肤组",
@@ -1318,6 +1320,19 @@ export function apply(ctx: ClientContext) {
   const presenter = new SkinPresenter(scope, theme);
   ctx.effect(() => () => presenter.dispose(), "flash-skin: backdrop presenter");
 
+  // 宿主插件管理器把「打开某包详情页」暴露为反射服务 pluginNavigation.openBundle；
+  // 从任何插件的 bundle 里都能拿到，点击即跳转插件管理 → 已安装 → 本包详情。
+  // 该能力来自宿主内建插件管理器，与 dsh-flash 插件无关；缺失时静默降级。
+  const openDetails = () => {
+    try {
+      const navigation = (ctx.reflect as unknown as { get?: (id: string) => unknown }).get?.("pluginNavigation");
+      const open = (navigation as { openBundle?: (name: string) => void } | undefined)?.openBundle;
+      if (typeof open === "function") open(PACKAGE_ID);
+    } catch {
+      // 反射服务不可用时静默降级，按钮只是不跳转。
+    }
+  };
+
   ctx.effect(
     () => ctx.locale.register(LOCALE_NAMESPACE, {
       zh: {
@@ -1351,6 +1366,91 @@ export function apply(ctx: ClientContext) {
     order: 20,
     inject: () => ({ scope, presenter, sets, t: setLabel }),
   }, PortraitSetRow));
+
+  // ── Optional dsh-flash integration: quick-control switch ─────────────────
+  // Third-party action switch in dsh-flash's ⚡ panel (Extensions tab, source
+  // heading "dsh-flash-skin") that opens this plugin's detail page. Rule G §4:
+  // fully feature-detected — no import, no inject declaration, only the
+  // `quickControl` runtime service probed defensively. If dsh-flash (hence
+  // `quickControl` and the `dock-flash:ready` event) never appears, this whole
+  // block stays inert and the plugin keeps working standalone. The row is shown
+  // only while this skin is enabled (`presenter.isEnabled()`).
+  const OPEN_DETAILS_SWITCH_ID = `${PACKAGE_ID}:open-details`;
+  let quickControl: {
+    registerSwitch?: (def: unknown) => (() => void) | void;
+    unregisterSwitch?: (id: string) => void;
+    notifyChange?: (id: string) => void;
+  } | undefined;
+  let openDetailsRegistered = false;
+
+  const registerOpenDetailsSwitch = (registry: unknown) => {
+    if (openDetailsRegistered) return;
+    const reg = registry as typeof quickControl;
+    if (!reg || typeof reg.registerSwitch !== "function") return;
+    openDetailsRegistered = true;
+    quickControl = reg;
+
+    // Keep the row in sync with the skin's own enabled state: the panel only
+    // re-runs `visible()` after a registry version bump, so push one whenever
+    // the enabled flag flips (choose/disable) so the row appears/disappears
+    // without a panel reload.
+    let lastEnabled = presenter.isEnabled();
+    const offScope = scope.subscribe(() => {
+      const enabled = presenter.isEnabled();
+      if (enabled === lastEnabled) return;
+      lastEnabled = enabled;
+      quickControl?.notifyChange?.(OPEN_DETAILS_SWITCH_ID);
+    });
+
+    ctx.effect(() => {
+      const dispose = reg.registerSwitch?.({
+        id: OPEN_DETAILS_SWITCH_ID,
+        label: () => setLabel("openDetails"),
+        icon: "doc",
+        type: "action",
+        order: 100,
+        hideLabel: true,
+        actionLabel: () => setLabel("openDetails"),
+        visible: () => presenter.isEnabled(),
+        run: () => openDetails(),
+      });
+      return () => {
+        if (typeof dispose === "function") dispose();
+        else reg.unregisterSwitch?.(OPEN_DETAILS_SWITCH_ID);
+        offScope();
+      };
+    }, "flash-skin: open-details quick switch");
+  };
+
+  const cts = ctx as unknown as {
+    on?: (name: string, listener: (payload: unknown) => void) => (() => void) | undefined;
+    get?: (name: string) => unknown;
+  };
+
+  // Passive discovery: dsh-flash emits `dock-flash:ready` once it has provided
+  // `quickControl` (covers dsh-flash loading after this bundle).
+  if (typeof cts.on === "function") {
+    try {
+      const offReady = cts.on("dock-flash:ready", (payload: unknown) => {
+        const p = payload as { quickControl?: unknown } | null | undefined;
+        if (p?.quickControl) registerOpenDetailsSwitch(p.quickControl);
+      });
+      ctx.effect(() => () => {
+        if (typeof offReady === "function") offReady();
+      }, "flash-skin: dock-ready off");
+    } catch {
+      // no event bus on this context — the active probe below still applies
+    }
+  }
+
+  // Active discovery: dsh-flash may already be loaded (covers dsh-flash
+  // loading before this bundle); probe the service directly.
+  try {
+    const registry = cts.get?.("quickControl");
+    if (registry) registerOpenDetailsSwitch(registry);
+  } catch {
+    // `quickControl` unavailable — this plugin keeps working standalone
+  }
 
   // 自定义配置页：插件管理页在「已配置」的 bundle 上渲染 plugins.bundle.config
   // 槽位（视图为页面，key 取 bundle 包名）。表单直接对准 Host 的 volatile 设置

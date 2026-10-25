@@ -783,7 +783,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "title": "肖像皮肤组",
     "hint": "每个组是一组有序图片，槽位从左到右对应推理等级由低到高，空槽位会回退到默认素材。",
     "readOnly": "当前文档不允许写入，请先开启连接或权限。",
-    "openDetails": "打开插件详情",
+    "openDetails": "Flash皮肤插件配置",
     "openDetailsHint": "在插件管理页打开本插件（dsh-flash-skin）的详情。",
     "empty": "还没有任何肖像皮肤组，可以先用内置素材初始化，再从零创建。",
     "loadDefaults": "使用内置素材初始化",

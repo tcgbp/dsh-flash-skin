@@ -1376,6 +1376,9 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "zipImported": "已导入 {n} 张图片，创建了新的皮肤组",
     "zipImportedMeta": "，并按压缩包内元数据设置了标识、中英文名称与深浅切换点",
     "metaImported": "已按清单创建新组（{n} 张在线图片）",
+    "importIdConflict": "标识（Set ID）「{id}」已被占用，请换一个唯一标识再导入",
+    "importConfirm": "导入",
+    "importCancel": "取消",
   },
   en: {
     "loading": "Loading…",
@@ -1426,6 +1429,9 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "zipImported": "Imported {n} images and created a new group",
     "zipImportedMeta": ", and set the id, Chinese/English names and light/dark threshold from the archive metadata",
     "metaImported": "Created a new group from the manifest metadata with {n} image URLs",
+    "importIdConflict": "Set ID \"{id}\" is already in use — pick a unique one before importing",
+    "importConfirm": "Import",
+    "importCancel": "Cancel",
   },
 };
 
@@ -1739,6 +1745,16 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const pendingPick = useRef<{ kind: "add" | "replace"; groupIndex: number; imageIndex?: number } | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
+  // An imported archive whose manifest id collides with an existing group
+  // pauses in `pendingImport` so the user can confirm a unique id before it
+  // takes effect, instead of silently appending a `-2`/`-3` suffix.
+  const [pendingImport, setPendingImport] = useState<{
+    images: string[];
+    meta: PortraitImportMeta;
+    originalId: string;
+    draftId: string;
+    notice: string;
+  } | null>(null);
 
   const t = (key: string): string => {
     if (typeof localeT === "function") return localeT(key);
@@ -1967,9 +1983,12 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
   // Seed a new group from an imported archive. The (optional) archive manifest
   // provides the set id, Chinese/English names and light/dark threshold; any
   // absent field falls back to the built-in defaults, and the id always stays
-  // non-empty and unique among the existing groups (a colliding manifest id
-  // gets a `-2`, `-3`, … suffix). Imported values are just seeded defaults —
-  // the group remains fully editable afterwards like any other.
+  // non-empty and unique among the existing groups. Import-time id conflicts
+  // are surfaced for the user to resolve first (see onArchiveInputChange) —
+  // this loop is a belt-and-braces dedupe for any id passed straight through,
+  // and archives without a manifest id get an auto-generated one. Imported
+  // values are just seeded defaults — the group remains fully editable
+  // afterwards like any other.
   const insertImportedGroup = (images: string[], meta?: PortraitImportMeta) => {
     const defaultZh = CONFIG_TEXTS.zh.defaultGroup;
     const defaultEn = CONFIG_TEXTS.en.defaultGroup;
@@ -1983,7 +2002,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
     const en = meta?.en || defaultEn;
     const next: PortraitGroupsConfig = [...groups, {
       id,
-      name: meta?.name || zh,
+      name: zh,
       zh,
       en,
       darkLevel: meta?.darkLevel ?? MAX_LEVEL - 1,
@@ -2050,11 +2069,54 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
       if (skippedOversize > 0) {
         notice += " " + t("zipSkippedOversize").replace("{n}", String(skippedOversize));
       }
+      if (meta?.id && groups.some((group) => group.id === meta.id)) {
+        // The manifest's set id collides with an existing group: surface the
+        // conflict and let the user confirm a unique id, rather than silently
+        // renaming it. The uploaded images are kept until then.
+        setPendingImport({
+          images,
+          meta,
+          originalId: meta.id,
+          draftId: suggestUniqueId(meta.id),
+          notice,
+        });
+        return;
+      }
       insertImportedGroup(images, meta ?? undefined);
       setFileError(notice);
     } catch {
       setFileError(t("zipParseFailed"));
     }
+  };
+
+  // Smallest unique variant of `baseId` against the current groups: the id itself
+  // when free, else `-2`, `-3`, …
+  const suggestUniqueId = (baseId: string): string => {
+    if (!groups.some((group) => group.id === baseId)) return baseId;
+    for (let suffix = 2; ; suffix += 1) {
+      const candidate = `${baseId}-${suffix}`;
+      if (!groups.some((group) => group.id === candidate)) return candidate;
+    }
+  };
+
+  const confirmImport = () => {
+    if (!pendingImport) return;
+    const draftId = pendingImport.draftId.trim();
+    if (!draftId) return;
+    if (groups.some((group) => group.id === draftId)) {
+      // Still colliding — nudge back to a free variant and let the user retry.
+      setPendingImport({ ...pendingImport, draftId: suggestUniqueId(draftId) });
+      return;
+    }
+    const meta: PortraitImportMeta = { ...pendingImport.meta, id: draftId };
+    insertImportedGroup(pendingImport.images, meta);
+    setFileError(pendingImport.notice);
+    setPendingImport(null);
+  };
+
+  const cancelImport = () => {
+    setPendingImport(null);
+    setFileError(null);
   };
 
   // One inline input per identity field (set id / Chinese name / English name),
@@ -2132,6 +2194,51 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
         <p className="flash-portrait-groups__notice flash-portrait-groups__notice--error" role="alert">
           {fileError}
         </p>
+      )}
+
+      {pendingImport && (
+        <div
+          className="flash-portrait-groups__conflict"
+          role="dialog"
+          aria-label={t("importIdConflict").replace("{id}", pendingImport.originalId)}
+        >
+          <p className="flash-portrait-groups__notice flash-portrait-groups__notice--error" role="alert">
+            {t("importIdConflict").replace("{id}", pendingImport.originalId)}
+          </p>
+          <div className="flash-portrait-groups__conflict-actions">
+            <label className="flash-portrait-group__field">
+              <span className="flash-portrait-group__field-caption">{t("setId")}</span>
+              <input
+                className="flash-portrait-group__name flash-portrait-group__name--id"
+                value={pendingImport.draftId}
+                onChange={(event) => setPendingImport({ ...pendingImport, draftId: event.currentTarget.value })}
+                onBlur={() => {
+                  const trimmed = pendingImport.draftId.trim();
+                  if (!trimmed) return;
+                  setPendingImport({
+                    ...pendingImport,
+                    draftId: groups.some((group) => group.id === trimmed) ? suggestUniqueId(trimmed) : trimmed,
+                  });
+                }}
+              />
+            </label>
+            <div className="flash-portrait-group__actions">
+              <button
+                type="button"
+                disabled={
+                  !pendingImport.draftId.trim()
+                  || groups.some((group) => group.id === pendingImport.draftId.trim())
+                }
+                onClick={confirmImport}
+              >
+                {t("importConfirm")}
+              </button>
+              <button type="button" className="flash-portrait-group__danger" onClick={cancelImport}>
+                {t("importCancel")}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {groups.length === 0 && (

@@ -108,8 +108,8 @@ describe("parsePortraitYaml (flat manifest subset)", () => {
   });
 });
 
-describe("normalizeImportMeta (sanitization contract like commitField)", () => {
-  it("picks up id/name/zh/en strings and a finite darkLevel", () => {
+describe("normalizeImportMeta (zh/en required, sanitization like commitField)", () => {
+  it("picks up id/zh/en strings, ignores a legacy name, and rounds darkLevel", () => {
     const meta = normalizeImportMeta({
       id: "  storm  ",
       name: "Storm",
@@ -117,24 +117,30 @@ describe("normalizeImportMeta (sanitization contract like commitField)", () => {
       en: " Storm Set ",
       darkLevel: 2.6,
     });
-    expect(meta).toEqual({ id: "storm", name: "Storm", zh: "风暴组", en: "Storm Set", darkLevel: 3 });
+    expect(meta).toEqual({ id: "storm", zh: "风暴组", en: "Storm Set", darkLevel: 3 });
   });
 
-  it("drops blank strings so the group keeps built-in fallbacks", () => {
-    const meta = normalizeImportMeta({ id: "   ", zh: "", en: "  ", darkLevel: 9 });
-    expect(meta).toEqual({ darkLevel: clampLevel(9) });
+  it("rejects a manifest whose zh or en is blank or missing", () => {
+    expect(normalizeImportMeta({ id: "   ", zh: "", en: "  ", darkLevel: 9 })).toBeNull();
+    expect(normalizeImportMeta({ zh: "只有中文" })).toBeNull();
+    expect(normalizeImportMeta({ en: "English Only" })).toBeNull();
+    expect(normalizeImportMeta({})).toBeNull();
   });
 
   it("clamps darkLevel into 0..MAX_LEVEL and rounds", () => {
-    expect(normalizeImportMeta({ darkLevel: 999 })?.darkLevel).toBe(MAX_LEVEL);
-    expect(normalizeImportMeta({ darkLevel: -3 })?.darkLevel).toBe(0);
-    expect(normalizeImportMeta({ darkLevel: 3.4 })?.darkLevel).toBe(3);
-    expect(normalizeImportMeta({ darkLevel: Number.NaN })).toBeNull();
+    expect(normalizeImportMeta({ zh: "组", en: "Set", darkLevel: 999 })?.darkLevel).toBe(MAX_LEVEL);
+    expect(normalizeImportMeta({ zh: "组", en: "Set", darkLevel: -3 })?.darkLevel).toBe(0);
+    expect(normalizeImportMeta({ zh: "组", en: "Set", darkLevel: 3.4 })?.darkLevel).toBe(3);
+    expect(normalizeImportMeta({ zh: "组", en: "Set", darkLevel: Number.NaN })).toEqual({ zh: "组", en: "Set" });
   });
 
-  it("accepts the dark-level kebab alias and defaults undefined darkLevel", () => {
-    expect(normalizeImportMeta({ "dark-level": 5 })).toEqual({ darkLevel: 5 });
-    expect(normalizeImportMeta({ id: "liangsheng" })?.darkLevel).toBeUndefined();
+  it("accepts the dark-level kebab alias and defaults a missing darkLevel", () => {
+    expect(normalizeImportMeta({ zh: "组", en: "Set", "dark-level": 5 })).toEqual({ zh: "组", en: "Set", darkLevel: 5 });
+    expect(normalizeImportMeta({ id: "liangsheng", zh: "梁圣", en: "Liang the Saint" })).toEqual({
+      id: "liangsheng",
+      zh: "梁圣",
+      en: "Liang the Saint",
+    });
   });
 
   it("rejects non-object / array / empty input", () => {
@@ -147,13 +153,15 @@ describe("normalizeImportMeta (sanitization contract like commitField)", () => {
   });
 
   it("only accepts numbers for darkLevel (string digits are ignored)", () => {
-    expect(normalizeImportMeta({ darkLevel: "4" })).toBeNull();
-    expect(normalizeImportMeta({ "dark-level": "4" })).toBeNull();
+    expect(normalizeImportMeta({ zh: "组", en: "Set", darkLevel: "4" })).toEqual({ zh: "组", en: "Set" });
+    expect(normalizeImportMeta({ zh: "组", en: "Set", "dark-level": "4" })).toEqual({ zh: "组", en: "Set" });
   });
 
   it("sanitizes the image-URL list: trim, drop blanks, dedupe, cap at 64", () => {
     const urls = Array.from({ length: 70 }, (_, index) => `https://s/${index}.png`);
     const meta = normalizeImportMeta({
+      zh: "组",
+      en: "Set",
       images: [
         "  https://s/a.png  ",
         "",
@@ -168,13 +176,19 @@ describe("normalizeImportMeta (sanitization contract like commitField)", () => {
   });
 
   it("keeps non-string or empty image arrays out of the meta", () => {
-    expect(normalizeImportMeta({ images: [] })?.images).toBeUndefined();
-    expect(normalizeImportMeta({ images: [1, 2] })?.images).toBeUndefined();
-    expect(normalizeImportMeta({ images: ["   "] })?.images).toBeUndefined();
+    expect(normalizeImportMeta({ zh: "组", en: "Set", images: [] })?.images).toBeUndefined();
+    expect(normalizeImportMeta({ zh: "组", en: "Set", images: [1, 2] })?.images).toBeUndefined();
+    expect(normalizeImportMeta({ zh: "组", en: "Set", images: ["   "] })?.images).toBeUndefined();
   });
 
-  it("counts a manifest supplied by images alone as usable", () => {
-    expect(normalizeImportMeta({ images: ["a.png"] })).toEqual({ images: ["a.png"] });
+  it("requires zh/en — images alone (or a legacy name alone) are not usable", () => {
+    expect(normalizeImportMeta({ images: ["a.png"] })).toBeNull();
+    expect(normalizeImportMeta({ name: "Legacy" })).toBeNull();
+    expect(normalizeImportMeta({ zh: "组", en: "Set", images: ["a.png"] })).toEqual({
+      zh: "组",
+      en: "Set",
+      images: ["a.png"],
+    });
   });
 });
 
@@ -195,16 +209,20 @@ describe("parseImportMetaText (JSON then YAML)", () => {
   });
 
   it("carries an image-URL array through JSON manifests", () => {
-    expect(parseImportMetaText(JSON.stringify({ images: ["https://x/a.png", "https://x/b.png"] }))).toEqual({
+    const text = JSON.stringify({ zh: "组", en: "Set", images: ["https://x/a.png", "https://x/b.png"] });
+    expect(parseImportMetaText(text)).toEqual({
+      zh: "组",
+      en: "Set",
       images: ["https://x/a.png", "https://x/b.png"],
     });
   });
 
   it("parses a YAML manifest when JSON fails", () => {
-    const text = "id: yaml-set\nzh: 亚姆组\ndark-level: 4\n";
+    const text = "id: yaml-set\nzh: 亚姆组\nen: Yaml Set\ndark-level: 4\n";
     expect(parseImportMetaText(text)).toEqual({
       id: "yaml-set",
       zh: "亚姆组",
+      en: "Yaml Set",
       darkLevel: 4,
     });
   });
@@ -216,8 +234,13 @@ describe("parseImportMetaText (JSON then YAML)", () => {
     expect(parseImportMetaText("")).toBeNull();
   });
 
-  it("ignores unknown fields and captures the portrait contract incl. images", () => {
-    const meta = parseImportMetaText("id: a\nfolder: x\nimages:\n  - a.png\n  - b.png\nschema: 2\n");
-    expect(meta).toEqual({ id: "a", images: ["a.png", "b.png"] });
+  it("rejects a manifest that ships only a legacy name or one language", () => {
+    expect(parseImportMetaText("id: a\nname: Legacy\n")).toBeNull();
+    expect(parseImportMetaText("id: a\nzh: 中文\n")).toBeNull();
+  });
+
+  it("ignores unknown fields (and the legacy name) and keeps zh/en + images", () => {
+    const text = "id: a\nname: Legacy\nfolder: x\nzh: 甲\nen: A\nimages:\n  - a.png\n  - b.png\nschema: 2\n";
+    expect(parseImportMetaText(text)).toEqual({ id: "a", zh: "甲", en: "A", images: ["a.png", "b.png"] });
   });
 });

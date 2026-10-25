@@ -18,10 +18,9 @@ per built-in Liang set, plus a URL-only one:
 
 ```yaml
 ---
-id: my-set            # set id (deduped with -2/-3 on collision)
-name: 我的皮肤组        # display name
-zh: 我的皮肤组          # Chinese name
-en: My Skin Set       # English name
+id: my-set            # set id (must be unique; a collision asks you to pick a new id before importing)
+zh: 我的皮肤组          # Chinese name (required)
+en: My Skin Set       # English name (required)
 darkLevel: 5          # light/dark threshold slider stop (0..6), default 5
 images:               # block list, or inline flow list [a, b]
   - https://example.com/frames/01.webp
@@ -34,6 +33,12 @@ images:               # block list, or inline flow list [a, b]
 - **Naming**: the manifest may be `portrait.yaml`, `portrait.yml` or
   `portrait.json` (also matches `meta.*`); the basename match is
   case-insensitive. One manifest file per archive.
+- **Bilingual names required**: a manifest must provide both `zh` and `en`
+  (non-empty). A manifest missing either is ignored wholesale and the import
+  falls back to the built-in defaults.
+- **Id collision**: a manifest id that matches an existing group pauses the
+  import and shows the Set ID in an editable field with a pre-filled free
+  `-2`/`-3` variant; nothing is created until you confirm a unique id.
 - **Images precedence**: frames embedded in the archive **always win**. The
   manifest `images:` list is only consulted when the archive contains no image
   bytes at all.

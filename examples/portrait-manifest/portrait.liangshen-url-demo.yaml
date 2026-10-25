@@ -1,9 +1,9 @@
 # URL-only demo manifest: the archive ships no embedded frames,
 # so the imported group's frames come straight from these remote image URLs.
 # Replace the example.com URLs with real ones, or edit them later in the card.
+# zh/en are the required display names; every other field is optional.
 ---
 id: liangshen-url-demo
-name: 梁神在线 (Liang the God online)
 zh: 梁神在线
 en: Liang the God online
 darkLevel: 5

@@ -403,8 +403,6 @@ export function compositeLevel(
 export interface PortraitImportMeta {
   /** Set id for the new group; must be non-empty and unique to be applied. */
   id?: string;
-  /** Fallback display name (used when the UI shows a language other than zh/en). */
-  name?: string;
   /** Chinese display-name override. */
   zh?: string;
   /** English display-name override. */
@@ -417,10 +415,11 @@ export interface PortraitImportMeta {
 }
 
 /**
- * Validate and normalize the manifest's portrait-group fields. Only string
- * fields for id/name/zh/en and a finite number for the dark level are
- * accepted; blank strings are dropped so the group keeps its built-in
- * defaults. Returns null when the value is not an object or carries no usable
+ * Validate and normalize the manifest's portrait-group fields. The Chinese and
+ * English display names are mandatory — a manifest missing either (blank or
+ * absent) is rejected wholesale, so the import falls back to the default
+ * identity. Optional extras: a string set id, a finite dark level, and an
+ * image-URL list. Returns null when the value is not an object or lacks usable
  * fields (so the caller falls back to defaults).
  */
 export function normalizeImportMeta(raw: unknown): PortraitImportMeta | null {
@@ -431,18 +430,14 @@ export function normalizeImportMeta(raw: unknown): PortraitImportMeta | null {
     const id = src.id.trim();
     if (id) meta.id = id;
   }
-  if (typeof src.name === "string") {
-    const name = src.name.trim();
-    if (name) meta.name = name;
-  }
-  if (typeof src.zh === "string") {
-    const zh = src.zh.trim();
-    if (zh) meta.zh = zh;
-  }
-  if (typeof src.en === "string") {
-    const en = src.en.trim();
-    if (en) meta.en = en;
-  }
+  // Bilingual display names are mandatory: with the old `name` fallback gone,
+  // an archive manifest that omits either the Chinese or the English name is
+  // rejected wholesale, so the import falls back to the default identity.
+  const zh = typeof src.zh === "string" ? src.zh.trim() : "";
+  const en = typeof src.en === "string" ? src.en.trim() : "";
+  if (!zh || !en) return null;
+  meta.zh = zh;
+  meta.en = en;
   // Accept both camelCase (`darkLevel`) and kebab-case (`dark-level`) keys.
   const levelField = typeof src["dark-level"] === "number" ? src["dark-level"] : src.darkLevel;
   if (typeof levelField === "number" && Number.isFinite(levelField)) {
@@ -464,7 +459,7 @@ export function normalizeImportMeta(raw: unknown): PortraitImportMeta | null {
     }
     if (urls.length > 0) meta.images = urls;
   }
-  const usable = (["id", "name", "zh", "en", "darkLevel", "images"] as const)
+  const usable = (["id", "zh", "en", "darkLevel", "images"] as const)
     .some((key) => meta[key] !== undefined);
   return usable ? meta : null;
 }

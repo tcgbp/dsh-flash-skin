@@ -804,7 +804,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "urlEmpty": "请输入图片 URL",
     "defaultGroup": "新的皮肤组",
     "darkLevel": "深浅切换点",
-    "darkLevelHint": "分割线左侧为浅色外壳、右侧为深色外壳；从 0–6 档中哪一档起切换（留空用默认，第 5 档起）。",
+    "darkLevelHint": "拖动此分割线设置深浅切换档位：左侧为浅色外壳，右侧为深色外壳。",
     "dividerHint": "左右拖动图片之间的分割线，设置深色外壳从第几档开始：分割线越靠右，需要更高的档位才会变深。",
   },
   en: {
@@ -831,7 +831,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "urlEmpty": "Enter an image URL",
     "defaultGroup": "New group",
     "darkLevel": "Light/dark threshold",
-    "darkLevelHint": "Images left of the divider keep the light shell, right of it the dark shell; the slider level (0–6) at which this set turns dark, empty uses the default (level 5).",
+    "darkLevelHint": "Drag this divider to set the light/dark threshold: images to its left keep the light shell, images to its right switch to dark.",
     "dividerHint": "Drag the divider between the images left or right to pick the slider level at which the dark shell begins.",
   },
 };

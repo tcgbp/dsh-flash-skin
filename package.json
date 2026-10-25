@@ -1,7 +1,7 @@
 {
   "name": "dsh-flash-skin",
   "version": "0.1.0",
-  "description": "Flash Skin：a lightweight animated gradient skin for DeepSeek Harness",
+  "description": "Flash Skin: a portrait-driven skin for DeepSeek Harness whose backdrop swaps character portraits as the reasoning level rises and flips the shell from light to dark at the top tiers.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/local/dsh-flash-skin.git"

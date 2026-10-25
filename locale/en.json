@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Flash Skin",
-    "description": "lightweight animated gradient skin"
+    "description": "A portrait-driven skin whose backdrop swaps character portraits as the reasoning level rises and flips the shell from light to dark at the top tiers."
   },
   "flash.skin": {
     "appearance": "Flash Skin"

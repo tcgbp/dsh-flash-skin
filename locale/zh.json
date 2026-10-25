@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Flash Skin",
-    "description": "轻量渐变动效皮肤"
+    "description": "肖像驱动的推理皮肤：背景随推理等级切换角色肖像，档位升到最高时外壳由浅色切换为深色。"
   },
   "flash.skin": {
     "appearance": "Flash Skin"

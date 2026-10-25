@@ -2751,6 +2751,7 @@ export function apply(ctx: ClientContext) {
         ...CONFIG_TEXTS.zh,
         "appearance": "人物肖像",
         "portraitSet": "人物肖像组",
+        "portraitSwitch": "切换人物",
         "driver.title": "强度驱动",
         "driver.manual": "手动",
         "driver.effort": "跟随推理",
@@ -2780,6 +2781,7 @@ export function apply(ctx: ClientContext) {
         ...CONFIG_TEXTS.en,
         "appearance": "Portrait group",
         "portraitSet": "Portrait set",
+        "portraitSwitch": "Switch person",
         "driver.title": "Level driver",
         "driver.manual": "Manual",
         "driver.effort": "Follow reasoning",
@@ -2839,6 +2841,7 @@ export function apply(ctx: ClientContext) {
   // The row is shown only while this skin is enabled (`presenter.isEnabled()`).
   const OPEN_DETAILS_SWITCH_ID = `${PACKAGE_ID}:open-details`;
   const PORTRAIT_SET_SWITCH_ID = `${PACKAGE_ID}:portrait-set`;
+  const PORTRAIT_SLIDER_SWITCH_ID = `${PACKAGE_ID}:portrait-slider`;
   let quickControl: {
     registerSwitch?: (def: unknown) => (() => void) | void;
     unregisterSwitch?: (id: string) => void;
@@ -2895,6 +2898,7 @@ export function apply(ctx: ClientContext) {
       lastEnabled = enabled;
       quickControl?.notifyChange?.(OPEN_DETAILS_SWITCH_ID);
       quickControl?.notifyChange?.(PORTRAIT_SET_SWITCH_ID);
+      quickControl?.notifyChange?.(PORTRAIT_SLIDER_SWITCH_ID);
     });
 
     ctx.effect(() => {
@@ -2919,12 +2923,53 @@ export function apply(ctx: ClientContext) {
         },
         visible: () => presenter.isEnabled(),
       });
+      // Person-switch slider directly UNDER the portrait-set dropdown (26.5,
+      // between the select at 26 and the open-details action at 27): one stop
+      // per portrait group. Options are re-read on every render so detail-page
+      // renames/additions surface without a re-register; `max` is a registration
+      // snapshot, but getValue/setValue clamp against the live options length so
+      // a stale bound stays harmless. Hidden when there is nothing to switch
+      // between (single group).
+      const sliderDispose = reg.registerSwitch?.({
+        id: PORTRAIT_SLIDER_SWITCH_ID,
+        label: () => setLabel("portraitSwitch"),
+        icon: "palette",
+        type: "slider",
+        group: "appearance",
+        order: 26.5,
+        min: 0,
+        max: Math.max(0, portraitSetOptions().length - 1),
+        step: 1,
+        getValue: () => {
+          const opts = portraitSetOptions();
+          const active = presenter.getSet().id;
+          const idx = opts.findIndex((option) => option.value === active);
+          if (idx < 0) return 0;
+          return Math.min(idx, Math.max(0, opts.length - 1));
+        },
+        setValue: (value) => {
+          const opts = portraitSetOptions();
+          if (opts.length <= 1) return;
+          const idx = Math.min(opts.length - 1, Math.max(0, Math.round(Number(value) || 0)));
+          void presenter.choose(opts[idx].value).catch(() => undefined)
+            .finally(() => quickControl?.notifyChange?.(PORTRAIT_SLIDER_SWITCH_ID));
+        },
+        // Right-hand value label shows the group at the current stop, so the
+        // slider always reads as "switching person X".
+        formatLabel: (value) => {
+          const opts = portraitSetOptions();
+          if (opts.length <= 0) return "";
+          const idx = Math.min(opts.length - 1, Math.max(0, Math.round(Number(value) || 0)));
+          return opts[idx].label;
+        },
+        visible: () => presenter.isEnabled() && portraitSetOptions().length > 1,
+      });
       const openDispose = reg.registerSwitch?.({
         id: OPEN_DETAILS_SWITCH_ID,
         label: () => setLabel("openDetails"),
         icon: "doc",
         type: "action",
-        // Built-in Appearance group (just past the portrait-set row at 26),
+        // Built-in Appearance group (just past the person-switch row at 26.5),
         // via the `dsh-flash-skin:` entry in dsh-flash's `_COMPANIONS` whitelist.
         group: "appearance",
         order: 27,
@@ -2936,6 +2981,8 @@ export function apply(ctx: ClientContext) {
       return () => {
         if (typeof setDispose === "function") setDispose();
         else reg.unregisterSwitch?.(PORTRAIT_SET_SWITCH_ID);
+        if (typeof sliderDispose === "function") sliderDispose();
+        else reg.unregisterSwitch?.(PORTRAIT_SLIDER_SWITCH_ID);
         if (typeof openDispose === "function") openDispose();
         else reg.unregisterSwitch?.(OPEN_DETAILS_SWITCH_ID);
         offScope();

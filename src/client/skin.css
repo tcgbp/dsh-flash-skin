@@ -877,14 +877,14 @@ body[data-flash-skin="on"] .EvIC1a_toBottomSlot {
 }
 
 .flash-level-control__term b {
-  margin-right: 3px;
+  margin-right: 0;
   color: var(--flash-primary, #2b3440);
   font-weight: 600;
 }
 
-.flash-level-control__term i {
+.flash-level-control__plus {
   display: inline-block;
-  margin: 0 7px;
+  margin: 0 2px;
   color: var(--flash-primary, #2b3440);
   font-style: normal;
   font-weight: 700;

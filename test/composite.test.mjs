@@ -15,6 +15,7 @@ import {
   compositeLevel,
   stagedFrames,
   frameIndexForLevel,
+  frameIndexForScore,
 } from "../src/client/logic.ts";
 
 describe("normalizeWeights", () => {
@@ -336,5 +337,44 @@ describe("DEFAULT_SPEED_TUNING wiring", () => {
     expect(freshnessDecay(0)).toBe(1); // default grace => fresh
     // just after grace+fade with defaults => fully stale
     expect(freshnessDecay(IDLE_GRACE_MS + IDLE_FADE_MS + 1)).toBe(0);
+  });
+});
+
+describe("frameIndexForScore (composite rides N frames directly)", () => {
+  it("low/empty score pins to the first frame, high to the last", () => {
+    expect(frameIndexForScore(0, 10)).toBe(0);
+    expect(frameIndexForScore(-1, 10)).toBe(0);
+    expect(frameIndexForScore(NaN, 10)).toBe(0);
+    expect(frameIndexForScore(1, 10)).toBe(9);
+    expect(frameIndexForScore(2, 10)).toBe(9);
+  });
+
+  it("scales 0..1 linearly across count frames (no 6-stop clamp); ties pick higher", () => {
+    expect(frameIndexForScore(0.5, 10)).toBe(5); // 0.5*9=4.5 tie → higher
+    expect(frameIndexForScore(0.5, 7)).toBe(3); // 0.5*6=3 exact
+    expect(frameIndexForScore(0.5, 12)).toBe(6); // 0.5*11=5.5 tie → higher
+    expect(frameIndexForScore(0.25, 9)).toBe(2); // 0.25*8=2 exact
+    expect(frameIndexForScore(0.1, 10)).toBe(1); // 0.1*9=0.9 → nearer to 1
+  });
+
+  it("degenerate counts fall back to the only/first frame", () => {
+    expect(frameIndexForScore(0.7, 0)).toBe(0);
+    expect(frameIndexForScore(0.7, 1)).toBe(0);
+    expect(frameIndexForScore(0.7, -3)).toBe(0);
+    expect(frameIndexForScore(0.7, NaN)).toBe(0);
+  });
+
+  it("stays consistent with the staged continuous frames (N > MAX_LEVEL + 1)", () => {
+    // 12 frames staged continuously 0..MAX_LEVEL; a score maps to the nearest.
+    const frames = stagedFrames(12);
+    const score = 0.4;
+    const direct = frameIndexForScore(score, 12);
+    let best = 0;
+    let bestDist = Infinity;
+    frames.forEach((level, index) => {
+      const d = Math.abs(level - score * MAX_LEVEL);
+      if (d < bestDist) { bestDist = d; best = index; }
+    });
+    expect(direct).toBe(best);
   });
 });

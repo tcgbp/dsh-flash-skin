@@ -903,7 +903,7 @@ function CompositeLevelControl({
     ? speedBase * freshnessDecay(now - lastDecodeAt.current, tuning.graceMs, tuning.fadeMs)
     : 0;
 
-  const [level, setLevel] = useState(0);
+  const lastLevelRef = useRef(-1);
 
   useEffect(() => {
     if (enabled) load();
@@ -916,10 +916,12 @@ function CompositeLevelControl({
       effort: effortF,
       speed: speedF,
     });
-    setLevel((prev) => {
-      if (prev !== next) presenter.setLevel(next); // palette rides the 0..MAX_LEVEL grip
-      return next;
-    });
+    // Palette rides the rounded 0..MAX_LEVEL grip (light/dark shell decision);
+    // only ever push it when the integer stop actually changes.
+    if (lastLevelRef.current !== next) {
+      lastLevelRef.current = next;
+      presenter.setLevel(next);
+    }
     if (presenter.isEnabled()) {
       // Portrait rides the continuous weighted score, mapped straight onto the
       // group's N frames — so all N are reachable, not just the 7 integer stops.
@@ -947,9 +949,8 @@ function CompositeLevelControl({
     + w.effort * effortF
     + w.speed * speedF
   );
-  // 综合加权直接按组内帧数匹配,得分 0..1 连续映射到 N 帧,不受 6 挡限制。
+  // 综合加权直接按组内帧数匹配:0..1 连续得分线性落到 N 帧,没有 6 挡这一层。
   const frame = count > 0 ? frameIndexForScore(wSum, count) : 0;
-  const score = level; // palette rides the rounded 0..MAX_LEVEL grip (theme)
   // 数值格式:去掉小数末尾的多余 0(0.30 → 0.3、0.00 → 0),省空间又直观。
   const fmt = (n: number) => Number(n.toFixed(2)).toString();
   const term = (weight: number, factor: number) => `${fmt(weight)}·${fmt(factor)}`;
@@ -971,16 +972,15 @@ function CompositeLevelControl({
       <output className="flash-level-control__gauge" aria-hidden="true">
         <span className="flash-level-control__formula">
           {terms.map(([label, weight, factor], index) => (
-            <span key={label} className="flash-level-control__term">
-              <b>{label}</b>{term(weight, factor)}
-              {index < terms.length - 1 && <i>+</i>}
-            </span>
+            <Fragment key={label}>
+              <span className="flash-level-control__term"><b>{label}</b>{term(weight, factor)}</span>
+              {index < terms.length - 1 && <i className="flash-level-control__plus">+</i>}
+            </Fragment>
           ))}
         </span>
         <span className="flash-level-control__score">
-          得分 {fmt(wSum * MAX_LEVEL)} → {score}/{MAX_LEVEL}
+          得分 {fmt(wSum * MAX_LEVEL)} · {count > 0 ? `帧 ${frame + 1}/${count}` : "帧 —"}
         </span>
-        <span className="flash-level-control__frame">{count > 0 ? `帧 ${frame + 1}/${count}` : "帧 —"}</span>
       </output>
     </div>
   );

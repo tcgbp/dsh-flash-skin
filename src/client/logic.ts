@@ -1,5 +1,4 @@
 export const MAX_LEVEL = 6;
-export const PORTRAIT_MAX_LEVEL = 30;
 
 export interface EffortLike {
   id: string;
@@ -19,7 +18,6 @@ export interface Palette {
   surface: string;
   ink: string;
   secondary: string;
-  portraitLevel: number;
   portraitOpacity: string;
 }
 
@@ -115,7 +113,186 @@ export function paletteForLevel(rawLevel: number, darkLevel?: number): Palette {
     secondary: base.secondary,
     accent: base.accent,
     accentHover: mix(base.accent, base.ink, 0.13),
-    portraitLevel: Math.round(portraitScale * PORTRAIT_MAX_LEVEL),
     portraitOpacity: String(0.4 + portraitScale * 0.42),
   };
+}
+
+// -----------------------------------------------------------------------------
+// Portrait frame staging — a pure function of the configured image count.
+//
+// These two helpers are the single source of truth that maps the 0..MAX_LEVEL
+// slider onto a portrait group's `N` ordered images. Nothing hardcodes the
+// number of "stops": whichever N the user configured, all frames are spread
+// evenly and the first/last stay pinned to the endpoints.
+// -----------------------------------------------------------------------------
+
+/** Map `count` ordered images onto frame levels in 0..maxLevel (first pinned 0, last pinned maxLevel). */
+export function stagedFrames(count: number, maxLevel = MAX_LEVEL): number[] {
+  const safeMax = Number.isFinite(maxLevel) ? Math.max(0, Math.round(maxLevel)) : MAX_LEVEL;
+  if (!Number.isFinite(count) || count <= 1) return [0];
+  const total = Math.floor(count);
+  // With more frames than integer stops (N > maxLevel + 1) an integer grid
+  // would collide, so spread continuously instead; the loader nearest-selects
+  // and every frame stays distinct and strictly ordered.
+  if (total - 1 > safeMax) {
+    return Array.from({ length: total }, (_, index) => (index / (total - 1)) * safeMax);
+  }
+  return Array.from({ length: total }, (_, index) =>
+    Math.round((index / (total - 1)) * safeMax),
+  );
+}
+
+/**
+ * The index (0-based) into a `count`-frame portrait group for a slider level.
+ * Guards: unknown/negative levels and degenerate counts fall back to 0.
+ */
+export function frameIndexForLevel(level: number, count: number, maxLevel = MAX_LEVEL): number {
+  if (!Number.isFinite(level) || level < 0) return 0;
+  if (!Number.isFinite(count) || count <= 1) return 0;
+  const frames = stagedFrames(count, maxLevel);
+  const safeMax = Number.isFinite(maxLevel) ? Math.max(0, Math.round(maxLevel)) : MAX_LEVEL;
+  const target = Math.round(level) > safeMax ? safeMax : Math.round(level);
+  let best = 0;
+  let distance = Math.abs(target - frames[0]);
+  for (let index = 1; index < frames.length; index += 1) {
+    const next = Math.abs(target - frames[index]);
+    // Ties pick the higher frame — must mirror the portrait loader
+    // (`nearestIndex` in portrait-loader.ts) so the slider gauge and the
+    // displayed portrait stay consistent.
+    if (next < distance || (next === distance && frames[index] > frames[best])) {
+      best = index;
+      distance = next;
+    }
+  }
+  return Math.max(0, Math.min(frames.length - 1, best));
+}
+
+// -----------------------------------------------------------------------------
+// Composite (weighted multi-signal) level — drives the slider when the driver
+// is "composite" instead of a manually dragged/effort-bound value.
+// -----------------------------------------------------------------------------
+
+/** Usage saturates at 100% once this many output tokens have been produced. */
+export const USAGE_FULL = 300_000;
+/** Context-pressure fallback (no window/pressure info) saturates at these many turns. */
+export const TURNS_FULL = 20;
+/** Decode speed saturates at this many tokens per second. */
+export const TPS_FULL = 80;
+
+export interface CompositeWeights {
+  /** share of produced tokens (sat at USAGE_FULL). */
+  usage: number;
+  /** share of context pressure (projected tokens / window, else turns fallback). */
+  pressure: number;
+  /** share of the committed reasoning effort (0..MAX_LEVEL). */
+  effort: number;
+  /** share of decode speed (sat at TPS_FULL). */
+  speed: number;
+}
+
+export const DEFAULT_COMPOSITE_WEIGHTS: CompositeWeights = {
+  usage: 0.3,
+  pressure: 0.3,
+  effort: 0.2,
+  speed: 0.2,
+};
+
+export interface CompositeSignals {
+  /** decodeTokens — produced-token volume (usage factor). */
+  outputTokens?: number;
+  /** committed reasoning level 0..MAX_LEVEL (effort factor); unknown → 0. */
+  committedLevel?: number;
+  /** projected prompt + heuristic tokens (context pressure numerator). */
+  pressureTokens?: number;
+  /** context window size; ≤ 0 → turns fallback. */
+  contextWindow?: number;
+  /** conversation turns — pressure fallback when projected tokens unknown. */
+  turns?: number;
+  /** tokens decoded for the current streamed run (speed numerator). */
+  decodeTokens?: number;
+  /** wall time spent decoding, ms (speed denominator). */
+  decodeMs?: number;
+}
+
+/** Missing/negative/NaN weights or a total of zero fall back to defaults. */
+export function normalizeWeights(weights: Partial<CompositeWeights> | null | undefined): CompositeWeights {
+  if (weights === null || typeof weights !== "object") return { ...DEFAULT_COMPOSITE_WEIGHTS };
+  const fields: Record<keyof CompositeWeights, number | undefined> = {
+    usage: weights.usage,
+    pressure: weights.pressure,
+    effort: weights.effort,
+    speed: weights.speed,
+  };
+  // A missing key counts as zero; a present but non-number / non-finite /
+  // negative value is treated as corruption and falls back to defaults.
+  let anyInvalid = false;
+  for (const key of Object.keys(fields) as (keyof CompositeWeights)[]) {
+    const value = fields[key];
+    if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value < 0)) {
+      anyInvalid = true;
+      break;
+    }
+  }
+  const total = (fields.usage ?? 0) + (fields.pressure ?? 0)
+    + (fields.effort ?? 0) + (fields.speed ?? 0);
+  if (anyInvalid || total <= 0) return { ...DEFAULT_COMPOSITE_WEIGHTS };
+  return {
+    usage: (fields.usage ?? 0) / total,
+    pressure: (fields.pressure ?? 0) / total,
+    effort: (fields.effort ?? 0) / total,
+    speed: (fields.speed ?? 0) / total,
+  };
+}
+
+export function usageFactor(outputTokens: number): number {
+  const safe = Number.isFinite(outputTokens) && outputTokens > 0 ? outputTokens : 0;
+  return Math.min(1, safe / USAGE_FULL);
+}
+
+export function contextPressureFactor(
+  pressureTokens?: number,
+  contextWindow?: number,
+  turns?: number,
+): number {
+  if (
+    pressureTokens !== undefined && Number.isFinite(pressureTokens) && pressureTokens >= 0
+    && contextWindow !== undefined && Number.isFinite(contextWindow) && contextWindow > 0
+  ) {
+    return Math.min(1, pressureTokens / contextWindow);
+  }
+  const safeTurns = typeof turns === "number" && Number.isFinite(turns)
+    ? Math.max(0, turns)
+    : 0;
+  return Math.min(1, safeTurns / TURNS_FULL);
+}
+
+export function reasoningEffortFactor(committedLevel: number): number {
+  const safe = Number.isFinite(committedLevel) ? committedLevel : 0;
+  return Math.min(1, Math.max(0, safe / MAX_LEVEL));
+}
+
+export function tokenSpeedFactor(decodeTokens: number, decodeMs: number): number {
+  if (!Number.isFinite(decodeTokens) || !Number.isFinite(decodeMs)) return 0;
+  if (decodeTokens <= 0 || decodeMs <= 0) return 0;
+  return Math.min(1, decodeTokens / (decodeMs / 1000) / TPS_FULL);
+}
+
+/**
+ * Weighted combination of the signals → slider level 0..MAX_LEVEL.
+ * Every factor is 0..1 and weights sum to 1, so the weighted sum spans [0,1];
+ * scaling by MAX_LEVEL (then rounding, then clamping) keeps all 0..MAX_LEVEL
+ * stops reachable: all-zero signals land on 0, all-saturated land on MAX_LEVEL.
+ */
+export function compositeLevel(
+  weights: Partial<CompositeWeights> | null | undefined,
+  signals: CompositeSignals = {},
+): number {
+  const w = normalizeWeights(weights);
+  const sum = (
+    w.usage * usageFactor(signals.outputTokens ?? 0)
+    + w.pressure * contextPressureFactor(signals.pressureTokens, signals.contextWindow, signals.turns)
+    + w.effort * reasoningEffortFactor(signals.committedLevel ?? 0)
+    + w.speed * tokenSpeedFactor(signals.decodeTokens ?? 0, signals.decodeMs ?? 0)
+  );
+  return clampLevel(sum * MAX_LEVEL);
 }

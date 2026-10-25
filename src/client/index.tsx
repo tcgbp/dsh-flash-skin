@@ -1,6 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ChangeEvent as ReactChangeEvent } from "react";
-import { Switch } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { Context as ClientContext } from "@deepseek-ai/cordis";
 import type { SnapshotStore } from "@deepseek-ai/dsh-client-store";
 import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
@@ -11,16 +10,26 @@ import styles from "./skin.css";
 import { createPortraitLoader } from "./portrait-loader";
 import type { PortraitImage, PortraitSource } from "./portrait-loader";
 import {
+  DEFAULT_COMPOSITE_WEIGHTS,
   MAX_LEVEL,
-  PORTRAIT_MAX_LEVEL,
   clampLevel,
+  compositeLevel,
+  contextPressureFactor,
+  frameIndexForLevel,
   levelForEffort,
   nearestEffortIndex,
+  normalizeWeights,
   paletteForLevel,
+  reasoningEffortFactor,
   selectedEffortIndex,
+  stagedFrames,
+  tokenSpeedFactor,
+  usageFactor,
+  type CompositeWeights,
   type EffortLike,
   type Palette,
 } from "./logic";
+import { unzipSync, gunzipSync } from "./vendor/fflate";
 
 const PACKAGE_ID = "dsh-flash-skin";
 const LOCALE_NAMESPACE = "flash.skin";
@@ -28,15 +37,15 @@ const CONFIG_NAMESPACE = "flash-skin";
 const LEVEL_KEY = "dsh-flash-skin.level";
 const SET_KEY = "dsh-flash-skin.set";
 const BIND_EFFORT_KEY = "dsh-flash-skin.bind-effort";
+const DRIVER_KEY = "dsh-flash-skin.driver";
+const WEIGHTS_KEY = "dsh-flash-skin.weights";
 const ASSET_PREFIX = `/plugins/${PACKAGE_ID}/assets`;
 
-// Level→file anchors per portrait set. MAX_LEVEL is 6, so the slider exposes 7
-// integer stops (0..6); their portraitLevel frames land on the evenly spread
-// reasoning slots 0,4,9,13,17,21,26,30. Each set lists 8 frames ordered by the
-// file-name number (lowest → slot 0, highest → slot 30), but only the first 7
-// are active in display logic — the 8th (slot 30) is kept as a placeholder for
-// tuning and is excluded in sourcesForSet. Swap folder contents to point at
-// different character art.
+// Level→file anchors per portrait set. The slider exposes MAX_LEVEL + 1 = 7
+// integer stops (0..6) that are mapped onto the configured images by the pure
+// count-driven stagedFrames() helper — every anchor below is active and drives
+// one portrait frame, spreading evenly from slot 0 to the highest slot. Swap
+// folder contents to point at different character art.
 // Portrait set ids follow the Chinese display names (梁圣 → liangsheng,
 // 梁神 → liangshen, 梁祖 → liangzu). PORTRAIT_ANCHORS is keyed by the same ids.
 const PORTRAIT_ANCHORS: Record<string, { level: number; file: string }[]> = {
@@ -116,9 +125,9 @@ function setDisplayName(set: { id?: string; name?: string; zh?: string; en?: str
 // Resolve the full ordered frame list for a portrait set, for the general
 // settings preview strip. Configured groups (including built-in-seeded ones)
 // expose their whole image list; untouched built-in sets fall back to the
-// on-disk anchors — mirroring sourcesForSet, which leaves the 8th anchor (a
-// tuning placeholder) out of display logic. Returns [] when the set has
-// nothing to show yet (e.g. a brand-new image-less group).
+// on-disk anchors — every configured/on-disk image is active, mapped onto the
+// 0..MAX_LEVEL slider by the count-driven stagedFrames() helper. Returns []
+// when the set has nothing to show yet (e.g. a brand-new image-less group).
 function setFrames(set: PortraitGroupConfig | DefaultPortraitSet): string[] {
   const configuredImages = (set as PortraitGroupConfig).images;
   if (Array.isArray(configuredImages) && configuredImages.length > 0) {
@@ -127,8 +136,7 @@ function setFrames(set: PortraitGroupConfig | DefaultPortraitSet): string[] {
   const anchors = PORTRAIT_ANCHORS[set.id] ?? [];
   const folder = (set as PortraitSet).folder;
   if (!folder || anchors.length === 0) return [];
-  // Only the first 7 of the 8 anchors drive display; drop the placeholder.
-  return anchors.slice(0, -1).map(({ file }) => `${ASSET_PREFIX}/${folder}/${file}`);
+  return anchors.map(({ file }) => `${ASSET_PREFIX}/${folder}/${file}`);
 }
 
 interface PortraitSet {
@@ -153,10 +161,19 @@ const DEFAULT_PORTRAIT_SETS: DefaultPortraitSet[] = [
   { id: "liangzu", folder: "portrait-source-v4", zh: "梁祖", en: "Liang the Ancestor" },
 ];
 
+// How the level slider is driven:
+// - "manual"  → user drags the slider; the value persists across sessions.
+// - "effort"  → the slider follows the conversation's committed reasoning
+//               effort (and dragging issues a directory.select to change it).
+// - "composite" → a read-only weighted gauge computed from live conversation
+//               signals (token usage, context pressure, reasoning effort,
+//               decode speed); never persisted as the manual level.
+type DriverMode = "manual" | "effort" | "composite";
+
 interface SkinSettings {
   enabled: boolean;
   set: string;
-  bindEffort: boolean;
+  driver: DriverMode;
 }
 
 interface PreferenceStore {
@@ -164,7 +181,7 @@ interface PreferenceStore {
   subscribe(listener: () => void): () => void;
   set(enabled: boolean): Promise<void>;
   setSet(setId: string): Promise<void>;
-  setBindEffort(enabled: boolean): Promise<void>;
+  setDriver(driver: DriverMode): Promise<void>;
   dispose(): void;
 }
 
@@ -209,11 +226,47 @@ interface RecorderProps {
   presenter: SkinPresenter;
   scope: PreferenceStore;
   settings: { level: number };
+  /** Persisted, user-editable composite weights (shared with the config card). */
+  weights: WeightsStore;
+  /**
+   * Standard-injected conversation projection hook from the host's
+   * `conversation.input.left` binding. Always present on supported hosts;
+   * guarded so a host without it degrades to a frozen composite gauge instead
+   * of crashing.
+   */
+  useProjection?: (key: string) => unknown;
 }
 
-interface EffortBindingRowProps {
+type ProjectionApi = (key: string) => unknown;
+
+interface SessionStatsProjection {
+  turns?: number;
+  decodeMs?: number;
+  decodeTokens?: number;
+}
+
+interface TokenUsageProjection {
+  outputTokens?: number;
+}
+
+interface ContextPressureProjection {
+  pressureTokens?: number;
+  projectedTokens?: number;
+  contextWindow?: number;
+}
+
+interface DriverRowProps {
   scope: PreferenceStore;
   t: (key: string) => string;
+}
+
+interface WeightsStore {
+  getSnapshot(): CompositeWeights;
+  subscribe(listener: () => void): () => void;
+  /** Replace the composite weights (renormalized to sum 1 on write). */
+  setWeights(weights: CompositeWeights): void;
+  reset(): void;
+  dispose(): void;
 }
 
 function modelReasoning(state: ModelDirectoryState) {
@@ -288,25 +341,24 @@ class SkinPresenter {
   }
 
   private sourcesForSet(set: PortraitSet, configs = this.groupConfigs): readonly PortraitSource[] {
-    // Prefer the user-configured images for this set, spread evenly across the
-    // slider (level 0..PORTRAIT_MAX_LEVEL) so added/removed frames stay on
-    // meaningful stops. Falls back to the built-in on-disk anchors.
+    // Prefer the user-configured images for this set, staged by the pure
+    // count-driven stagedFrames() helper so added/removed frames re-spread
+    // automatically across the 0..MAX_LEVEL slider (no fixed number of stops).
+    // Falls back to the built-in on-disk anchors, staged the same way — every
+    // anchor image is active.
     const group = configs[set.id];
     if (group && group.images.length > 0) {
-      const count = group.images.length;
+      const frames = stagedFrames(group.images.length);
       return group.images.map((url, index) => ({
-        level: count <= 1 ? 0 : Math.round((index / (count - 1)) * PORTRAIT_MAX_LEVEL),
+        level: frames[index] ?? 0,
         url,
       }));
     }
     const anchors = PORTRAIT_ANCHORS[set.id] ?? [];
     if (!set.folder || anchors.length === 0) return [];
-    // The slider exposes MAX_LEVEL + 1 = 7 stops, so only the first 7 anchors
-    // drive the portrait sequence. The 8th anchor (highest frame) is kept in
-    // PORTRAIT_ANCHORS as a placeholder for tuning and never enters display
-    // logic: drop it here so the loader neither loads nor selects it.
-    return anchors.slice(0, -1).map(({ level, file }) => ({
-      level,
+    const frames = stagedFrames(anchors.length);
+    return anchors.map(({ file }, index) => ({
+      level: frames[index] ?? 0,
       url: `${ASSET_PREFIX}/${set.folder}/${file}`,
     }));
   }
@@ -435,8 +487,14 @@ class SkinPresenter {
   }
 
   private updatePortrait() {
-    const scale = clampLevel(this.level) / MAX_LEVEL;
-    this.portraits.select(Math.round(scale * PORTRAIT_MAX_LEVEL));
+    // The loader nearest-selects among the group's count-staged frames
+    // (frameIndexForLevel semantics); the slider level alone drives it.
+    this.portraits.select(clampLevel(this.level));
+  }
+
+  /** Number of portrait frames currently staged for the active set (0 when none). */
+  getPortraitCount(): number {
+    return this.portraitsSources.length;
   }
 
   syncNativeTheme(theme: NativeThemeId = paletteForLevel(this.level, this.darkLevelForCurrentSet()).stage === 1 ? "dark" : "light") {
@@ -489,7 +547,16 @@ class SkinPresenter {
   }
 }
 
-function FlashLevelControl({ directory, load, select, presenter, scope, settings }: RecorderProps) {
+function FlashLevelControl({
+  directory,
+  load,
+  select,
+  presenter,
+  scope,
+  settings,
+  weights,
+  useProjection,
+}: RecorderProps) {
   const state = useSyncExternalStore(
     (listener) => directory.subscribe(listener),
     () => directory.getSnapshot(),
@@ -511,8 +578,12 @@ function FlashLevelControl({ directory, load, select, presenter, scope, settings
   const committedLevel = committedIndex < 0
     ? MAX_LEVEL
     : levelForEffort(committedIndex, efforts.length);
-  const bindEffort = skin.bindEffort;
-  const [level, setLevel] = useState(() => bindEffort ? committedLevel : clampLevel(settings.level));
+  const driver = skin.driver;
+  const [level, setLevel] = useState(() => {
+    if (driver === "effort") return committedLevel;
+    if (driver === "composite") return 0;
+    return clampLevel(settings.level);
+  });
   const [pending, setPending] = useState(false);
   const [failed, setFailed] = useState(false);
   const [interacting, setInteracting] = useState(false);
@@ -525,30 +596,68 @@ function FlashLevelControl({ directory, load, select, presenter, scope, settings
   }, [enabled, load]);
 
   useEffect(() => {
-    if (!bindEffort || dragging.current || pending) return;
+    if (driver !== "effort" || dragging.current || pending) return;
     setLevel(committedLevel);
     presenter.setLevel(committedLevel);
-  }, [bindEffort, committedLevel, pending, presenter]);
+  }, [driver, committedLevel, pending, presenter]);
 
   useEffect(() => {
     if (enabled) presenter.setLevel(level);
+    // The composite gauge is transient: it follows live signals and must never
+    // overwrite the level the user picked manually.
+    if (driver === "composite") return;
     try {
       localStorage.setItem(LEVEL_KEY, String(level));
     } catch {
       // storage may be unavailable
     }
-  }, [level, enabled, presenter]);
+  }, [level, enabled, presenter, driver]);
 
   if (!enabled) return null;
-  if (bindEffort && (reasoning === null || efforts.length < 2)) return null;
+  if (driver === "effort" && (reasoning === null || efforts.length < 2)) return null;
 
-  const previewIndex = bindEffort ? nearestEffortIndex(level, efforts) : -1;
+  const previewIndex = driver === "effort" ? nearestEffortIndex(level, efforts) : -1;
   const previewEffort = efforts[previewIndex];
   const progressRatio = level / MAX_LEVEL;
   const tooltipLabel = previewEffort?.name;
+  const readOnly = driver === "composite";
+
+  // Composite driver: hand the render off to a dedicated component that owns
+  // the projection hooks — a separate component means the useProjection calls
+  // there are unconditional. A host without the standard hook renders a frozen
+  // zero gauge instead of crashing.
+  if (readOnly && typeof useProjection === "function") {
+    return (
+      <CompositeLevelControl
+        useProjection={useProjection}
+        weights={weights}
+        committedLevel={committedLevel}
+        presenter={presenter}
+        load={load}
+        enabled={enabled}
+      />
+    );
+  }
+  if (readOnly) {
+    return (
+      <div className="flash-level-control flash-level-control--composite" data-plugin={PACKAGE_ID} data-state="ready">
+        <input
+          className="flash-level-control__range"
+          type="range"
+          min={0}
+          max={MAX_LEVEL}
+          step={1}
+          value={0}
+          disabled
+          tabIndex={-1}
+          aria-label="综合加权"
+        />
+      </div>
+    );
+  }
 
   const commit = async (rawLevel: number) => {
-    if (!bindEffort) {
+    if (driver === "manual") {
       dragging.current = false;
       const next = clampLevel(rawLevel);
       setLevel(next);
@@ -583,7 +692,7 @@ function FlashLevelControl({ directory, load, select, presenter, scope, settings
       className="flash-level-control"
       data-plugin={PACKAGE_ID}
       data-state={failed ? "error" : pending ? "pending" : "ready"}
-      title={bindEffort ? previewEffort?.name : undefined}
+      title={driver === "effort" ? previewEffort?.name : undefined}
     >
       {interacting && (
         <output
@@ -610,8 +719,8 @@ function FlashLevelControl({ directory, load, select, presenter, scope, settings
         step={1}
         value={level}
         disabled={pending || state.status === "selecting"}
-        aria-label={bindEffort ? "推理强度" : "皮肤强度"}
-        aria-valuetext={bindEffort ? previewEffort?.name ?? "" : tooltipLabel ?? ""}
+        aria-label={driver === "effort" ? "推理强度" : "皮肤强度"}
+        aria-valuetext={driver === "effort" ? previewEffort?.name ?? "" : tooltipLabel ?? ""}
         onPointerDown={() => {
           dragging.current = true;
           dragStartLevel.current = level;
@@ -655,7 +764,7 @@ function FlashLevelControl({ directory, load, select, presenter, scope, settings
   );
 }
 
-function EffortBindingRow({ scope, t }: EffortBindingRowProps) {
+function DriverRow({ scope, t }: DriverRowProps) {
   const snapshot = useSyncExternalStore(
     (listener) => scope.subscribe(listener),
     () => scope.getSnapshot(),
@@ -663,19 +772,150 @@ function EffortBindingRow({ scope, t }: EffortBindingRowProps) {
   const [pending, setPending] = useState(false);
   if (!snapshot.enabled) return null;
 
+  const options: { value: DriverMode; label: string }[] = [
+    { value: "manual", label: t("driver.manual") },
+    { value: "effort", label: t("driver.effort") },
+    { value: "composite", label: t("driver.composite") },
+  ];
+
   return (
-    <div className="flash-appearance-binding" data-plugin={PACKAGE_ID}>
-      <span>{t("effort.binding")}</span>
-      <Switch
-        checked={snapshot.bindEffort}
-        disabled={pending}
-        label={t("effort.binding")}
-        onChange={(next) => {
-          if (pending) return;
-          setPending(true);
-          void scope.setBindEffort(next).catch(() => undefined).finally(() => setPending(false));
-        }}
+    <div className="flash-appearance-binding flash-appearance-binding--driver" data-plugin={PACKAGE_ID}>
+      <span className="flash-appearance-binding__label">{t("driver.title")}</span>
+      <div className="flash-segmented" role="radiogroup" aria-label={t("driver.title")}>
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            role="radio"
+            aria-checked={snapshot.driver === option.value}
+            className={snapshot.driver === option.value ? "is-active" : undefined}
+            disabled={pending}
+            onClick={() => {
+              if (pending || snapshot.driver === option.value) return;
+              setPending(true);
+              void scope.setDriver(option.value).catch(() => undefined).finally(() => setPending(false));
+            }}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Composite driver view: a read-only slider acting as a live gauge. The shown
+// level is recomputed from the weighted projection signals whenever a signal or
+// the user weights change, and applied through the presenter — never persisted.
+// Because this is a separate component, the useProjection calls below are
+// unconditional and safe even though the driver itself is chosen at runtime.
+function CompositeLevelControl({
+  useProjection,
+  weights,
+  committedLevel,
+  presenter,
+  load,
+  enabled,
+}: {
+  useProjection: ProjectionApi;
+  weights: WeightsStore;
+  committedLevel: number;
+  presenter: SkinPresenter;
+  load: () => void;
+  enabled: boolean;
+}) {
+  const weightsSnapshot = useSyncExternalStore(
+    (listener) => weights.subscribe(listener),
+    () => weights.getSnapshot(),
+  );
+  const sessionStats = useProjection("sessionStats") as SessionStatsProjection | null | undefined;
+  const tokenUsage = useProjection("tokenUsage") as TokenUsageProjection | null | undefined;
+  const contextPressure = useProjection("contextPressure") as ContextPressureProjection | null | undefined;
+
+  const outputTokens = tokenUsage?.outputTokens;
+  const pressureTokens = contextPressure?.projectedTokens ?? contextPressure?.pressureTokens;
+  const contextWindow = contextPressure?.contextWindow;
+  const turns = sessionStats?.turns;
+  const decodeTokens = sessionStats?.decodeTokens;
+  const decodeMs = sessionStats?.decodeMs;
+
+  const normalized = normalizeWeights(weightsSnapshot);
+  const usageF = usageFactor(outputTokens ?? 0);
+  const pressureF = contextPressureFactor(pressureTokens, contextWindow, turns);
+  const effortF = reasoningEffortFactor(committedLevel);
+  const speedF = tokenSpeedFactor(decodeTokens ?? 0, decodeMs ?? 0);
+
+  const [level, setLevel] = useState(0);
+
+  useEffect(() => {
+    if (enabled) load();
+  }, [enabled, load]);
+
+  useEffect(() => {
+    const next = compositeLevel(weightsSnapshot, {
+      outputTokens,
+      committedLevel,
+      pressureTokens,
+      contextWindow,
+      turns,
+      decodeTokens,
+      decodeMs,
+    });
+    setLevel(next);
+    presenter.setLevel(next);
+  }, [
+    presenter,
+    enabled,
+    weightsSnapshot,
+    committedLevel,
+    outputTokens,
+    pressureTokens,
+    contextWindow,
+    turns,
+    decodeTokens,
+    decodeMs,
+  ]);
+
+  const count = presenter.getPortraitCount();
+  const frame = count > 0 ? frameIndexForLevel(level, count) : 0;
+  const pct = (factor: number) => `${Math.round(Math.min(1, Math.max(0, factor)) * 100)}%`;
+
+  return (
+    <div
+      className="flash-level-control flash-level-control--composite"
+      data-plugin={PACKAGE_ID}
+      data-state="ready"
+      title="综合加权"
+    >
+      <div className="flash-level-control__ticks" aria-hidden="true">
+        {Array.from({ length: MAX_LEVEL + 1 }, (_, index) => (
+          <i
+            key={index}
+            className="flash-level-control__tick"
+            style={{ left: `${(index / MAX_LEVEL) * 100}%` }}
+          />
+        ))}
+      </div>
+      <input
+        className="flash-level-control__range"
+        type="range"
+        min={0}
+        max={MAX_LEVEL}
+        step={1}
+        value={level}
+        disabled
+        readOnly
+        tabIndex={-1}
+        aria-label="综合加权"
+        aria-valuetext={`${level}/${MAX_LEVEL}`}
       />
+      <output className="flash-level-control__gauge" aria-hidden="true">
+        <span>用量 {pct(usageF)}</span>
+        <span>压力 {pct(pressureF)}</span>
+        <span>推理 {pct(effortF)}</span>
+        <span>速度 {pct(speedF)}</span>
+        <span className="flash-level-control__frame">{count > 0 ? `帧 ${frame + 1}/${count}` : "帧 —"}</span>
+      </output>
     </div>
   );
 }
@@ -807,26 +1047,59 @@ function restoreInitialSet(): string {
   return DEFAULT_PORTRAIT_SETS[0].id;
 }
 
+// Restore the driver mode. The old bind-effort toggle (BIND_EFFORT_KEY) is
+// migrated: "0" → manual (no binding), anything else → effort. New installs
+// default to the full composite mode.
+function restoreDriver(): DriverMode {
+  try {
+    const raw = localStorage.getItem(DRIVER_KEY);
+    if (raw === "manual" || raw === "effort" || raw === "composite") return raw;
+    const legacy = localStorage.getItem(BIND_EFFORT_KEY);
+    if (legacy !== null) return legacy === "0" ? "manual" : "effort";
+  } catch {
+    // storage may be unavailable
+  }
+  return "composite";
+}
+
+function readCompositeWeights(): CompositeWeights {
+  try {
+    const raw = localStorage.getItem(WEIGHTS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<CompositeWeights>;
+      return normalizeWeights(parsed);
+    }
+  } catch {
+    // storage may be unavailable or the JSON may be corrupt
+  }
+  return { ...DEFAULT_COMPOSITE_WEIGHTS };
+}
+
 function createPreferenceStore(initialSet: string): PreferenceStore {
   let snapshot: SkinSettings = {
     enabled: true,
     set: initialSet ? initialSet : DEFAULT_PORTRAIT_SETS[0].id,
-    bindEffort: localStorage.getItem(BIND_EFFORT_KEY) !== "0",
+    driver: restoreDriver(),
   };
   const listeners = new Set<() => void>();
   const onStorage = (event: StorageEvent) => {
-    if (event.key !== SET_KEY && event.key !== BIND_EFFORT_KEY) return;
+    if (event.key !== SET_KEY && event.key !== DRIVER_KEY) return;
     const nextSetId = event.key === SET_KEY ? normalizeSetId(event.newValue) : undefined;
     const next = {
       enabled: snapshot.enabled,
       set: event.key === SET_KEY ? (nextSetId ?? snapshot.set) : snapshot.set,
-      bindEffort: event.key === BIND_EFFORT_KEY ? event.newValue !== "0" : snapshot.bindEffort,
+      driver: event.key === DRIVER_KEY && (event.newValue === "manual" || event.newValue === "effort" || event.newValue === "composite")
+        ? event.newValue
+        : snapshot.driver,
     };
-    if (next.enabled === snapshot.enabled && next.set === snapshot.set && next.bindEffort === snapshot.bindEffort) return;
+    if (next.enabled === snapshot.enabled && next.set === snapshot.set && next.driver === snapshot.driver) return;
     snapshot = next;
     for (const listener of listeners) listener();
   };
   window.addEventListener("storage", onStorage);
+  const notify = () => {
+    for (const listener of listeners) listener();
+  };
   return {
     getSnapshot: () => snapshot,
     subscribe(listener) {
@@ -836,7 +1109,7 @@ function createPreferenceStore(initialSet: string): PreferenceStore {
     async set(enabled) {
       if (enabled === snapshot.enabled) return;
       snapshot = { ...snapshot, enabled };
-      for (const listener of listeners) listener();
+      notify();
     },
     async setSet(setId) {
       if (!setId || setId === snapshot.set) return;
@@ -846,17 +1119,75 @@ function createPreferenceStore(initialSet: string): PreferenceStore {
         // storage may be unavailable
       }
       snapshot = { ...snapshot, set: setId };
-      for (const listener of listeners) listener();
+      notify();
     },
-    async setBindEffort(bindEffort) {
-      if (bindEffort === snapshot.bindEffort) return;
+    async setDriver(driver) {
+      if (driver === snapshot.driver) return;
       try {
-        localStorage.setItem(BIND_EFFORT_KEY, bindEffort ? "1" : "0");
+        localStorage.setItem(DRIVER_KEY, driver);
       } catch {
         // storage may be unavailable
       }
-      snapshot = { ...snapshot, bindEffort };
-      for (const listener of listeners) listener();
+      snapshot = { ...snapshot, driver };
+      notify();
+    },
+    dispose() {
+      window.removeEventListener("storage", onStorage);
+      listeners.clear();
+    },
+  };
+}
+
+// LocalStorage-backed store for the four composite weights. Mirrors
+// createPreferenceStore: getSnapshot returns a stable reference between
+// changes, and cross-tab edits are honoured via the storage event. Writes are
+// renormalized to sum 1 (invalid input falls back to the defaults).
+function createWeightsStore(): WeightsStore {
+  let snapshot = readCompositeWeights();
+  const listeners = new Set<() => void>();
+  const onStorage = (event: StorageEvent) => {
+    if (event.key !== WEIGHTS_KEY) return;
+    snapshot = readCompositeWeights();
+    for (const listener of listeners) listener();
+  };
+  window.addEventListener("storage", onStorage);
+  const notify = () => {
+    for (const listener of listeners) listener();
+  };
+  return {
+    getSnapshot: () => snapshot,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    setWeights(weights) {
+      const next = normalizeWeights(weights);
+      const same = next.usage === snapshot.usage
+        && next.pressure === snapshot.pressure
+        && next.effort === snapshot.effort
+        && next.speed === snapshot.speed;
+      if (same) return;
+      try {
+        localStorage.setItem(WEIGHTS_KEY, JSON.stringify(next));
+      } catch {
+        // storage may be unavailable
+      }
+      snapshot = next;
+      notify();
+    },
+    reset() {
+      const next = { ...DEFAULT_COMPOSITE_WEIGHTS };
+      if (next.usage === snapshot.usage
+        && next.pressure === snapshot.pressure
+        && next.effort === snapshot.effort
+        && next.speed === snapshot.speed) return;
+      try {
+        localStorage.setItem(WEIGHTS_KEY, JSON.stringify(next));
+      } catch {
+        // storage may be unavailable
+      }
+      snapshot = next;
+      notify();
     },
     dispose() {
       window.removeEventListener("storage", onStorage);
@@ -911,6 +1242,8 @@ interface FlashSkinConfigCardProps {
   view?: string;
   /** Host 支持的 "flash-skin" 命名空间配置表单。 */
   form: FlashSkinConfigForm<PortraitGroupsConfig>;
+  /** 综合加权模式的四路权重存储。 */
+  weights: WeightsStore;
   /** 由插件管理页提供、已绑定到本插件语言命名空间的读取器。 */
   t?: (key: string) => string;
 }
@@ -956,6 +1289,14 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "zhName": "中文名称",
     "enName": "英文名称",
     "identityHint": "标识（Set ID）写入 localStorage 持久化当前选择：改名后需重新点击选中该组才生效；设置行名称按界面语言显示（中文界面中文名，英文界面英文名）。内置组的默认中/英文名会在未修改时一直作为缺省显示。",
+    "importGroup": "从压缩包导入新组",
+    "importGroupTitle": "选择 .zip，把其中所有图片批量导入为一个新组",
+    "fileNotZip": "请选择 .zip 压缩包",
+    "zipNoImages": "压缩包里没有可用的图片",
+    "zipParseFailed": "无法解析压缩包，请确认它是有效的 .zip 文件",
+    "zipTooManyImages": "单次导入最多 64 张，已截取前 64 张",
+    "zipSkippedOversize": "已跳过 {n} 张超过 2MB 的图片",
+    "zipImported": "已导入 {n} 张图片，创建了新的皮肤组",
   },
   en: {
     "loading": "Loading…",
@@ -997,6 +1338,14 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "zhName": "Chinese name",
     "enName": "English name",
     "identityHint": "The Set ID is persisted in localStorage for the current selection — after renaming, click the group again to take effect. The settings row shows the Chinese name in the Chinese UI and the English name in the English UI. Built-in sets keep their default Chinese/English names as fallbacks until overridden.",
+    "importGroup": "Import group from archive",
+    "importGroupTitle": "Choose a .zip; all images inside are batch-imported as a new group",
+    "fileNotZip": "Please choose a .zip archive",
+    "zipNoImages": "The archive contains no usable images",
+    "zipParseFailed": "Could not parse the archive — make sure it is a valid .zip file",
+    "zipTooManyImages": "At most 64 images per import; kept the first 64",
+    "zipSkippedOversize": "Skipped {n} images over 2MB",
+    "zipImported": "Imported {n} images and created a new group",
   },
 };
 
@@ -1020,6 +1369,180 @@ function readLocalFile(file: File): Promise<string> {
   });
 }
 
+// ── ZIP batch import ────────────────────────────────────────────────────────
+// A single ordinal image entry extracted from a ZIP, preserving archive order.
+interface ZipImageEntry {
+  /** Base filename with its original extension, deduped with a numeric suffix. */
+  name: string;
+  bytes: Uint8Array;
+}
+
+// Guard the embedded base64 so an oversized archive never blows up the
+// persisted config (localStorage-backed settings).
+const MAX_IMAGES_PER_IMPORT = 64;
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
+
+function readLocalFileAsArrayBuffer(file: File): Promise<ArrayBuffer> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as ArrayBuffer);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+// Parse a ZIP into the ordered list of valid image entries. `unzipSync` returns
+// an object whose insertion order mirrors the archive's entry order, so the
+// resulting list preserves the user's intended left-to-right frame sequence.
+// Directory entries and non-image members are dropped; oversized images are
+// skipped (reported via the returned skipped count).
+function extractImagesFromZip(buffer: ArrayBuffer): { entries: ZipImageEntry[]; skippedOversize: number } {
+  const files = unzipSync(new Uint8Array(buffer));
+  const entries: ZipImageEntry[] = [];
+  let skippedOversize = 0;
+  const nameCounts = new Map<string, number>();
+  for (const raw of Object.keys(files)) {
+    if (entries.length >= MAX_IMAGES_PER_IMPORT) break;
+    const bytes = files[raw];
+    if (!bytes || bytes.length === 0) continue;
+    const base = raw.split("/").pop() ?? raw;
+    if (!base || /^\./.test(base)) continue;
+    const dot = base.lastIndexOf(".");
+    if (dot < 0) continue;
+    const ext = base.slice(dot).toLowerCase();
+    if (!IMAGE_EXTENSIONS.has(ext)) continue;
+    if (bytes.length > MAX_LOCAL_IMAGE_BYTES) {
+      skippedOversize += 1;
+      continue;
+    }
+    // Dedupe repeated filenames (common when an archive contains `a/a.png` and
+    // `b/a.png`) so every entry keeps a unique label.
+    const stem = base.slice(0, dot);
+    const used = nameCounts.get(base) ?? 0;
+    nameCounts.set(base, used + 1);
+    entries.push({ name: used === 0 ? base : `${stem}-${used + 1}${ext}`, bytes });
+  }
+  return { entries, skippedOversize };
+}
+
+// Minimal POSIX `tar` reader — fflate does not ship tar, so we parse the simple
+// 512-byte-header format ourself. Each entry is `name(100) mode(8) uid(8) gid(8)
+// size(12, octal) mtime(12) checksum(8) typeflag(1) ...`, followed by the file
+// payload padded to a 512-byte multiple. We only care about regular files
+// (`typeflag` "0" or NUL); the rest are skipped.
+function parseTar(archive: Uint8Array): ZipImageEntry[] {
+  const entries: ZipImageEntry[] = [];
+  let offset = 0;
+  while (offset + 512 <= archive.length) {
+    const header = archive.subarray(offset, offset + 512);
+    // Two empty blocks mark the archive end.
+    if (isAllZeroes(header)) break;
+    const name = decodeTarString(header, 0, 100);
+    const typeflag = String.fromCharCode(header[156] ?? 0);
+    const sizeOct = decodeTarString(header, 124, 12).trim().split("\0")[0] || "0";
+    const size = parseInt(sizeOct, 8) || 0;
+    offset += 512;
+    if (!name || name === "." || name === "..") {
+      offset += Math.ceil(size / 512) * 512;
+      continue;
+    }
+    if (typeflag === "0" || typeflag === "\0" || typeflag === "") {
+      const payload = archive.subarray(offset, offset + size);
+      if (payload.length === size) entries.push({ name, bytes: new Uint8Array(payload) });
+    }
+    offset += Math.ceil(size / 512) * 512;
+  }
+  return entries;
+}
+
+// `tar` pads the name field with NUL bytes; decode up to the first NUL, trimmed.
+function decodeTarString(bytes: Uint8Array, start: number, length: number): string {
+  let end = start;
+  while (end < start + length && bytes[end] !== 0) end += 1;
+  return new TextDecoder().decode(bytes.subarray(start, end)).trim();
+}
+
+function isAllZeroes(bytes: Uint8Array): boolean {
+  for (let index = 0; index < bytes.length; index += 1) {
+    if (bytes[index] !== 0) return false;
+  }
+  return true;
+}
+
+// Decompress a possibly-gzipped byte buffer. `.gz`/`.tar.gz` payloads are the
+// SEC6 gzip format; anything else is passed through untouched.
+function maybeGunzip(bytes: Uint8Array): Uint8Array {
+  if (bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
+    return gunzipSync(bytes);
+  }
+  return bytes;
+}
+
+// Normalize an archive back into an ordered list of image candidates (shared by
+// zip and tar) with a per-file size guard against oversized embedded images.
+function collectImages(rawEntries: ZipImageEntry[]): { entries: ZipImageEntry[]; skippedOversize: number } {
+  const entries: ZipImageEntry[] = [];
+  const nameCounts = new Map<string, number>();
+  let skippedOversize = 0;
+  for (const rawEntry of rawEntries) {
+    if (entries.length >= MAX_IMAGES_PER_IMPORT) break;
+    const base = rawEntry.name.split("/").pop() ?? rawEntry.name;
+    if (!base || /^\./.test(base)) continue;
+    const dot = base.lastIndexOf(".");
+    if (dot < 0) continue;
+    const ext = base.slice(dot).toLowerCase();
+    if (!IMAGE_EXTENSIONS.has(ext)) continue;
+    if (rawEntry.bytes.length > MAX_LOCAL_IMAGE_BYTES) {
+      skippedOversize += 1;
+      continue;
+    }
+    const stem = base.slice(0, dot);
+    const used = nameCounts.get(base) ?? 0;
+    nameCounts.set(base, used + 1);
+    entries.push({ name: used === 0 ? base : `${stem}-${used + 1}${ext}`, bytes: rawEntry.bytes });
+  }
+  return { entries, skippedOversize };
+}
+
+// Dispatch an imported archive file by extension to the right decompressor.
+// Returns the ordered valid-image list plus how many images were skipped for
+// being too large (these are the only parts the caller turns into UI messages).
+function extractArchive(fileName: string, buffer: ArrayBuffer): { entries: ZipImageEntry[]; skippedOversize: number } {
+  const lower = fileName.toLowerCase();
+  let rawEntries: ZipImageEntry[];
+  if (lower.endsWith(".zip")) {
+    rawEntries = extractImagesFromZip(buffer);
+  } else if (lower.endsWith(".tar.gz") || lower.endsWith(".tgz")) {
+    const bytes = maybeGunzip(new Uint8Array(buffer));
+    rawEntries = parseTar(bytes);
+  } else if (lower.endsWith(".tar")) {
+    rawEntries = parseTar(new Uint8Array(buffer));
+  } else if (lower.endsWith(".gz") || lower.endsWith(".gzip")) {
+    const bytes = maybeGunzip(new Uint8Array(buffer));
+    rawEntries = [{ name: fileName.replace(/\.(gz|gzip)$/i, ""), bytes }];
+  } else {
+    rawEntries = [];
+  }
+  return collectImages(rawEntries);
+}
+
+
+// Convert one extracted Uint8Array into a base64 data URL for embedding (same
+// storage shape as the single-image local picker).
+function bytesToDataUrl(entry: ZipImageEntry): Promise<{ name: string; dataUrl: string }> {
+  return new Promise((resolve, reject) => {
+    try {
+      const blob = new Blob([entry.bytes]);
+      const reader = new FileReader();
+      reader.onload = () => resolve({ name: entry.name, dataUrl: String(reader.result) });
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(blob);
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
 // The light/dark boundary for a group: with `count` images there are
 // `count + 1` boundaries, and darkLevel (0..MAX_LEVEL) is the slider stop at
 // which the set goes dark, so the boundary position maps linearly onto the
@@ -1029,10 +1552,14 @@ function boundaryForDarkLevel(count: number, level: number): number {
   return Math.min(count, Math.max(0, Math.round((level / MAX_LEVEL) * count)));
 }
 
-function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
+function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardProps) {
   const snapshot = useSyncExternalStore(
     (listener) => form.subscribe(listener),
     () => form.getSnapshot(),
+  );
+  const weightSnapshot = useSyncExternalStore(
+    (listener) => weights.subscribe(listener),
+    () => weights.getSnapshot(),
   );
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<{
@@ -1256,6 +1783,77 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
     }
   };
 
+  // ── ZIP batch import ──────────────────────────────────────────────────────
+  // A second hidden <input type=file> accepts `.zip` archives. The archive is
+  // inflated client-side (vendored fflate) and every valid image inside becomes
+  // an embedded base64 data URL on a brand-new group whose images order mirrors
+  // the archive entry order.
+  const zipInputRef = useRef<HTMLInputElement | null>(null);
+
+  const importZip = () => {
+    if (!writable || busy) return;
+    zipInputRef.current?.click();
+  };
+
+  const insertZipGroup = (dataUrls: { name: string; dataUrl: string }[]) => {
+    const next: PortraitGroupsConfig = [...groups, {
+      id: newGroupId(),
+      name: CONFIG_TEXTS.zh.defaultGroup,
+      zh: CONFIG_TEXTS.zh.defaultGroup,
+      en: CONFIG_TEXTS.en.defaultGroup,
+      darkLevel: MAX_LEVEL - 1,
+      images: dataUrls.map((item) => item.dataUrl),
+    }];
+    void commit(next);
+  };
+
+  const onZipInputChange = async (event: ReactChangeEvent<HTMLInputElement>) => {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    // Reset so picking the same archive again re-triggers change.
+    input.value = "";
+    if (file === undefined) return;
+    if (!/\.zip$/i.test(file.name) && file.type !== "application/zip" && file.type !== "application/x-zip-compressed") {
+      setFileError(t("fileNotZip"));
+      return;
+    }
+    let entries: ZipImageEntry[];
+    let skippedOversize: number;
+    try {
+      const buffer = await readLocalFileAsArrayBuffer(file);
+      const parsed = extractImagesFromZip(buffer);
+      entries = parsed.entries;
+      skippedOversize = parsed.skippedOversize;
+    } catch {
+      setFileError(t("zipParseFailed"));
+      return;
+    }
+    setFileError(null);
+    if (entries.length === 0) {
+      setFileError(
+        skippedOversize > 0
+          ? t("zipSkippedOversize").replace("{n}", String(skippedOversize))
+          : t("zipNoImages"),
+      );
+      return;
+    }
+    try {
+      const dataUrls: { name: string; dataUrl: string }[] = [];
+      // Await serially so a corrupt entry can't leave a partially-built group.
+      for (const entry of entries) {
+        dataUrls.push(await bytesToDataUrl(entry));
+      }
+      let notice = t("zipImported").replace("{n}", String(dataUrls.length));
+      if (skippedOversize > 0) {
+        notice += " " + t("zipSkippedOversize").replace("{n}", String(skippedOversize));
+      }
+      insertZipGroup(dataUrls);
+      setFileError(notice);
+    } catch {
+      setFileError(t("zipParseFailed"));
+    }
+  };
+
   const loadBuiltinGroups = () => {
     const next: PortraitGroupsConfig = DEFAULT_PORTRAIT_SETS.map((set) => ({
       id: set.id,
@@ -1329,6 +1927,15 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
         aria-hidden="true"
         tabIndex={-1}
         onChange={onFileInputChange}
+      />
+      <input
+        ref={zipInputRef}
+        type="file"
+        accept=".zip,application/zip,application/x-zip-compressed"
+        hidden
+        aria-hidden="true"
+        tabIndex={-1}
+        onChange={onZipInputChange}
       />
       {fileError && (
         <p className="flash-portrait-groups__notice flash-portrait-groups__notice--error" role="alert">
@@ -1571,8 +2178,58 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
         <button type="button" disabled={!writable || busy} onClick={addGroup}>
           + {t("addGroup")}
         </button>
+        <button
+          type="button"
+          disabled={!writable || busy}
+          onClick={importZip}
+          title={t("importGroupTitle")}
+          aria-label={t("importGroupTitle")}
+        >
+          {t("importGroup")}
+        </button>
         {busy && <span className="flash-portrait-groups__notice" role="status">…</span>}
       </footer>
+
+      <section className="flash-weights" data-plugin={PACKAGE_ID}>
+        <header className="flash-weights__head">
+          <h3 className="flash-weights__title">{t("weights.title")}</h3>
+        </header>
+        <p className="flash-portrait-groups__hint">{t("weights.hint")}</p>
+        <div className="flash-weights__grid">
+          {([
+            ["usage", "usage", weightSnapshot.usage],
+            ["pressure", "pressure", weightSnapshot.pressure],
+            ["effort", "effort", weightSnapshot.effort],
+            ["speed", "speed", weightSnapshot.speed],
+          ] as const).map(([key, labelKey, value]) => (
+            <label key={key} className="flash-weights__field">
+              <span className="flash-weights__caption">{t(`weights.${labelKey}`)}</span>
+              <input
+                type="number"
+                className="flash-weights__input"
+                min={0}
+                max={1}
+                step={0.05}
+                value={value.toFixed(2) ?? ""}
+                disabled={!writable || busy}
+                onChange={(event) => {
+                  const parsed = Number(event.currentTarget.value);
+                  const clamped = Number.isFinite(parsed) ? Math.min(1, Math.max(0, parsed)) : 0;
+                  weights.setWeights({ ...weightSnapshot, [key]: clamped });
+                }}
+              />
+            </label>
+          ))}
+        </div>
+        <button
+          type="button"
+          className="flash-weights__reset"
+          disabled={!writable || busy}
+          onClick={() => weights.reset()}
+        >
+          {t("weights.reset")}
+        </button>
+      </section>
     </section>
   );
 }
@@ -1587,6 +2244,8 @@ export function apply(ctx: ClientContext) {
   const theme = ctx.get("theme") as ThemeService;
   const scope = createPreferenceStore(restoreInitialSet());
   ctx.effect(() => () => scope.dispose(), "flash-skin: appearance preference");
+  const weights = createWeightsStore();
+  ctx.effect(() => () => weights.dispose(), "flash-skin: composite weights");
   const presenter = new SkinPresenter(scope, theme);
   ctx.effect(() => () => presenter.dispose(), "flash-skin: backdrop presenter");
 
@@ -1609,13 +2268,33 @@ export function apply(ctx: ClientContext) {
         ...CONFIG_TEXTS.zh,
         "appearance": "人物肖像",
         "portraitSet": "人物肖像组",
-        "effort.binding": "滑块绑定推理强度",
+        "driver.title": "强度驱动",
+        "driver.manual": "手动",
+        "driver.effort": "跟随推理",
+        "driver.composite": "综合加权",
+        "weights.title": "综合加权（手动可调）",
+        "weights.hint": "按权重合成的 0–6 强度实时驱动人物肖像；全为 0 时回退默认权重。",
+        "weights.usage": "用量",
+        "weights.pressure": "压力",
+        "weights.effort": "推理",
+        "weights.speed": "速度",
+        "weights.reset": "恢复默认",
       },
       en: {
         ...CONFIG_TEXTS.en,
         "appearance": "Portrait group",
         "portraitSet": "Portrait set",
-        "effort.binding": "Bind slider to reasoning level",
+        "driver.title": "Level driver",
+        "driver.manual": "Manual",
+        "driver.effort": "Follow reasoning",
+        "driver.composite": "Composite",
+        "weights.title": "Composite weights (editable)",
+        "weights.hint": "Live 0–6 portrait level synthesised from these weights; all-zero falls back to defaults.",
+        "weights.usage": "Usage",
+        "weights.pressure": "Pressure",
+        "weights.effort": "Reasoning",
+        "weights.speed": "Speed",
+        "weights.reset": "Restore defaults",
       },
     }),
     "flash-skin: settings locale",
@@ -1808,16 +2487,16 @@ export function apply(ctx: ClientContext) {
     key: PACKAGE_ID,
     order: 10,
     locale: LOCALE_NAMESPACE,
-    inject: () => ({ form: configForm }),
+    inject: () => ({ form: configForm, weights, t: setLabel }),
   }, FlashSkinConfigCard));
 
   ctx.slots.inject("settings.general.item", () => ctx.slots.register({
     name: "settings.general.item",
-    id: "flash-effort-binding",
-    order: 10.5,
+    id: "flash-driver",
+    order: 19.5,
     locale: LOCALE_NAMESPACE,
-    inject: () => ({ scope }),
-  }, EffortBindingRow));
+    inject: () => ({ scope, t: setLabel }),
+  }, DriverRow));
 
   const readLevel = () => {
     try {
@@ -1831,6 +2510,10 @@ export function apply(ctx: ClientContext) {
     name: "conversation.input.left",
     id: "flash-level-control",
     order: 10,
+    // The host's `conversation.input.left` binding auto-injects `useProjection`
+    // as a standard prop (see dsh-client-ui-conversation slot contract); we only
+    // return our own session props here and let the renderer mix the projection
+    // hook in.
     inject: (sessionId: string) => {
       const available = ctx.sessions.subagentAddress(sessionId) === undefined;
       const directory = ctx.modelDirectories.directoryFor(sessionId) as ModelDirectory;
@@ -1838,6 +2521,7 @@ export function apply(ctx: ClientContext) {
         directory: directory.store,
         presenter,
         scope,
+        weights,
         settings: { level: readLevel() },
         load: () => {
           if (available) void directory.load().catch(() => undefined);

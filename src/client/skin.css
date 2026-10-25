@@ -786,3 +786,179 @@ body[data-flash-skin="on"] .EvIC1a_toBottomSlot {
   ) !important;
 }
 
+
+/* 8) 三段强度驱动模式选择行（DriverRow）。
+ *    手动 / 跟随推理 / 综合加权 的 segmented 单选组，紧跟在人物肖像组行下方。
+ */
+.flash-appearance-binding--driver {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  margin: 2px 0;
+}
+
+.flash-appearance-binding__label {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.flash-segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--dsw-alias-surface-muted, rgb(0 0 0 / 6%));
+}
+
+.flash-segmented button {
+  padding: 3px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.flash-segmented button:hover:not(:disabled) {
+  background: var(--dsw-alias-hover, rgb(0 0 0 / 4%));
+  color: var(--dsw-alias-label-primary);
+}
+
+.flash-segmented button.is-active {
+  background: var(--dsw-alias-bg-active-white, #fff);
+  color: var(--dsw-alias-label-primary);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 12%);
+}
+
+.flash-segmented button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* 9) 综合加权只读滑块（实时仪表）。滑块本身不可拖动，仅随加权信号刷新；
+ *    下方 output 逐路显示用量/压力/推理/速度的归一化占比与当前帧位。
+ */
+.flash-level-control--composite {
+  width: auto;
+  min-width: 132px;
+  height: auto;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+.flash-level-control--composite .flash-level-control__range {
+  width: 132px;
+  cursor: default;
+}
+
+.flash-level-control--composite .flash-level-control__range::-webkit-slider-thumb {
+  background: var(--flash-control-rail, rgb(0 0 0 / 40%));
+  border-color: var(--flash-control-rail, rgb(0 0 0 / 40%));
+}
+
+.flash-level-control--composite .flash-level-control__range::-moz-range-thumb {
+  background: var(--flash-control-rail, rgb(0 0 0 / 40%));
+  border-color: var(--flash-control-rail, rgb(0 0 0 / 40%));
+}
+
+.flash-level-control__gauge {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  align-items: center;
+  margin-top: 2px;
+  padding-left: 2px;
+  color: var(--flash-secondary, #5b6470);
+  font-size: 10px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.flash-level-control__gauge .flash-level-control__frame {
+  color: var(--flash-accent, #4176e6);
+  font-weight: 600;
+}
+
+/* 10) 综合加权权重输入（插件详情配置卡）。
+ *     四个 step=0.05 的数字输入 + 恢复默认按钮，写入 localStorage 由运行时读取。
+ */
+.flash-weights {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--dsw-alias-border-l3, rgb(0 0 0 / 12%));
+}
+
+.flash-weights__head {
+  margin: 0 0 6px;
+}
+
+.flash-weights__title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.flash-weights__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(116px, 1fr));
+  gap: 10px;
+  margin: 10px 0;
+}
+
+.flash-weights__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.flash-weights__caption {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.flash-weights__input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  border: 1px solid var(--dsw-alias-border-l3, rgb(0 0 0 / 16%));
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-base, #fff);
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+}
+
+.flash-weights__input:focus {
+  outline: none;
+  border-color: var(--flash-accent, #4176e6);
+}
+
+.flash-weights__reset {
+  padding: 4px 12px;
+  border: 1px solid var(--dsw-alias-border-l3, rgb(0 0 0 / 16%));
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.flash-weights__reset:hover:not(:disabled) {
+  background: var(--dsw-alias-hover, rgb(0 0 0 / 4%));
+  color: var(--dsw-alias-label-primary);
+}
+
+.flash-weights__reset:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

@@ -1,5 +1,9 @@
 export const MAX_LEVEL = 6;
 
+// Mirror of the client's per-import image cap (MAX_IMAGES_PER_IMPORT)
+// so a manifest-URL list is trimmed to the same size as embedded images.
+const PORTRAIT_IMPORT_MAX_IMAGES = 64;
+
 export interface EffortLike {
   id: string;
   name: string;
@@ -407,6 +411,9 @@ export interface PortraitImportMeta {
   en?: string;
   /** Slider level (0..MAX_LEVEL) at which this set flips to the dark shell. */
   darkLevel?: number;
+  /** Image URLs (web/data URLs) the manifest wants to seed the group with, used
+   *  only when the archive itself carries no embedded images. */
+  images?: string[];
 }
 
 /**
@@ -441,43 +448,132 @@ export function normalizeImportMeta(raw: unknown): PortraitImportMeta | null {
   if (typeof levelField === "number" && Number.isFinite(levelField)) {
     meta.darkLevel = clampLevel(levelField);
   }
-  const usable = (["id", "name", "zh", "en", "darkLevel"] as const)
+  // Optional image-URL list. URLs are trimmed, blanks dropped, duplicates
+  // collapsed and the list capped at PORTRAIT_IMPORT_MAX_IMAGES so an oversized
+  // manifest can't balloon a group past what the skin supports.
+  if (Array.isArray(src.images)) {
+    const urls: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of src.images) {
+      if (typeof raw !== "string") continue;
+      const trimmed = raw.trim();
+      if (trimmed === "" || seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      urls.push(trimmed);
+      if (urls.length >= PORTRAIT_IMPORT_MAX_IMAGES) break;
+    }
+    if (urls.length > 0) meta.images = urls;
+  }
+  const usable = (["id", "name", "zh", "en", "darkLevel", "images"] as const)
     .some((key) => meta[key] !== undefined);
   return usable ? meta : null;
 }
 
 /**
  * Minimal YAML-subset reader for the archive's optional `portrait.yaml`
- * metadata. It understands only the flat `key: value` mapping a portrait-set
- * manifest needs: single/double-quoted strings, booleans, finite numbers,
- * `null`/`~`, `#` comments and `---`/`...` document markers. Anything richer
- * (lists, nested maps, multi-line strings, anchors) is ignored rather than
- * rejected, so an over-complex manifest degrades silently to the built-in
- * defaults instead of failing the import. Returns null when no mapping line
- * could be read.
+ * metadata. It understands the flat `key: value` mapping a portrait-set
+ * manifest needs — single/double-quoted strings, booleans, finite numbers,
+ * `null`/`~`, `#` comments and `---`/`...` document markers — plus simple
+ * lists under a bare key (a `images:` block with `- item` lines or an inline
+ * `images: [a, b]` flow list). Anything richer (nested maps, flow maps,
+ * multi-line strings, anchors) is ignored rather than rejected, so an
+ * over-complex manifest degrades silently to the built-in defaults instead of
+ * failing the import. Returns null when no usable mapping line could be read.
  */
 export function parsePortraitYaml(text: string): Record<string, unknown> | null {
   const result: Record<string, unknown> = {};
+  // `blockKey` tracks the bare `key:` that opened at most one level of
+  // indented `- item` lines appended to it; any other indented line (a nested
+  // map, for instance) ends the pending block.
+  let blockKey: string | null = null;
   let found = false;
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (line === "" || /^(?:---|\.\.\.)\s*$/.test(line)) continue;
-    // Indented lines belong to a nested map/list — outside the flat contract, so
-    // skip them rather than misread sub-keys as top-level fields.
-    if (/^\s/.test(rawLine)) continue;
+    if (/^\s/.test(rawLine)) {
+      // Indented comments keep the pending block alive; any other non-bullet
+      // indented line (a nested map, for instance) ends it.
+      if (line.startsWith("#")) continue;
+      if (blockKey !== null && line.startsWith("- ")) {
+        const item = parseYamlScalar(stripYamlComment(line.slice(2)));
+        if (item !== undefined) {
+          appendBlockItem(result, blockKey, item);
+          found = true;
+          continue;
+        }
+      }
+      blockKey = null;
+      continue;
+    }
     const colon = line.indexOf(":");
     if (colon <= 0) continue; // list bullets / non-mapping lines.
     const key = line.slice(0, colon).trim();
-    // Nested keys and flow maps (`{k: v}`, `[a, b]`) are out of scope.
-    if (key === "" || key.includes(" ") || /^[{[]/.test(key)) continue;
+    // Nested keys and flow maps (`{k: v}`) are out of scope.
+    if (key === "" || key.includes(" ") || key.startsWith("{") || key.startsWith("[")) continue;
     const rest = stripYamlComment(line.slice(colon + 1));
-    if (rest === "") continue;
+    if (rest === "") {
+      // Bare key: candidate block-list parent for following `- item` lines;
+      // on its own it contributes nothing to the mapping.
+      blockKey = key;
+      continue;
+    }
+    blockKey = null;
+    if (rest.startsWith("[") && rest.endsWith("]")) {
+      const items = parseYamlFlowList(rest.slice(1, -1));
+      if (items !== null) {
+        result[key] = items;
+        found = true;
+        continue;
+      }
+    }
     const value = parseYamlScalar(rest);
     if (value === undefined) continue;
     result[key] = value;
     found = true;
   }
   return found ? result : null;
+}
+
+// Append one `- item` list element under a bare block key, keeping the value
+// an array even if the key was already set as something else.
+function appendBlockItem(result: Record<string, unknown>, key: string, item: unknown): void {
+  const current = result[key];
+  if (Array.isArray(current)) {
+    current.push(item);
+  } else {
+    result[key] = [item];
+  }
+}
+
+// Split a flow list body (`a, b, "c, x", 'd'`) on commas outside quotes and
+// parse each item as a scalar. Returns null when splitting fails, so the
+// caller falls back to treating the whole token as a plain string.
+function parseYamlFlowList(body: string): unknown[] | null {
+  const items: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  for (let index = 0; index < body.length; index += 1) {
+    const ch = body[index];
+    if (quote !== null) {
+      if (ch === "\\" && quote === '"') { current += ch + (body[index + 1] ?? ""); index += 1; continue; }
+      if (ch === "'" && quote === "'" && body[index + 1] === "'") { current += "''"; index += 1; continue; }
+      current += ch;
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') { quote = ch; current += ch; continue; }
+    if (ch === ",") { items.push(current); current = ""; continue; }
+    current += ch;
+  }
+  if (quote !== null) return null; // unterminated quoted segment.
+  if (current.trim() !== "") items.push(current);
+  const parsed: unknown[] = [];
+  for (const raw of items) {
+    const value = parseYamlScalar(stripYamlComment(raw));
+    if (value === undefined) return null;
+    parsed.push(value);
+  }
+  return parsed;
 }
 
 // Trim a trailing ` # comment`, honouring quoted values so a quoted `#` inside

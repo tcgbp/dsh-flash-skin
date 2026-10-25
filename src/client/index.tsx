@@ -1431,6 +1431,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "zipSkippedOversize": "已跳过 {n} 张超过 2MB 的图片",
     "zipImported": "已导入 {n} 张图片，创建了新的皮肤组",
     "zipImportedMeta": "，并按压缩包内元数据设置了标识、中英文名称与深浅切换点",
+    "metaImported": "已按清单创建新组（{n} 张在线图片）",
   },
   en: {
     "loading": "Loading…",
@@ -1481,6 +1482,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "zipSkippedOversize": "Skipped {n} images over 2MB",
     "zipImported": "Imported {n} images and created a new group",
     "zipImportedMeta": ", and set the id, Chinese/English names and light/dark threshold from the archive metadata",
+    "metaImported": "Created a new group from the manifest metadata with {n} image URLs",
   },
 };
 
@@ -2071,7 +2073,12 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
       return;
     }
     setFileError(null);
-    if (entries.length === 0) {
+    // The manifest may carry `images:` URLs to seed the group when the archive
+    // itself ships no embedded frames (a tiny, URL-only manifest archive).
+    // When the archive does carry frames those always win — the manifest list
+    // is only a fallback for archives that contain no bytes at all.
+    const manifestImages = meta?.images ?? [];
+    if (entries.length === 0 && manifestImages.length === 0) {
       setFileError(
         skippedOversize > 0
           ? t("zipSkippedOversize").replace("{n}", String(skippedOversize))
@@ -2080,11 +2087,20 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
       return;
     }
     try {
-      // Upload the extracted frames to the host attachments store; the server
-      // persists each file and replies with content-addressed serve URLs that
-      // we store as plain image refs (config never carries the raw bytes).
-      const images = await uploadArchiveImages(entries);
-      let notice = t("zipImported").replace("{n}", String(images.length));
+      let images: string[];
+      let notice: string;
+      if (entries.length > 0) {
+        // Upload the extracted frames to the host attachments store; the server
+        // persists each file and replies with content-addressed serve URLs that
+        // we store as plain image refs (config never carries the raw bytes).
+        images = await uploadArchiveImages(entries);
+        notice = t("zipImported").replace("{n}", String(images.length));
+      } else {
+        // No embedded frames — seed the group straight from the manifest's
+        // URL list (kept URL-only like every other group's images).
+        images = manifestImages;
+        notice = t("metaImported").replace("{n}", String(images.length));
+      }
       if (meta) {
         notice += " " + t("zipImportedMeta");
       }

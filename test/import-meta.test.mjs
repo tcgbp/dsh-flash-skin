@@ -73,6 +73,39 @@ describe("parsePortraitYaml (flat manifest subset)", () => {
     expect(parsePortraitYaml("dark-level: 6")).toEqual({ "dark-level": 6 });
     expect(parsePortraitYaml("darkLevel: 3")).toEqual({ darkLevel: 3 });
   });
+
+  it("parses an indented block list under a bare key", () => {
+    const text = [
+      "id: url-set",
+      "images:",
+      "  - https://example.com/a.png",
+      "  - 'quoted item with spaces.png'",
+      "  - 42",
+      "...",
+    ].join("\n");
+    expect(parsePortraitYaml(text)).toEqual({
+      id: "url-set",
+      images: ["https://example.com/a.png", "quoted item with spaces.png", 42],
+    });
+  });
+
+  it("parses an inline flow list", () => {
+    const text = ["images: [a.png, \"b, x.png\", c.png]", "id: flow-set"].join("\n");
+    expect(parsePortraitYaml(text)).toEqual({
+      images: ["a.png", "b, x.png", "c.png"],
+      id: "flow-set",
+    });
+  });
+
+  it("keeps an indented list alive across comment lines", () => {
+    const text = ["images:", "  # frame urls", "  - a.png", "  - b.png"].join("\n");
+    expect(parsePortraitYaml(text)).toEqual({ images: ["a.png", "b.png"] });
+  });
+
+  it("contributes nothing for a bare key with no list items", () => {
+    expect(parsePortraitYaml("nested:\n")).toBeNull();
+    expect(parsePortraitYaml("images:\n# only a comment\n")).toBeNull();
+  });
 });
 
 describe("normalizeImportMeta (sanitization contract like commitField)", () => {
@@ -117,6 +150,32 @@ describe("normalizeImportMeta (sanitization contract like commitField)", () => {
     expect(normalizeImportMeta({ darkLevel: "4" })).toBeNull();
     expect(normalizeImportMeta({ "dark-level": "4" })).toBeNull();
   });
+
+  it("sanitizes the image-URL list: trim, drop blanks, dedupe, cap at 64", () => {
+    const urls = Array.from({ length: 70 }, (_, index) => `https://s/${index}.png`);
+    const meta = normalizeImportMeta({
+      images: [
+        "  https://s/a.png  ",
+        "",
+        "https://s/a.png",
+        "  ",
+        ...urls,
+      ],
+    });
+    expect(meta?.images?.length).toBe(64);
+    expect(meta?.images?.[0]).toBe("https://s/a.png");
+    expect(new Set(meta?.images).size).toBe(meta?.images?.length);
+  });
+
+  it("keeps non-string or empty image arrays out of the meta", () => {
+    expect(normalizeImportMeta({ images: [] })?.images).toBeUndefined();
+    expect(normalizeImportMeta({ images: [1, 2] })?.images).toBeUndefined();
+    expect(normalizeImportMeta({ images: ["   "] })?.images).toBeUndefined();
+  });
+
+  it("counts a manifest supplied by images alone as usable", () => {
+    expect(normalizeImportMeta({ images: ["a.png"] })).toEqual({ images: ["a.png"] });
+  });
 });
 
 describe("parseImportMetaText (JSON then YAML)", () => {
@@ -132,6 +191,12 @@ describe("parseImportMetaText (JSON then YAML)", () => {
       zh: "元数据组",
       en: "Metadata Set",
       darkLevel: 5,
+    });
+  });
+
+  it("carries an image-URL array through JSON manifests", () => {
+    expect(parseImportMetaText(JSON.stringify({ images: ["https://x/a.png", "https://x/b.png"] }))).toEqual({
+      images: ["https://x/a.png", "https://x/b.png"],
     });
   });
 
@@ -151,8 +216,8 @@ describe("parseImportMetaText (JSON then YAML)", () => {
     expect(parseImportMetaText("")).toBeNull();
   });
 
-  it("ignores unknown fields and keeps only the portrait contract", () => {
-    const meta = parseImportMetaText("id: a\nfolder: x\nimages:\n  - a.png\nschema: 2\n");
-    expect(meta).toEqual({ id: "a" });
+  it("ignores unknown fields and captures the portrait contract incl. images", () => {
+    const meta = parseImportMetaText("id: a\nfolder: x\nimages:\n  - a.png\n  - b.png\nschema: 2\n");
+    expect(meta).toEqual({ id: "a", images: ["a.png", "b.png"] });
   });
 });

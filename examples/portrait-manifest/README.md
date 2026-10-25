@@ -4,8 +4,8 @@ Example `portrait.yaml` manifests for dsh-flash-skin's archive import.
 The manifest is **optional**: an archive with no manifest imports images with
 the built-in defaults (auto id, fallback names, default threshold).
 
-Three ready-made example archives live at the repo root, one per built-in
-Liang set, plus a URL-only one:
+Three ready-made example archives live in `examples/portrait-archives/`, one
+per built-in Liang set, plus a URL-only one:
 
 | Archive | What it demonstrates |
 | --- | --- |
@@ -50,6 +50,8 @@ images:               # block list, or inline flow list [a, b]
 - **Editability**: imported fields (id, zh, en, darkLevel, images) are seeded
   defaults only; they remain fully editable in the config card afterwards.
 
-The files in this folder are the exact manifests shipped inside the two
-example archives above, kept here as readable source. To rebuild the archives,
-re-run the `scripts/make-demo-zips.mjs` generator after editing them.
+The YAML files in this folder are the exact manifests shipped inside the
+example archives above, kept here as readable source. The generator script
+(`scripts/make-demo-zips.mjs`) was retired together with the built-in art; to
+produce a variant, zip 8 webp frames plus one `portrait.yaml` manifest with
+any zip tool.

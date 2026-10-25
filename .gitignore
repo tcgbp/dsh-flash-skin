@@ -9,3 +9,6 @@ node_modules/
 *.tgz
 coverage/
 test-results/
+
+# local personal portrait archive (not published)
+examples/portrait-archives/hanli-demo.zip

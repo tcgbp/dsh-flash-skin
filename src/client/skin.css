@@ -310,6 +310,25 @@ body[data-flash-skin="on"] textarea {
   margin-bottom: 10px;
 }
 
+/* 身份行：set id + 中英文名称三个内联输入，id 输入窄一些以示其为持久化标识。 */
+.flash-portrait-group__identity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.flash-portrait-group__name--id {
+  flex: 0 1 220px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, Menlo, monospace;
+  font-size: 12px;
+}
+
+.flash-portrait-group__name--lang {
+  font-weight: 600;
+}
+
 .flash-portrait-group__name {
   min-width: 0;
   flex: 1 1 auto;

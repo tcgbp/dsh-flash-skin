@@ -88,18 +88,51 @@ function normalizeSetId(id: string | null | undefined): string | undefined {
   return mapped !== undefined ? mapped : id;
 }
 
-interface PortraitSet {
-  id: string;
-  folder: string;
+// Resolve a portrait set's display name against the active locale at render
+// time. The zh/en values are user-editable CONFIG values (group.zh / group.en,
+// with `name` kept as the pre-bilingual fallback), NOT dynamic locale-registry
+// keys: the host requires bilingual, balanced dictionaries at registration
+// time, so editable names must be looked up here instead of through the locale
+// binding. The settings-row selector shows the Chinese name in the Chinese UI
+// and the English name in the English UI; any locale that is not English
+// (including custom language packs) reads the Chinese name first. Built-in ids
+// fall back to the DEFAULT_PORTRAIT_SETS defaults when the persisted config
+// predates zh/en (older configs only stored `name`), so the original default
+// English names never disappear merely because a stale config lacks them.
+function defaultSetIdentity(id: string | undefined): DefaultPortraitSet | undefined {
+  if (!id) return undefined;
+  return DEFAULT_PORTRAIT_SETS.find((item) => item.id === id);
 }
 
-// Each portrait set is its own skin-specific "appearance" and replaces one of
-// the system's default appearance slots. Demo uses three sets; swap the
-// folder contents to point at different character art.
-const PORTRAIT_SETS: PortraitSet[] = [
-  { id: "liangsheng", folder: "portrait-source-v2" },
-  { id: "liangshen", folder: "portrait-source-v3" },
-  { id: "liangzu", folder: "portrait-source-v4" },
+function setDisplayName(set: { id?: string; name?: string; zh?: string; en?: string }, active: string): string {
+  const def = defaultSetIdentity(set.id);
+  const english = active.slice(0, 2).toLowerCase() === "en";
+  const zh = (set.zh ?? def?.zh ?? "").trim();
+  const en = (set.en ?? def?.en ?? "").trim();
+  if (english) return en || zh || set.name || "";
+  return zh || en || set.name || "";
+}
+
+interface PortraitSet {
+  id: string;
+  /** Built-in anchor folder; undefined for fully custom (user-created) sets. */
+  folder?: string;
+}
+
+// The set ids, the Chinese display names (梁圣/梁神/梁祖) and the English display
+// names are all seeded into the user-editable `portraitGroups` config (see
+// FlashSkinConfigCard / setDisplayName below), so the user can rename any of
+// them from the plugin detail page. These code constants are only the fallback
+// identity used while no config has been written yet.
+interface DefaultPortraitSet extends PortraitSet {
+  zh: string;
+  en: string;
+}
+
+const DEFAULT_PORTRAIT_SETS: DefaultPortraitSet[] = [
+  { id: "liangsheng", folder: "portrait-source-v2", zh: "梁圣", en: "Liang the Saint" },
+  { id: "liangshen", folder: "portrait-source-v3", zh: "梁神", en: "Liang the God" },
+  { id: "liangzu", folder: "portrait-source-v4", zh: "梁祖", en: "Liang the Ancestor" },
 ];
 
 interface SkinSettings {
@@ -196,7 +229,7 @@ class SkinPresenter {
   private portraits: ReturnType<typeof createPortraitLoader>;
   private enabled = true;
   private level = 0;
-  private set: PortraitSet = PORTRAIT_SETS[0];
+  private set: PortraitSet = DEFAULT_PORTRAIT_SETS[0];
   // Per-group config mirrored from the persisted config card. images drive the
   // portrait sequence; darkLevel (absent → MAX_LEVEL - 1) drives the flip to
   // the dark shell.
@@ -249,6 +282,7 @@ class SkinPresenter {
       }));
     }
     const anchors = PORTRAIT_ANCHORS[set.id] ?? [];
+    if (!set.folder || anchors.length === 0) return [];
     // The slider exposes MAX_LEVEL + 1 = 7 stops, so only the first 7 anchors
     // drive the portrait sequence. The 8th anchor (highest frame) is kept in
     // PORTRAIT_ANCHORS as a placeholder for tuning and never enters display
@@ -259,11 +293,20 @@ class SkinPresenter {
     }));
   }
 
+  // Resolve a persisted/selected set id to a PortraitSet. Configured (custom)
+  // ids must survive anyway: they have no built-in anchors, so they resolve to
+  // `{ id }` with no folder and rely on the configured group images.
+  private resolveSet(setId: string | undefined | null): PortraitSet {
+    const found = DEFAULT_PORTRAIT_SETS.find((item) => item.id === setId);
+    if (found) return { id: found.id, folder: found.folder };
+    return { id: setId || DEFAULT_PORTRAIT_SETS[0].id };
+  }
+
   constructor(scope: PreferenceStore, theme: ThemeService) {
     this.scope = scope;
     this.theme = theme;
     const initialSetId = scope.getSnapshot().set;
-    this.set = PORTRAIT_SETS.find((item) => item.id === initialSetId) ?? PORTRAIT_SETS[0];
+    this.set = this.resolveSet(initialSetId);
     this.root = document.createElement("div");
     this.root.className = "flash-skin-backdrop";
     this.root.dataset.plugin = PACKAGE_ID;
@@ -300,7 +343,7 @@ class SkinPresenter {
   private syncSettings() {
     const snapshot = this.scope.getSnapshot();
     this.setEnabled(snapshot.enabled);
-    this.setPortraitSet(PORTRAIT_SETS.find((item) => item.id === snapshot.set) ?? PORTRAIT_SETS[0]);
+    this.setPortraitSet(this.resolveSet(snapshot.set));
   }
 
   isEnabled() {
@@ -390,7 +433,7 @@ class SkinPresenter {
   }
 
   async choose(setId: string) {
-    const set = PORTRAIT_SETS.find((item) => item.id === setId) ?? PORTRAIT_SETS[0];
+    const set = this.resolveSet(setId);
     this.setEnabled(true);
     this.setPortraitSet(set);
     // Decoupled from the host theme preference: we never write our palette ids
@@ -619,20 +662,49 @@ function EffortBindingRow({ scope, t }: EffortBindingRowProps) {
   );
 }
 
+interface LocaleFaceLike {
+  subscribe(listener: () => void): () => void;
+  getSnapshot(): { active: string };
+}
+
 interface PortraitSetRowProps {
   scope: PreferenceStore;
   presenter: SkinPresenter;
-  sets: readonly { id: string; label: string }[];
+  /** flash-skin volatile 配置表单（可缺失/未就绪）。 */
+  form?: FlashSkinConfigForm<PortraitGroupsConfig> | null;
+  /** Host locale service — 渲染期读取活动语言以解析中英文名称。 */
+  locale?: LocaleFaceLike | null;
   t: (key: string) => string;
 }
 
-function PortraitSetRow({ scope, presenter, sets, t }: PortraitSetRowProps) {
+// 人物肖像选择行：组的身份（set id + 中英文名称）完全来自可配置的
+// portraitGroups，订阅配置表单以实时反映详情页的改名；名称按活动语言在渲染
+// 期解析（中文界面中文名、英文界面英文名），语言切换通过 locale face 触发
+// 重渲染。未写入过配置时回落内建三组默认身份（DEFAULT_PORTRAIT_SETS）。
+function PortraitSetRow({ scope, presenter, form, locale, t }: PortraitSetRowProps) {
   const snapshot = useSyncExternalStore(
     (listener) => scope.subscribe(listener),
     () => scope.getSnapshot(),
   );
+  const groupsSnapshot = useSyncExternalStore(
+    (listener) => (form?.subscribe ? form.subscribe(listener) : () => undefined),
+    () => (form?.getSnapshot ? form.getSnapshot() : undefined),
+  );
+  const localeSnapshot = useSyncExternalStore(
+    (listener) => (locale?.subscribe ? locale.subscribe(listener) : () => undefined),
+    () => (locale?.getSnapshot ? locale.getSnapshot() : { active: "" }),
+  );
   const [pending, setPending] = useState(false);
   if (!snapshot.enabled) return null;
+
+  const configured =
+    groupsSnapshot?.status === "ready"
+      ? ((groupsSnapshot.value as { portraitGroups?: readonly PortraitGroupConfig[] } | undefined)?.portraitGroups ?? [])
+      : [];
+  const sets = (configured.length > 0 ? configured : DEFAULT_PORTRAIT_SETS).map((set) => ({
+    id: set.id,
+    label: setDisplayName(set, localeSnapshot.active),
+  }));
 
   return (
     <section className="flash-portrait-set" data-plugin={PACKAGE_ID}>
@@ -684,18 +756,21 @@ export const inject = [
 // (storm/blaze/frost) from before the rename are normalized on read.
 function restoreInitialSet(): string {
   try {
+    // Any persisted set id is honored — configured sets may carry arbitrary ids
+    // (the detail page can rename them). Legacy ids (storm/blaze/frost) from
+    // before the rename are normalized to their pinyin equivalents on read.
     const id = normalizeSetId(localStorage.getItem(SET_KEY));
-    if (PORTRAIT_SETS.some((item) => item.id === id)) return id!;
+    if (id) return id;
   } catch {
     // storage may be unavailable
   }
-  return PORTRAIT_SETS[0].id;
+  return DEFAULT_PORTRAIT_SETS[0].id;
 }
 
 function createPreferenceStore(initialSet: string): PreferenceStore {
   let snapshot: SkinSettings = {
     enabled: true,
-    set: PORTRAIT_SETS.some((item) => item.id === initialSet) ? initialSet : PORTRAIT_SETS[0].id,
+    set: initialSet ? initialSet : DEFAULT_PORTRAIT_SETS[0].id,
     bindEffort: localStorage.getItem(BIND_EFFORT_KEY) !== "0",
   };
   const listeners = new Set<() => void>();
@@ -704,9 +779,7 @@ function createPreferenceStore(initialSet: string): PreferenceStore {
     const nextSetId = event.key === SET_KEY ? normalizeSetId(event.newValue) : undefined;
     const next = {
       enabled: snapshot.enabled,
-      set: event.key === SET_KEY
-        ? (PORTRAIT_SETS.some((item) => item.id === (nextSetId ?? null)) ? nextSetId! : snapshot.set)
-        : snapshot.set,
+      set: event.key === SET_KEY ? (nextSetId ?? snapshot.set) : snapshot.set,
       bindEffort: event.key === BIND_EFFORT_KEY ? event.newValue !== "0" : snapshot.bindEffort,
     };
     if (next.enabled === snapshot.enabled && next.set === snapshot.set && next.bindEffort === snapshot.bindEffort) return;
@@ -726,7 +799,7 @@ function createPreferenceStore(initialSet: string): PreferenceStore {
       for (const listener of listeners) listener();
     },
     async setSet(setId) {
-      if (!PORTRAIT_SETS.some((item) => item.id === setId) || setId === snapshot.set) return;
+      if (!setId || setId === snapshot.set) return;
       try {
         localStorage.setItem(SET_KEY, setId);
       } catch {
@@ -763,7 +836,12 @@ function createPreferenceStore(initialSet: string): PreferenceStore {
 
 interface PortraitGroupConfig {
   id: string;
+  /** 双语前的兜底显示名（默认在中英文栏留空时回退到这里）。 */
   name: string;
+  /** 中文显示名（界面为中文时优先）。 */
+  zh?: string;
+  /** 英文显示名（界面为英文时优先）。 */
+  en?: string;
   images: string[];
   // Per-group slider level (0..MAX_LEVEL) at which this set flips to the dark
   // shell. Absent means the default threshold (MAX_LEVEL - 1).
@@ -831,6 +909,11 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "darkLevel": "深浅切换点",
     "darkLevelHint": "拖动此分割线设置深浅切换档位：左侧为浅色外壳，右侧为深色外壳。",
     "dividerHint": "左右拖动图片之间的分割线，设置深色外壳从第几档开始：分割线越靠右，需要更高的档位才会变深。",
+    "setId": "标识（Set ID）",
+    "setIdPlaceholder": "标识，如 liangsheng",
+    "zhName": "中文名称",
+    "enName": "英文名称",
+    "identityHint": "标识（Set ID）写入 localStorage 持久化当前选择：改名后需重新点击选中该组才生效；设置行名称按界面语言显示（中文界面中文名，英文界面英文名）。内置组的默认中/英文名会在未修改时一直作为缺省显示。",
   },
   en: {
     "loading": "Loading…",
@@ -863,6 +946,11 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "darkLevel": "Light/dark threshold",
     "darkLevelHint": "Drag this divider to set the light/dark threshold: images to its left keep the light shell, images to its right switch to dark.",
     "dividerHint": "Drag the divider between the images left or right to pick the slider level at which the dark shell begins.",
+    "setId": "Set ID (identifier)",
+    "setIdPlaceholder": "Identifier, e.g. liangsheng",
+    "zhName": "Chinese name",
+    "enName": "English name",
+    "identityHint": "The Set ID is persisted in localStorage for the current selection — after renaming, click the group again to take effect. The settings row shows the Chinese name in the Chinese UI and the English name in the English UI. Built-in sets keep their default Chinese/English names as fallbacks until overridden.",
   },
 };
 
@@ -907,7 +995,7 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
   );
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<{
-    kind: "name" | "add" | "replace";
+    kind: "id" | "zh" | "en" | "add" | "replace";
     groupIndex: number;
     imageIndex?: number;
     value: string;
@@ -1030,10 +1118,25 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
     }
   };
 
-  const renameGroup = (groupIndex: number, name: string) => {
-    const trimmed = name.trim();
-    if (trimmed === "" || trimmed === groups[groupIndex]?.name) return;
-    const next = withGroup(groupIndex, (group) => ({ ...group, name: trimmed }));
+  const commitField = (groupIndex: number, kind: "id" | "zh" | "en", raw: string) => {
+    const trimmed = raw.trim();
+    const group = groups[groupIndex];
+    if (!group) return;
+    // The set id must stay non-empty: it drives persistence and the portrait
+    // source lookup. Empty zh/en values just remove the override (fall back to
+    // the built-in default names, then `name`).
+    if (kind === "id" && trimmed === "") return;
+    const def = defaultSetIdentity(group.id);
+    if (
+      (kind === "id" && trimmed === group.id) ||
+      (kind === "zh" && trimmed === (group.zh?.trim() ?? def?.zh ?? group.name)) ||
+      (kind === "en" && trimmed === (group.en?.trim() ?? def?.en ?? group.name))
+    ) return;
+    const next = withGroup(groupIndex, (g) => {
+      if (kind === "id") return { ...g, id: trimmed };
+      if (kind === "zh") return { ...g, zh: trimmed || undefined };
+      return { ...g, en: trimmed || undefined };
+    });
     void commit(next);
   };
 
@@ -1042,7 +1145,8 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
   };
 
   const addGroup = () => {
-    const next = [...groups, { id: newGroupId(), name: t("defaultGroup"), images: [] }];
+    const label = t("defaultGroup");
+    const next = [...groups, { id: newGroupId(), name: label, zh: label, en: label, images: [] }];
     void commit(next);
   };
 
@@ -1132,13 +1236,55 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
   };
 
   const loadBuiltinGroups = () => {
-    const next: PortraitGroupsConfig = PORTRAIT_SETS.map((set) => ({
+    const next: PortraitGroupsConfig = DEFAULT_PORTRAIT_SETS.map((set) => ({
       id: set.id,
-      name: t(`set.${set.id}`),
+      name: set.zh,
+      zh: set.zh,
+      en: set.en,
       darkLevel: MAX_LEVEL - 1,
       images: (PORTRAIT_ANCHORS[set.id] ?? []).map((anchor) => `${ASSET_PREFIX}/${set.folder}/${anchor.file}`),
     }));
     void commit(next);
+  };
+
+  // One inline input per identity field (set id / Chinese name / English name).
+  // IME-friendly: edits buffer in `editing` and commit to the config on blur or
+  // Enter; renaming the id only affects persistence once that group is selected
+  // again, as the identityHint explains. Clearing zh/en removes the override
+  // and re-falls back to the built-in default name (when the id is a built-in
+  // one) or `name`.
+  const identityInput = (groupIndex: number, kind: "id" | "zh" | "en") => {
+    const group = groups[groupIndex];
+    if (!group) return null;
+    const editingField = editing?.kind === kind && editing.groupIndex === groupIndex;
+    const def = defaultSetIdentity(group.id);
+    const current =
+      kind === "id" ? group.id
+        : kind === "zh" ? (group.zh?.trim() ?? def?.zh ?? group.name)
+        : (group.en?.trim() ?? def?.en ?? group.name);
+    return (
+      <input
+        key={kind}
+        className={
+          kind === "id"
+            ? "flash-portrait-group__name flash-portrait-group__name--id"
+            : "flash-portrait-group__name flash-portrait-group__name--lang"
+        }
+        aria-label={kind === "id" ? t("setId") : kind === "zh" ? t("zhName") : t("enName")}
+        placeholder={kind === "id" ? t("setIdPlaceholder") : undefined}
+        value={editingField ? editing.value : current}
+        disabled={!writable || busy}
+        onFocus={() => setEditing({ kind, groupIndex, value: current })}
+        onChange={(event) => setEditing({ kind, groupIndex, value: event.currentTarget.value })}
+        onBlur={() => {
+          if (editingField) commitField(groupIndex, kind, editing.value);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") event.currentTarget.blur();
+          if (event.key === "Escape") setEditing(null);
+        }}
+      />
+    );
   };
 
   return (
@@ -1174,28 +1320,15 @@ function FlashSkinConfigCard({ form, t: localeT }: FlashSkinConfigCardProps) {
 
       <ol className="flash-portrait-groups__groups">
         {groups.map((group, groupIndex) => {
-          const editingName = editing?.kind === "name" && editing.groupIndex === groupIndex;
           const editingAdd = editing?.kind === "add" && editing.groupIndex === groupIndex;
           return (
             <li key={group.id} className="flash-portrait-group">
               <header className="flash-portrait-group__head">
-                <input
-                  className="flash-portrait-group__name"
-                  aria-label={t("renameGroup")}
-                  value={editingName ? editing.value : group.name}
-                  disabled={!writable || busy}
-                  onFocus={() => setEditing({ kind: "name", groupIndex, value: group.name })}
-                  onChange={(event) =>
-                    setEditing({ kind: "name", groupIndex, value: event.currentTarget.value })
-                  }
-                  onBlur={() => {
-                    if (editingName) renameGroup(groupIndex, editing.value);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") event.currentTarget.blur();
-                    if (event.key === "Escape") setEditing(null);
-                  }}
-                />
+                <div className="flash-portrait-group__identity">
+                  {identityInput(groupIndex, "id")}
+                  {identityInput(groupIndex, "zh")}
+                  {identityInput(groupIndex, "en")}
+                </div>
                 <div className="flash-portrait-group__actions">
                   <button
                     type="button"
@@ -1461,33 +1594,33 @@ export function apply(ctx: ClientContext) {
       zh: {
         ...CONFIG_TEXTS.zh,
         "appearance": "人物肖像",
+        "portraitSet": "人物肖像组",
         "effort.binding": "滑块绑定推理强度",
-        "set.liangsheng": "Liang the Saint",
-        "set.liangshen": "Liang the God",
-        "set.liangzu": "Liang the Ancestor",
       },
       en: {
         ...CONFIG_TEXTS.en,
         "appearance": "Portrait group",
+        "portraitSet": "Portrait set",
         "effort.binding": "Bind slider to reasoning level",
-        "set.liangsheng": "Liang the Saint",
-        "set.liangshen": "Liang the God",
-        "set.liangzu": "Liang the Ancestor",
       },
     }),
     "flash-skin: settings locale",
   );
 
   const setLabel = ctx.locale.bind(LOCALE_NAMESPACE);
-  // 独立选择项：不抢占宿主的外观(theme)行，而是在通用设置里单独列出
-  // 人物肖像组（梁圣/梁神/梁祖）。选择通过 presenter.choose 落库，
+  // 自定义配置页用到的 Host volatile 配置表单（命名空间 flash-skin）。设置行
+  // 选择器直接订阅它，让用户修改过的 set id 与中英文名称实时反映到通用设置行。
+  const configForm = ctx.configForms.get<PortraitGroupsConfig>(CONFIG_NAMESPACE);
+  // 独立选择项：不抢占宿主的外观(theme)行，而是在通用设置里单独列出人物肖像组。
+  // 每组的身份来自可配置的 portraitGroups（set id + 中英文名称），渲染时按活动
+  // 语言解析；未配置时回落内建三组默认身份。选择通过 presenter.choose 落库，
   // 持久化只走 localStorage（SET_KEY），与宿主主题服务完全解耦。
-  const sets = PORTRAIT_SETS.map((set) => ({ id: set.id, label: setLabel(`set.${set.id}`) }));
   ctx.slots.inject("settings.general.item", () => ctx.slots.register({
     name: "settings.general.item",
     id: "flash-portrait-set",
     order: 20,
-    inject: () => ({ scope, presenter, sets, t: setLabel }),
+    locale: LOCALE_NAMESPACE,
+    inject: () => ({ scope, presenter, form: configForm, locale: ctx.locale, t: setLabel }),
   }, PortraitSetRow));
 
   // ── Optional dsh-flash integration: quick-control switch ─────────────────
@@ -1503,53 +1636,109 @@ export function apply(ctx: ClientContext) {
   // appears, this whole block stays inert and the plugin keeps working standalone.
   // The row is shown only while this skin is enabled (`presenter.isEnabled()`).
   const OPEN_DETAILS_SWITCH_ID = `${PACKAGE_ID}:open-details`;
+  const PORTRAIT_SET_SWITCH_ID = `${PACKAGE_ID}:portrait-set`;
   let quickControl: {
     registerSwitch?: (def: unknown) => (() => void) | void;
     unregisterSwitch?: (id: string) => void;
     notifyChange?: (id: string) => void;
   } | undefined;
-  let openDetailsRegistered = false;
+  let quickSwitchesRegistered = false;
 
-  const registerOpenDetailsSwitch = (registry: unknown) => {
-    if (openDetailsRegistered) return;
+  // Portrait sets for the panel dropdown, derived exactly like the settings
+  // row: the user-editable `portraitGroups` config (renamable from the detail
+  // page) when present, else the built-in three defaults. The display name is
+  // resolved against the host locale at call time; the panel re-runs
+  // options() on each render, so detail-page renames surface on the next
+  // open/re-render.
+  const portraitSetOptions = () => {
+    let configured: readonly PortraitGroupConfig[] = [];
+    try {
+      const groupsSnapshot = configForm?.getSnapshot ? configForm.getSnapshot() : undefined;
+      if (groupsSnapshot?.status === "ready") {
+        const value = (groupsSnapshot.value as { portraitGroups?: readonly PortraitGroupConfig[] } | undefined)?.portraitGroups;
+        configured = value ?? [];
+      }
+    } catch {
+      // volatile form unavailable — fall back to the built-in defaults
+    }
+    let active = "";
+    try {
+      const localeSnapshot = (ctx.locale as LocaleFaceLike | undefined)?.getSnapshot?.();
+      active = localeSnapshot?.active ?? "";
+    } catch {
+      // host locale missing — defaults are shown
+    }
+    const list = configured.length > 0 ? configured : DEFAULT_PORTRAIT_SETS;
+    return list.map((set) => ({
+      label: setDisplayName(set, active),
+      value: normalizeSetId(set.id) ?? set.id,
+    }));
+  };
+
+  const registerQuickSwitches = (registry: unknown) => {
+    if (quickSwitchesRegistered) return;
     const reg = registry as typeof quickControl;
     if (!reg || typeof reg.registerSwitch !== "function") return;
-    openDetailsRegistered = true;
+    quickSwitchesRegistered = true;
     quickControl = reg;
 
-    // Keep the row in sync with the skin's own enabled state: the panel only
+    // Keep both rows in sync with the skin's own enabled state: the panel only
     // re-runs `visible()` after a registry version bump, so push one whenever
-    // the enabled flag flips (choose/disable) so the row appears/disappears
-    // without a panel reload.
+    // the enabled flag flips (choose/disable) so rows appear/disappear without
+    // a panel reload.
     let lastEnabled = presenter.isEnabled();
     const offScope = scope.subscribe(() => {
       const enabled = presenter.isEnabled();
       if (enabled === lastEnabled) return;
       lastEnabled = enabled;
       quickControl?.notifyChange?.(OPEN_DETAILS_SWITCH_ID);
+      quickControl?.notifyChange?.(PORTRAIT_SET_SWITCH_ID);
     });
 
     ctx.effect(() => {
-      const dispose = reg.registerSwitch?.({
+      // Portrait-set dropdown directly under the「皮肤主题」cluster (order 26):
+      // a `select` whose options mirror the settings row, read/write via the
+      // presenter (`presenter.choose` persists through localStorage SET_KEY).
+      // It must stay a standalone built-in row — it cannot join the inline
+      // skin-theme row, whose members ALL need `clusterInline` + type
+      // `select`, and that cluster is already closed with its two members.
+      const setDispose = reg.registerSwitch?.({
+        id: PORTRAIT_SET_SWITCH_ID,
+        label: () => setLabel("portraitSet"),
+        icon: "palette",
+        type: "select",
+        group: "appearance",
+        order: 26,
+        options: () => portraitSetOptions(),
+        getValue: () => presenter.getSet().id,
+        setValue: (value) => {
+          void presenter.choose(String(value)).catch(() => undefined)
+            .finally(() => quickControl?.notifyChange?.(PORTRAIT_SET_SWITCH_ID));
+        },
+        visible: () => presenter.isEnabled(),
+      });
+      const openDispose = reg.registerSwitch?.({
         id: OPEN_DETAILS_SWITCH_ID,
         label: () => setLabel("openDetails"),
         icon: "doc",
         type: "action",
-        // Built-in Appearance group (under the skin-theme cluster at order 25),
+        // Built-in Appearance group (just past the portrait-set row at 26),
         // via the `dsh-flash-skin:` entry in dsh-flash's `_COMPANIONS` whitelist.
         group: "appearance",
-        order: 26,
+        order: 27,
         hideLabel: true,
         actionLabel: () => setLabel("openDetails"),
         visible: () => presenter.isEnabled(),
         run: () => openDetails(),
       });
       return () => {
-        if (typeof dispose === "function") dispose();
+        if (typeof setDispose === "function") setDispose();
+        else reg.unregisterSwitch?.(PORTRAIT_SET_SWITCH_ID);
+        if (typeof openDispose === "function") openDispose();
         else reg.unregisterSwitch?.(OPEN_DETAILS_SWITCH_ID);
         offScope();
       };
-    }, "flash-skin: open-details quick switch");
+    }, "flash-skin: quick switches");
   };
 
   const cts = ctx as unknown as {
@@ -1563,7 +1752,7 @@ export function apply(ctx: ClientContext) {
     try {
       const offReady = cts.on("dock-flash:ready", (payload: unknown) => {
         const p = payload as { quickControl?: unknown } | null | undefined;
-        if (p?.quickControl) registerOpenDetailsSwitch(p.quickControl);
+        if (p?.quickControl) registerQuickSwitches(p.quickControl);
       });
       ctx.effect(() => () => {
         if (typeof offReady === "function") offReady();
@@ -1577,7 +1766,7 @@ export function apply(ctx: ClientContext) {
   // loading before this bundle); probe the service directly.
   try {
     const registry = cts.get?.("quickControl");
-    if (registry) registerOpenDetailsSwitch(registry);
+    if (registry) registerQuickSwitches(registry);
   } catch {
     // `quickControl` unavailable — this plugin keeps working standalone
   }
@@ -1586,7 +1775,6 @@ export function apply(ctx: ClientContext) {
   // 槽位（视图为页面，key 取 bundle 包名）。表单直接对准 Host 的 volatile 设置
   // 命名空间 flash-skin，整数组原子覆写 + 修订号围栏由 FlashSkinConfigCard 内
   // 的 commit 处理。
-  const configForm = ctx.configForms.get<PortraitGroupsConfig>(CONFIG_NAMESPACE);
   // Push the persisted per-set config (images + dark threshold) into the
   // presenter so each portrait set shows the frames and flips to the dark shell
   // configured for it.

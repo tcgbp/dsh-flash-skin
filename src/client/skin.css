@@ -812,6 +812,19 @@ body[data-flash-skin="on"] .wSkVaW_composerHero {
   align-self: flex-start !important;
 }
 
+/* 4a) 输入框下方的会话统计行（会话统计 Pill，conversation.composer.dock
+ *     槽位的 ActivityPill/UsagePill，容器 .uV2eYG_dock[data-composer-dock]）
+ *     与输入卡左缘对齐。原生 .uV2eYG_dock{justify-content:center} 居中，
+ *     且皮肤 .uV2eYG_root 改为 align-items:flex-start 后该行会缩到内容宽、
+ *     贴住根左内边距，落在输入卡左侧。这里仿照输入卡(L808-810)的基准，
+ *     把该行改为左对齐并施加同样的 margin-left，使统计行最左侧与输入卡
+ *     左缘落在同一根垂直线上。
+ */
+body[data-flash-skin="on"] .uV2eYG_dock {
+  justify-content: flex-start !important;
+  margin-left: calc(16px + var(--dsh-flash-timeline-gutter, 50px)) !important;
+}
+
 /* 4b) 新会话空态里的“选择工作区”行(.wSkVaW_heroWorkspaceRow)与输入卡左缘对齐。
  *     它是 .wSkVaW_composerStack 的直接子节点（与输入卡、todo、排队条同原点，
  *     并不在 .pXSMma_* HeroShell 内部），原生靠内边距 padding-left:20px 落在偏左

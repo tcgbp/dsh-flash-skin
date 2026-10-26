@@ -2827,7 +2827,9 @@ export function apply(ctx: ClientContext) {
   ctx.slots.inject("settings.general.item", () => ctx.slots.register({
     name: "settings.general.item",
     id: "flash-portrait-set",
-    order: 20,
+    // Rendered directly under the host「外观」appearance row (order 10) and
+    // above「强度驱动」(driver at 10.6); higher order = lower on screen.
+    order: 10.5,
     locale: LOCALE_NAMESPACE,
     inject: () => ({ scope, presenter, form: configForm, locale: ctx.locale, t: setLabel }),
   }, PortraitSetRow));
@@ -3141,7 +3143,9 @@ export function apply(ctx: ClientContext) {
   ctx.slots.inject("settings.general.item", () => ctx.slots.register({
     name: "settings.general.item",
     id: "flash-driver",
-    order: 19.5,
+    // Rendered directly under「人物肖像」(portrait set at 10.5), just past the
+    // host「外观」cluster; higher order = lower on screen.
+    order: 10.6,
     locale: LOCALE_NAMESPACE,
     inject: () => ({ scope, t: setLabel }),
   }, DriverRow));

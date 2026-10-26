@@ -39,9 +39,10 @@ import {
   type Palette,
   type PortraitImportMeta,
   type SpeedTuning,
+  buildPortraitManifest,
   parseImportMetaText,
 } from "./logic";
-import { unzipSync, gunzipSync } from "./vendor/fflate";
+import { zipSync, strToU8, unzipSync, gunzipSync } from "./vendor/fflate";
 
 const PACKAGE_ID = "dsh-flash-skin";
 const LOCALE_NAMESPACE = "flash.skin";
@@ -1431,6 +1432,11 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "zhName": "中文名称",
     "enName": "英文名称",
     "identityHint": "标识（Set ID）写入 localStorage 持久化当前选择：改名后需重新点击选中该组才生效；设置行名称按界面语言显示（中文界面中文名，英文界面英文名）。内置组的默认中/英文名会在未修改时一直作为缺省显示。",
+    "exportGroup": "导出压缩包",
+    "exportGroupTitle": "把本组全部图片连同其元数据（标识、中英文名称、深浅切换点）打包下载为一个 .zip 压缩包，可直接再次导入",
+    "exportNoImages": "该组没有图片，无可导出",
+    "exportDownloadFailed": "导出失败：本组有 {n} 张图片，部分图片无法下载，未生成压缩包",
+    "exportDone": "已导出压缩包",
     "importGroup": "从压缩包导入新组",
     "importGroupTitle": "选择 .zip / .tar / .tar.gz，把其中所有图片批量导入为一个新组；若压缩包内含 portrait.yaml（或 meta.yaml / 同名 .json）元数据，会一并导入标识、中英文名称与深浅切换点",
     "fileNotZip": "请选择 .zip / .tar / .tar.gz / .gz 压缩包",
@@ -1513,6 +1519,11 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "importNet": "Import from network",
     "netEmpty": "Enter the archive URL to import",
     "zipBadLink": "Could not import: please paste an http(s) link to a .zip / .tar / .tar.gz archive",
+    "exportGroup": "Export archive",
+    "exportGroupTitle": "Pack all frames plus this group's metadata (id, Chinese/English names, light/dark threshold) into a downloadable .zip that imports straight back",
+    "exportNoImages": "This group has no images — nothing to export",
+    "exportDownloadFailed": "Export failed: the group has {n} images and some could not be downloaded, so no archive was written",
+    "exportDone": "Archive exported",
   },
 };
 
@@ -1582,6 +1593,89 @@ function readLocalFileAsArrayBuffer(file: File): Promise<ArrayBuffer> {
     reader.onerror = () => reject(reader.error);
     reader.readAsArrayBuffer(file);
   });
+}
+
+// ── ZIP batch export ────────────────────────────────────────────────────────
+// The symmetric inverse of the import: the client re-packs a group's images
+// (their attachment-served URLs, network URLs or embedded data URLs) plus a
+// portrait.yaml manifest into a .zip that imports straight back into the app.
+
+// File extension a frame gets inside the exported archive. Attachment-served
+// URLs carry no extension (only a media-type slug), so sniff the actual bytes
+// and fall back to .png.
+const EXT_BY_MEDIA_TYPE: Record<string, string> = {
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/webp": ".webp",
+  "image/gif": ".gif",
+};
+
+function extensionForImageUrl(url: string, bytes: Uint8Array): string {
+  try {
+    const path = new URL(url, "http://dsh.local").pathname;
+    const dot = path.lastIndexOf(".");
+    const ext = dot >= 0 ? path.slice(dot).toLowerCase() : "";
+    if (IMAGE_EXTENSIONS.has(ext)) return ext;
+  } catch {
+    // Not a parseable URL; fall through to sniffing the bytes.
+  }
+  const type = mediaTypeForEntry(url, bytes);
+  return EXT_BY_MEDIA_TYPE[type] ?? ".png";
+}
+
+// Decode a `data:` image URL into its raw bytes. Images picked from local disk
+// are stored as base64 data URLs in the config, so export must handle them.
+function dataUrlToBytes(dataUrl: string): Uint8Array | null {
+  const comma = dataUrl.indexOf(",");
+  if (comma === -1) return null;
+  const meta = dataUrl.slice(0, comma);
+  if (!/^data:image\/[a-z0-9.+-]+(?:;[^,]*)?$/i.test(meta)) return null;
+  try {
+    // atob tolerates whitespace; non-base64 data URLs are not expected here.
+    const raw = atob(dataUrl.slice(comma + 1).replace(/\s+/g, ""));
+    const bytes = new Uint8Array(raw.length);
+    for (let index = 0; index < raw.length; index += 1) bytes[index] = raw.charCodeAt(index);
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+// Fetch one frame's raw bytes for packing. Relative/same-origin URLs (the
+// attachment serve route lives on this origin, so it is CORS-free) are fetched
+// directly; absolute http(s) URLs go through the server-side network proxy
+// route so a remote host's CORS policy can never block the export.
+async function fetchExportImageBytes(source: string): Promise<Uint8Array> {
+  if (source.startsWith("data:")) {
+    const bytes = dataUrlToBytes(source);
+    if (bytes && bytes.length > 0) return bytes;
+    throw new Error("invalid data URL");
+  }
+  const isHttp = source.startsWith("http://") || source.startsWith("https://");
+  const banner = isHttp ? source : new URL(source, location.href).href;
+  const effective = isHttp ? `${REMOTE_ARCHIVE_PATH}?url=${encodeURIComponent(banner)}` : banner;
+  const response = await fetch(effective, { headers: { Accept: "image/*" } });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+// Normalize a group id / file base into a safe download filename.
+function sanitizeExportBase(raw: string): string {
+  const base = raw.trim().replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "");
+  return (base || "portrait-group").slice(0, 80);
+}
+
+// Trigger a browser download for the built archive bytes.
+function downloadBytes(bytes: Uint8Array, fileName: string, mediaType: string): void {
+  const blob = new Blob([bytes as BlobPart], { type: mediaType });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 // Parse a ZIP into its ordered list of file entries (any member type).
@@ -1970,6 +2064,45 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
 
   const deleteGroup = (groupIndex: number) => {
     void commit(groups.filter((_, index) => index !== groupIndex));
+  };
+
+  // Pack a group's images plus its identity/threshold manifest into a .zip and
+  // download it. Read-only (no config mutation), so it works even when the
+  // document is not writable. Fails as a whole rather than emitting a partial
+  // archive that would silently drop frames on re-import.
+  const exportGroup = async (groupIndex: number) => {
+    const group = groups[groupIndex];
+    if (!group) return;
+    if (group.images.length === 0) {
+      setFileError(t("exportNoImages"));
+      return;
+    }
+    setBusy(true);
+    try {
+      const frames: { bytes: Uint8Array; ext: string }[] = [];
+      for (const source of group.images) {
+        try {
+          const bytes = await fetchExportImageBytes(source);
+          frames.push({ bytes, ext: extensionForImageUrl(source, bytes) });
+        } catch {
+          setFileError(t("exportDownloadFailed").replace("{n}", String(group.images.length)));
+          return;
+        }
+      }
+      const entries: Record<string, Uint8Array | [Uint8Array, { level: number }]> = {
+        "portrait.yaml": [strToU8(buildPortraitManifest(group)), { level: 6 }],
+      };
+      frames.forEach((frame, index) => {
+        entries[`${index}${frame.ext}`] = frame.bytes;
+      });
+      // Synchronous zip build; with ≤64 sub-2MB frames this is comfortably fast.
+      const zipped = zipSync(entries, { level: 6 });
+      downloadBytes(zipped, `${sanitizeExportBase(group.id)}.zip`, "application/zip");
+      // Shown on the card's single status line, just like import success.
+      setFileError(t("exportDone"));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const addGroup = () => {
@@ -2460,6 +2593,17 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
                     onClick={() => moveGroup(groupIndex, +1)}
                   >
                     {t("moveGroupDown")}
+                  </button>
+                  <button
+                    type="button"
+                    className="flash-portrait-group__export"
+                    title={t("exportGroupTitle")}
+                    // Export is read-only (never mutates the config), so it also
+                    // works when the document is not writable.
+                    disabled={busy || group.images.length === 0}
+                    onClick={() => void exportGroup(groupIndex)}
+                  >
+                    {t("exportGroup")}
                   </button>
                   <button
                     type="button"

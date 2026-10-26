@@ -716,3 +716,50 @@ export function parseImportMetaText(text: string): PortraitImportMeta | null {
   }
   return normalizeImportMeta(raw);
 }
+
+// A subset of a portrait group's config fields — only what the export manifest
+// needs. Kept structural (rather than importing the component's group config)
+// so this pure module stays free of the React bundle.
+export interface PortraitGroupManifestSource {
+  id: string;
+  name: string;
+  zh?: string;
+  en?: string;
+  darkLevel?: number;
+}
+
+// Single-quote a plain string into a YAML scalar. The import-side subset parser
+// reads single-quoted strings and doubles embedded quotes (`''`), so this is a
+// faithful round-trip for values containing `: `, `#`, quotes or leading/
+// trailing whitespace.
+function quoteYaml(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+/**
+ * Serialize a portrait group into the same flat manifest format the archive
+ * importer reads (`portrait.yaml`/`meta.yaml`: `---`…`...` markers with
+ * `id`/`name`/`zh`/`en`/`darkLevel` fields). An exported archive re-imports to
+ * the group's identity and light/dark threshold. No `images:` list is emitted —
+ * an archive ships its frames as embedded files, which always win over the list
+ * on import, so the list would be dead weight and could drift out of sync.
+ */
+export function buildPortraitManifest(group: PortraitGroupManifestSource): string {
+  const id = group.id.trim();
+  const fallback = group.name || id || "group";
+  const zh = (group.zh ?? "").trim() || fallback;
+  const en = (group.en ?? "").trim() || fallback;
+  const darkLevel = clampLevel(group.darkLevel ?? MAX_LEVEL - 1);
+  return [
+    "# Portrait archive exported by dsh-flash-skin",
+    "# Re-importing this archive recreates the portrait group below.",
+    "---",
+    `id: ${quoteYaml(id)}`,
+    `name: ${quoteYaml(fallback)}`,
+    `zh: ${quoteYaml(zh)}`,
+    `en: ${quoteYaml(en)}`,
+    `darkLevel: ${darkLevel}`,
+    "...",
+    "",
+  ].join("\n");
+}

@@ -534,6 +534,13 @@ body[data-flash-skin="on"] textarea {
   color: var(--dsw-static-severity-error-default, #d54343) !important;
 }
 
+/* Export is a neutral, non-destructive action — give it a hint of the accent
+   so it reads as the group's "pack this set" action without shouting. */
+.flash-portrait-group__export {
+  color: var(--dsw-alias-interactive-fg-default, var(--dsw-alias-label-primary)) !important;
+  border-color: color-mix(in srgb, var(--dsw-alias-interactive-fg-default, #4d8df5) 45%, transparent) !important;
+}
+
 .flash-portrait-group__images {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));

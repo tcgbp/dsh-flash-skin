@@ -43,17 +43,20 @@ describe("normalizeWeights", () => {
 
   it("renormalizes a valid set so the weights sum to 1", () => {
     const w = normalizeWeights({ usage: 3, pressure: 1 });
-    expect(w).toEqual({ usage: 0.75, pressure: 0.25, effort: 0, speed: 0 });
-    const sum = w.usage + w.pressure + w.effort + w.speed;
+    expect(w).toEqual({ usage: 0.75, pressure: 0.25, effort: 0, speed: 0, compaction: 0 });
+    const sum = w.usage + w.pressure + w.effort + w.speed + w.compaction;
     expect(Math.abs(sum - 1)).toBeLessThan(1e-9);
   });
 
   it("supports extreme weights pinned to a single axis", () => {
     expect(normalizeWeights({ usage: 1 })).toEqual({
-      usage: 1, pressure: 0, effort: 0, speed: 0,
+      usage: 1, pressure: 0, effort: 0, speed: 0, compaction: 0,
     });
     expect(normalizeWeights({ speed: 1 })).toEqual({
-      usage: 0, pressure: 0, effort: 0, speed: 1,
+      usage: 0, pressure: 0, effort: 0, speed: 1, compaction: 0,
+    });
+    expect(normalizeWeights({ compaction: 1 })).toEqual({
+      usage: 0, pressure: 0, effort: 0, speed: 0, compaction: 1,
     });
   });
 });

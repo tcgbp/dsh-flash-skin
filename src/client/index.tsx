@@ -10,12 +10,14 @@ import styles from "./skin.css";
 import { createPortraitLoader } from "./portrait-loader";
 import type { PortraitImage, PortraitSource } from "./portrait-loader";
 import {
+  COMPACTION_DROP_RATIO,
   DEFAULT_COMPOSITE_WEIGHTS,
   DEFAULT_SPEED_TUNING,
   MAX_LEVEL,
   clampLevel,
   clampLevelContinuous,
   compositeLevel,
+  contextCompactionFactor,
   contextPressureFactor,
   dividerStepFor,
   frameIndexForLevel,
@@ -890,6 +892,37 @@ function CompositeLevelControl({
     ? speedBase * freshnessDecay(now - lastDecodeAt.current, tuning.graceMs, tuning.fadeMs)
     : 0;
 
+  // Compaction (压缩) pulse: a compaction collapses the projected prompt
+  // window, so a sharp relative drop in projected context tokens marks an
+  // event. Each event stamps a fixed-score pulse that decays over a few
+  // seconds on the same render clock (`now`) — no extra timer — briefly
+  // lifting the composite level right after a compaction. Stale/unmounted
+  // pressure reads are ignored (`enabled` + finite guards); the configured
+  // compaction weight decides how strongly the pulse moves the gauge, so with
+  // the default weight of 0 nothing changes until the user opts in.
+  const lastPressureRef = useRef<number | null>(null);
+  const compactionPulseAtRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!enabled) {
+      lastPressureRef.current = null;
+      compactionPulseAtRef.current = null;
+      return;
+    }
+    if (pressureTokens === undefined || pressureTokens === null || !Number.isFinite(pressureTokens)) {
+      lastPressureRef.current = null;
+      return;
+    }
+    const prev = lastPressureRef.current;
+    lastPressureRef.current = pressureTokens;
+    if (
+      prev !== null && Number.isFinite(prev) && prev > 0
+      && pressureTokens < prev * (1 - COMPACTION_DROP_RATIO)
+    ) {
+      compactionPulseAtRef.current = Date.now();
+    }
+  }, [enabled, pressureTokens]);
+  const compactionF = contextCompactionFactor(compactionPulseAtRef.current, now);
+
   const lastLevelRef = useRef(-1);
 
   useEffect(() => {
@@ -902,6 +935,7 @@ function CompositeLevelControl({
       pressure: pressureF,
       effort: effortF,
       speed: speedF,
+      compaction: compactionF,
     });
     // Palette rides the rounded 0..MAX_LEVEL grip (light/dark shell decision);
     // only ever push it when the integer stop actually changes.
@@ -916,7 +950,8 @@ function CompositeLevelControl({
         weightsSnapshot.usage * usageF
         + weightsSnapshot.pressure * pressureF
         + weightsSnapshot.effort * effortF
-        + weightsSnapshot.speed * speedF,
+        + weightsSnapshot.speed * speedF
+        + weightsSnapshot.compaction * compactionF,
       );
     }
   }, [
@@ -926,6 +961,7 @@ function CompositeLevelControl({
     pressureF,
     effortF,
     speedF,
+    compactionF,
   ]);
 
   const count = presenter.getPortraitCount();
@@ -935,6 +971,7 @@ function CompositeLevelControl({
     + w.pressure * pressureF
     + w.effort * effortF
     + w.speed * speedF
+    + w.compaction * compactionF
   );
   // 综合加权直接按组内帧数匹配:0..1 连续得分线性落到 N 帧,没有 6 挡这一层。
   const frame = count > 0 ? frameIndexForScore(wSum, count) : 0;
@@ -950,6 +987,7 @@ function CompositeLevelControl({
     [t ? t("weights.pressureShort") : "压力", "pressure", w.pressure, pressureF],
     [t ? t("weights.effortShort") : "推理", "effort", w.effort, effortF],
     [t ? t("weights.speedShort") : "速度", "speed", w.speed, speedF],
+    [t ? t("weights.compactionShort") : "压缩", "compaction", w.compaction, compactionF],
   ];
 
   const label = (key: string, fallback: string) => (t ? t(key) : fallback);
@@ -1259,7 +1297,8 @@ function createWeightsStore(): WeightsStore {
       const same = next.usage === state.weights.usage
         && next.pressure === state.weights.pressure
         && next.effort === state.weights.effort
-        && next.speed === state.weights.speed;
+        && next.speed === state.weights.speed
+        && next.compaction === state.weights.compaction;
       if (same) return;
       state = { ...state, weights: next };
       persist();
@@ -1283,6 +1322,7 @@ function createWeightsStore(): WeightsStore {
         && next.weights.pressure === state.weights.pressure
         && next.weights.effort === state.weights.effort
         && next.weights.speed === state.weights.speed
+        && next.weights.compaction === state.weights.compaction
         && next.tuning.graceMs === state.tuning.graceMs
         && next.tuning.fadeMs === state.tuning.fadeMs;
       if (same) return;
@@ -2695,6 +2735,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
             ["pressure", "pressure", "pressureDesc", weightSnapshot.pressure],
             ["effort", "effort", "effortDesc", weightSnapshot.effort],
             ["speed", "speed", "speedDesc", weightSnapshot.speed],
+            ["compaction", "compaction", "compactionDesc", weightSnapshot.compaction],
           ] as const).map(([key, labelKey, descKey, value]) => (
             <label key={key} className="flash-weights__field">
               <span className="flash-weights__caption">{t(`weights.${labelKey}`)}</span>
@@ -2831,14 +2872,17 @@ export function apply(ctx: ClientContext) {
         "weights.pressure": "压力",
         "weights.effort": "推理",
         "weights.speed": "速度",
+        "weights.compaction": "压缩",
         "weights.usageShort": "用量",
         "weights.pressureShort": "压力",
         "weights.effortShort": "推理",
         "weights.speedShort": "速度",
+        "weights.compactionShort": "压缩",
         "weights.usageDesc": "本次已生成 token,饱和 30 万",
         "weights.pressureDesc": "上下文占用/窗口,无窗口按轮次",
         "weights.effortDesc": "当前推理档位,未设置按 0",
         "weights.speedDesc": "解码速度,饱和 80 t/s",
+        "weights.compactionDesc": "刚压缩的上下文脉冲,几秒内回落;默认 0 表示不参与",
         "weights.reset": "恢复默认",
         "weights.score": "得分",
         "weights.frame": "帧",
@@ -2852,23 +2896,26 @@ export function apply(ctx: ClientContext) {
         "portraitSet": "Portrait set",
         "portraitSwitch": "Person level",
         "driver.title": "Level driver",
-        "driver.manual": "Man",
-        "driver.effort": "Reason",
-        "driver.composite": "Comp",
+        "driver.manual": "Manual",
+        "driver.effort": "Follow reasoning",
+        "driver.composite": "Composite",
         "weights.title": "Composite weights (editable)",
         "weights.hint": "Live 0–6 portrait level synthesised from these weights; all-zero falls back to defaults.",
         "weights.usage": "Usage",
         "weights.pressure": "Pressure",
         "weights.effort": "Reasoning",
         "weights.speed": "Speed",
+        "weights.compaction": "Compaction",
         "weights.usageShort": "Use",
         "weights.pressureShort": "Press",
         "weights.effortShort": "Reason",
         "weights.speedShort": "Spd",
+        "weights.compactionShort": "Comp",
         "weights.usageDesc": "Tokens generated this turn, saturates at 300k",
         "weights.pressureDesc": "Context used / window; falls back to turns",
         "weights.effortDesc": "Current reasoning level, unknown counts as 0",
         "weights.speedDesc": "Decode speed, saturates at 80 t/s",
+        "weights.compactionDesc": "Pulse right after a context compaction, relaxing over a few seconds; 0 by default opts out",
         "weights.reset": "Restore defaults",
         "weights.score": "Score",
         "weights.frame": "Frame",
@@ -3072,17 +3119,19 @@ export function apply(ctx: ClientContext) {
         },
         visible: () => presenter.isEnabled(),
       });
-      // 「强度驱动」segmented control directly UNDER the portrait-set dropdown
+      // 「强度驱动」dropdown directly UNDER the portrait-set dropdown
       // (26.25, between the select at 26 and the level slider at 26.5): the
       // same three-option driver selector as the settings row (manual / effort
       // / composite), bound to the same store so both surfaces stay in step.
+      // A `select` (not a buttongroup) so the option labels never truncate in
+      // the compact quick panel.
       // `getValue`/`visible` read live at render time; the scope subscription
       // above bumps the registry when the driver changes from the other row.
       const driverDispose = reg.registerSwitch?.({
         id: DRIVER_SWITCH_ID,
         label: () => setLabel("driver.title"),
         icon: "signal",
-        type: "buttongroup",
+        type: "select",
         group: "appearance",
         order: 26.25,
         options: () => [

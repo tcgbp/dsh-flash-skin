@@ -282,6 +282,16 @@ export const DEFAULT_SPEED_TUNING: SpeedTuning = {
 /** Back-compat aliases for code and tests that reference the old constants. */
 export const IDLE_GRACE_MS = DEFAULT_SPEED_TUNING.graceMs;
 export const IDLE_FADE_MS = DEFAULT_SPEED_TUNING.fadeMs;
+
+/** Peak compaction factor (0..1) applied right after a 压缩 event fires. */
+export const COMPACTION_PULSE_BASE = 0.9;
+/** How long a compaction pulse holds at full strength before it starts fading. */
+export const COMPACTION_GRACE_MS = 1500;
+/** How long the pulse takes to fade from full strength to 0 ("持续几秒钟"). */
+export const COMPACTION_FADE_MS = 3500;
+/** A measured relative drop in projected context tokens at/above this value
+ *  counts as a context-compaction event. */
+export const COMPACTION_DROP_RATIO = 0.7;
 export interface CompositeWeights {
   /** share of produced tokens (sat at USAGE_FULL). */
   usage: number;
@@ -291,6 +301,10 @@ export interface CompositeWeights {
   effort: number;
   /** share of decode speed (sat at TPS_FULL). */
   speed: number;
+  /** share of fresh context-compaction activity (spikes right after 压缩).
+   *  Defaults to 0 so out-of-box behaviour is unchanged; users opt in by
+   *  raising it on the config card. */
+  compaction: number;
 }
 
 export const DEFAULT_COMPOSITE_WEIGHTS: CompositeWeights = {
@@ -298,6 +312,9 @@ export const DEFAULT_COMPOSITE_WEIGHTS: CompositeWeights = {
   pressure: 0.3,
   effort: 0.2,
   speed: 0.2,
+  // Zero by default: the composite output stays byte-identical for existing
+  // users; raising the slider on the config card opts the compaction in.
+  compaction: 0,
 };
 
 export interface CompositeSignals {
@@ -315,6 +332,10 @@ export interface CompositeSignals {
   decodeTokens?: number;
   /** wall time spent decoding, ms (speed denominator). */
   decodeMs?: number;
+  /** ms timestamp of the most recent context-compaction event (compaction factor). */
+  compactionAtMs?: number;
+  /** current wall-clock ms used to age the compaction pulse; 0/absent → 0. */
+  nowMs?: number;
 }
 
 /** Missing/negative/NaN weights or a total of zero fall back to defaults. */
@@ -325,6 +346,7 @@ export function normalizeWeights(weights: Partial<CompositeWeights> | null | und
     pressure: weights.pressure,
     effort: weights.effort,
     speed: weights.speed,
+    compaction: weights.compaction,
   };
   // A missing key counts as zero; a present but non-number / non-finite /
   // negative value is treated as corruption and falls back to defaults.
@@ -337,13 +359,14 @@ export function normalizeWeights(weights: Partial<CompositeWeights> | null | und
     }
   }
   const total = (fields.usage ?? 0) + (fields.pressure ?? 0)
-    + (fields.effort ?? 0) + (fields.speed ?? 0);
+    + (fields.effort ?? 0) + (fields.speed ?? 0) + (fields.compaction ?? 0);
   if (anyInvalid || total <= 0) return { ...DEFAULT_COMPOSITE_WEIGHTS };
   return {
     usage: (fields.usage ?? 0) / total,
     pressure: (fields.pressure ?? 0) / total,
     effort: (fields.effort ?? 0) / total,
     speed: (fields.speed ?? 0) / total,
+    compaction: (fields.compaction ?? 0) / total,
   };
 }
 
@@ -400,6 +423,24 @@ export function freshnessDecay(
   return 1 - over / fadeMs;
 }
 
+/**
+ * Decaying "compaction" factor: right after a context-compaction (压缩) event
+ * the gauge jumps to COMPACTION_PULSE_BASE and then relaxes to 0 over a few
+ * seconds. `pulseAtMs` is the ms timestamp of the most recent event (null when
+ * none ever fired — or when the clock is bogus, which then reads as 0). The
+ * caller stamps the pulse inside the live `now` render clock, so no extra
+ * timer is needed and the value naturally dissolves frame by frame.
+ */
+export function contextCompactionFactor(pulseAtMs: number | null, nowMs: number): number {
+  if (pulseAtMs === null || !Number.isFinite(pulseAtMs) || !Number.isFinite(nowMs)) return 0;
+  if (nowMs < pulseAtMs) return 0;
+  return COMPACTION_PULSE_BASE * freshnessDecay(
+    nowMs - pulseAtMs,
+    COMPACTION_GRACE_MS,
+    COMPACTION_FADE_MS,
+  );
+}
+
 /** Clamp an individual 0..1 factor, guarding against bad projections. */
 function clampFactor(factor: number | undefined): number {
   return Math.min(1, Math.max(0, Number.isFinite(factor) ? factor : 0));
@@ -412,7 +453,7 @@ function clampFactor(factor: number | undefined): number {
  */
 export function weightedLevel(
   weights: Partial<CompositeWeights> | null | undefined,
-  factors: { usage?: number; pressure?: number; effort?: number; speed?: number } = {},
+  factors: { usage?: number; pressure?: number; effort?: number; speed?: number; compaction?: number } = {},
 ): number {
   const w = normalizeWeights(weights);
   const sum = (
@@ -420,6 +461,7 @@ export function weightedLevel(
     + w.pressure * clampFactor(factors.pressure)
     + w.effort * clampFactor(factors.effort)
     + w.speed * clampFactor(factors.speed)
+    + w.compaction * clampFactor(factors.compaction)
   );
   return clampLevel(sum * MAX_LEVEL);
 }
@@ -439,6 +481,7 @@ export function compositeLevel(
     pressure: contextPressureFactor(signals.pressureTokens, signals.contextWindow, signals.turns),
     effort: reasoningEffortFactor(signals.committedLevel ?? 0),
     speed: tokenSpeedFactor(signals.decodeTokens ?? 0, signals.decodeMs ?? 0),
+    compaction: contextCompactionFactor(signals.compactionAtMs ?? null, signals.nowMs ?? 0),
   });
 }
 

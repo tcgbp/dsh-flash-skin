@@ -31,6 +31,7 @@
     "examples/portrait-manifest/README.md"
   ],
   "icon": "./icon.svg",
+  "packageManager": "pnpm@12.11.2",
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
   },

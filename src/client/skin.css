@@ -191,7 +191,7 @@ body[data-flash-skin="on"] textarea {
 }
 
 /* 每组人物肖像占一整行：左侧为身份（◈ + 组名），右侧胶片条铺满剩余宽度，
- * 逐帧展示该组的全部素材；窄屏/长列表时胶片条横向滚动。 */
+ * 逐帧展示该组的全部素材；一行放不下时自动换行，不产生横向滚动条。 */
 .flash-appearance-choice {
   box-sizing: border-box;
   border: 1px solid var(--dsw-alias-border-l2);
@@ -232,11 +232,12 @@ body[data-flash-skin="on"] textarea {
 
 .flash-appearance-choice__filmstrip {
   display: flex;
+  flex-wrap: wrap;
   flex: 1 1 auto;
   min-width: 0;
   align-items: center;
   gap: 6px;
-  overflow-x: auto;
+  overflow: visible;
   padding: 2px 2px 6px;
 }
 
@@ -558,6 +559,70 @@ body[data-flash-skin="on"] textarea {
   border-radius: 10px;
   background: var(--dsw-alias-bg-module-platform);
   transition: opacity 160ms linear;
+}
+
+.flash-portrait-group__img {
+  cursor: zoom-in;
+}
+
+.flash-portrait-group__img:hover {
+  opacity: 0.9;
+}
+
+.flash-portrait-group__preview-hint {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 16px;
+  color: #fff;
+  background: rgb(0 0 0 / 55%);
+  pointer-events: none;
+}
+
+/* Full-size "view original" lightbox shown while a portrait thumbnail is clicked. */
+.flash-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: rgb(0 0 0 / 72%);
+  cursor: zoom-out;
+}
+
+.flash-lightbox__img {
+  max-width: min(92vw, calc(100vh * 0.9));
+  max-height: 92vh;
+  object-fit: contain;
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-module-platform);
+  box-shadow: 0 24px 80px rgb(0 0 0 / 55%);
+  cursor: default;
+}
+
+.flash-lightbox__close {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  font-size: 16px;
+  line-height: 1;
+  color: #fff;
+  background: rgb(0 0 0 / 55%);
+  cursor: pointer;
+}
+
+.flash-lightbox__close:hover {
+  background: rgb(0 0 0 / 75%);
 }
 
 .flash-portrait-group__image-index {

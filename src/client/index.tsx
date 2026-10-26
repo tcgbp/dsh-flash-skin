@@ -1368,6 +1368,8 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "moveImageRight": "右移",
     "replaceImage": "替换",
     "removeImage": "移除",
+    "viewOriginal": "点击查看原图",
+    "closePreview": "关闭预览",
     "addImage": "添加图片",
     "pickLocalImage": "本地选图",
     "pickLocalImageHint": "从本机选择一张图片，自动转为内嵌 base64 填入。",
@@ -1428,6 +1430,8 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "moveImageRight": "Move right",
     "replaceImage": "Replace",
     "removeImage": "Remove",
+    "viewOriginal": "Click to view original",
+    "closePreview": "Close preview",
     "addImage": "Add image",
     "pickLocalImage": "Pick local image",
     "pickLocalImageHint": "Choose an image from this device; it is embedded as base64 automatically.",
@@ -1792,6 +1796,23 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
     draftId: string;
     notice: string;
   } | null>(null);
+  // URL of the image currently shown full-size in the preview lightbox (null
+  // when the lightbox is closed). Clicking a portrait thumbnail opens it.
+  const [preview, setPreview] = useState<string | null>(null);
+  // Has the user seen the lightbox before? Drives a one-time "点击查看原图" hint
+  // on the thumbnails (harmless, dismissible, not persisted).
+  const [hintSeen, setHintSeen] = useState(() =>
+    typeof localStorage !== "undefined" ? localStorage.getItem("flash-skin:preview-hint-seen") === "1" : false,
+  );
+  const markHintSeen = () => {
+    if (hintSeen) return;
+    setHintSeen(true);
+    try {
+      localStorage.setItem("flash-skin:preview-hint-seen", "1");
+    } catch {
+      // localStorage 不可用时仅本次会话不再重复提示。
+    }
+  };
 
   const t = (key: string): string => {
     if (typeof localeT === "function") return localeT(key);
@@ -2476,10 +2497,23 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
                             src={src}
                             loading="lazy"
                             alt=""
+                            draggable={false}
+                            className={
+                              "flash-portrait-group__img" + (hintSeen ? " flash-portrait-group__img--hinted" : "")
+                            }
+                            onClick={() => {
+                              setPreview(src);
+                              markHintSeen();
+                            }}
                             onError={(event) => {
                               event.currentTarget.style.opacity = "0.25";
                             }}
                           />
+                          {!hintSeen && (
+                            <span className="flash-portrait-group__preview-hint" role="status">
+                              {t("viewOriginal")}
+                            </span>
+                          )}
                           <span className="flash-portrait-group__image-index">{imageIndex + 1}</span>
                           <div className="flash-portrait-group__image-actions">
                             <button
@@ -2718,6 +2752,36 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
           {t("weights.reset")}
         </button>
       </section>
+
+      {preview && (
+        <div
+          className="flash-lightbox"
+          role="dialog"
+          aria-modal="true"
+          aria-label={t("viewOriginal")}
+          onClick={() => setPreview(null)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") setPreview(null);
+          }}
+        >
+          <button
+            type="button"
+            className="flash-lightbox__close"
+            onClick={() => setPreview(null)}
+            title={t("closePreview")}
+            aria-label={t("closePreview")}
+          >
+            ✕
+          </button>
+          <img
+            className="flash-lightbox__img"
+            src={preview}
+            alt=""
+            draggable={false}
+            onClick={(event) => event.stopPropagation()}
+          />
+        </div>
+      )}
     </section>
   );
 }
@@ -2788,9 +2852,9 @@ export function apply(ctx: ClientContext) {
         "portraitSet": "Portrait set",
         "portraitSwitch": "Person level",
         "driver.title": "Level driver",
-        "driver.manual": "Manual",
-        "driver.effort": "Follow reasoning",
-        "driver.composite": "Composite",
+        "driver.manual": "Man",
+        "driver.effort": "Reason",
+        "driver.composite": "Comp",
         "weights.title": "Composite weights (editable)",
         "weights.hint": "Live 0–6 portrait level synthesised from these weights; all-zero falls back to defaults.",
         "weights.usage": "Usage",

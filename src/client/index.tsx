@@ -2847,6 +2847,7 @@ export function apply(ctx: ClientContext) {
   const OPEN_DETAILS_SWITCH_ID = `${PACKAGE_ID}:open-details`;
   const PORTRAIT_SET_SWITCH_ID = `${PACKAGE_ID}:portrait-set`;
   const PORTRAIT_SLIDER_SWITCH_ID = `${PACKAGE_ID}:portrait-slider`;
+  const DRIVER_SWITCH_ID = `${PACKAGE_ID}:driver`;
   let quickControl: {
     registerSwitch?: (def: unknown) => (() => void) | void;
     unregisterSwitch?: (id: string) => void;
@@ -2958,21 +2959,29 @@ export function apply(ctx: ClientContext) {
       return sliderDisposeFn;
     };
 
-    // Keep both rows in sync with the skin's own enabled state: the panel only
-    // re-runs `visible()` after a registry version bump, so push one whenever
-    // the enabled flag flips (choose/disable) so rows appear/disappear without
-    // a panel reload.
+    // Keep the rows in sync with the skin's own store: the panel only re-runs
+    // `visible()` after a registry version bump, so push a change whenever the
+    // enabled flag flips (choose/disable) or the driver mode changes elsewhere
+    // (e.g. the settings-row selector) — otherwise the ⚡ rows would go stale
+    // until the panel happens to re-render.
     let lastEnabled = presenter.isEnabled();
+    let lastDriver = scope.getSnapshot().driver;
     const offScope = scope.subscribe(() => {
       // A scope change may have switched the active set, changing the number
       // of frames its group stages — re-sync the slider bounds opportunistically.
       refreshPortraitSlider?.();
       const enabled = presenter.isEnabled();
-      if (enabled === lastEnabled) return;
-      lastEnabled = enabled;
-      quickControl?.notifyChange?.(OPEN_DETAILS_SWITCH_ID);
-      quickControl?.notifyChange?.(PORTRAIT_SET_SWITCH_ID);
-      quickControl?.notifyChange?.(PORTRAIT_SLIDER_SWITCH_ID);
+      if (enabled !== lastEnabled) {
+        lastEnabled = enabled;
+        quickControl?.notifyChange?.(OPEN_DETAILS_SWITCH_ID);
+        quickControl?.notifyChange?.(PORTRAIT_SET_SWITCH_ID);
+        quickControl?.notifyChange?.(PORTRAIT_SLIDER_SWITCH_ID);
+      }
+      const driver = scope.getSnapshot().driver;
+      if (driver !== lastDriver) {
+        lastDriver = driver;
+        quickControl?.notifyChange?.(DRIVER_SWITCH_ID);
+      }
     });
 
     ctx.effect(() => {
@@ -2994,6 +3003,35 @@ export function apply(ctx: ClientContext) {
         setValue: (value) => {
           void presenter.choose(String(value)).catch(() => undefined)
             .finally(() => quickControl?.notifyChange?.(PORTRAIT_SET_SWITCH_ID));
+        },
+        visible: () => presenter.isEnabled(),
+      });
+      // 「强度驱动」segmented control directly UNDER the portrait-set dropdown
+      // (26.25, between the select at 26 and the level slider at 26.5): the
+      // same three-option driver selector as the settings row (manual / effort
+      // / composite), bound to the same store so both surfaces stay in step.
+      // `getValue`/`visible` read live at render time; the scope subscription
+      // above bumps the registry when the driver changes from the other row.
+      const driverDispose = reg.registerSwitch?.({
+        id: DRIVER_SWITCH_ID,
+        label: () => setLabel("driver.title"),
+        icon: "signal",
+        type: "buttongroup",
+        group: "appearance",
+        order: 26.25,
+        options: () => [
+          { value: "manual", label: setLabel("driver.manual") },
+          { value: "effort", label: setLabel("driver.effort") },
+          { value: "composite", label: setLabel("driver.composite") },
+        ],
+        getValue: () => scope.getSnapshot().driver,
+        setValue: (value) => {
+          const driver =
+            value === "manual" || value === "effort" || value === "composite"
+              ? value
+              : "manual";
+          void scope.setDriver(driver).catch(() => undefined)
+            .finally(() => quickControl?.notifyChange?.(DRIVER_SWITCH_ID));
         },
         visible: () => presenter.isEnabled(),
       });
@@ -3030,6 +3068,8 @@ export function apply(ctx: ClientContext) {
       return () => {
         if (typeof setDispose === "function") setDispose();
         else reg.unregisterSwitch?.(PORTRAIT_SET_SWITCH_ID);
+        if (typeof driverDispose === "function") driverDispose();
+        else reg.unregisterSwitch?.(DRIVER_SWITCH_ID);
         if (typeof sliderDispose === "function") sliderDispose();
         else reg.unregisterSwitch?.(PORTRAIT_SLIDER_SWITCH_ID);
         if (typeof openDispose === "function") openDispose();

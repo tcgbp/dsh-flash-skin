@@ -372,6 +372,143 @@ export async function submitCommunityShare(client, target, { token, setId, url }
   };
 }
 
+/** File (inside the configured root) holding the aggregated like counts. */
+export const COMMUNITY_LIKES_FILE = "likes.json";
+
+/**
+ * Anonymous read of the community aggregate like-count file
+ * (`<path>/likes.json`). Returns { ok, counts, error } where `counts` is a
+ * plain { [groupId]: number } map (any invalid entries silently dropped), or
+ * `{ id }`-independent aggregation so multiple hosts can share one counter.
+ * Never throws; `counts` is null when the file is absent/unreadable/malformed
+ * so callers can fall back to their local ledger.
+ */
+export async function readCommunityLikes(client, target) {
+  if (!target) return { ok: true, counts: null, error: { code: "not-configured" } };
+  const segments = [enc(target.owner), enc(target.repo), enc(target.branch)];
+  for (const seg of String(target.path).split("/")) {
+    if (seg) segments.push(enc(seg));
+  }
+  segments.push(COMMUNITY_LIKES_FILE);
+  let text = null;
+  try {
+    text = await client.rawText(segments.join("/"));
+  } catch {
+    text = null;
+  }
+  if (text === null) {
+    return { ok: true, counts: null, error: { code: "unavailable", message: "No community like-count file yet." } };
+  }
+  let parsed = null;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { ok: true, counts: null, error: { code: "bad-json", message: "Community like-count file is malformed." } };
+  }
+  const counts = {};
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    for (const [key, value] of Object.entries(parsed)) {
+      // Group ids are slugs; reject any whitespace/control char in the key.
+      if (typeof key !== "string" || key.length === 0 || key.length > 128 || /[\s\u007f]/.test(key)) continue;
+      const n = Number(value);
+      if (Number.isFinite(n) && n > 0) counts[key] = Math.floor(n);
+    }
+  }
+  return { ok: true, counts, error: null };
+}
+
+/**
+ * Persist the aggregated like-count snapshot through a GitHub PR. Reuses the
+ * same fork → branch → PUT-pointer → open-PR flow as share submissions (see
+ * `submitCommunityShare`), but writes `likes.json` rather than an entry
+ * pointer, so it is a single counter the owner can review and merge. Never
+ * throws; returns { ok:true, pr } or { ok:false, error }.
+ */
+export async function submitCommunityLikes(client, target, { token, counts }) {
+  if (!target) {
+    return { ok: false, error: { code: "not-configured", message: "Community directory is not configured." } };
+  }
+  if (typeof token !== "string" || token.trim().length === 0 || token.length > TOKEN_MAX) {
+    return { ok: false, error: { code: "bad-token", message: "A GitHub token is required to sync likes." } };
+  }
+  const normalized = {};
+  if (counts && typeof counts === "object" && !Array.isArray(counts)) {
+    for (const [key, value] of Object.entries(counts)) {
+      const n = Math.floor(Number(value));
+      if (
+        typeof key === "string" && key.length > 0 && key.length <= 128 &&
+        !/[\s\u007f]/.test(key) && Number.isFinite(n) && n > 0
+      ) {
+        normalized[key] = n;
+      }
+    }
+  }
+  const accessToken = token.trim();
+  const filePath = `${target.path}/${COMMUNITY_LIKES_FILE}`;
+  const pidBranch = `flash-skin-likes-${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`;
+
+  // 1) Fork the target repo.
+  const forkRes = await client.ghJson(`/repos/${enc(target.owner)}/${enc(target.repo)}/forks`, {
+    method: "POST", token: accessToken, body: {}, maxBytes: 256 * 1024, timeout: 20_000,
+  });
+  if (forkRes.status !== 202 && forkRes.status !== 200 && forkRes.status !== 201) {
+    return ghError(forkRes, "fork");
+  }
+  const forkOwner = forkRes?.json?.owner?.login || forkRes?.json?.full_name?.split("/")[0] || "";
+  if (!forkOwner) return ghError(forkRes, "fork");
+  if (!(await waitForkReady(client, forkOwner, target.repo, accessToken))) {
+    return { ok: false, error: { code: "fork-timeout", message: "The fork is not ready yet; please retry shortly." } };
+  }
+
+  // 2) Fork default branch head sha.
+  const forkRepo = await client.ghJson(`/repos/${enc(forkOwner)}/${enc(target.repo)}`, { token: accessToken, timeout: 15_000 });
+  const forkDefault = forkRepo?.json?.default_branch || target.branch;
+  const headRes = await client.ghJson(`/repos/${enc(forkOwner)}/${enc(target.repo)}/branches/${enc(forkDefault)}`, {
+    token: accessToken, timeout: 15_000,
+  });
+  const headSha = headRes?.json?.commit?.sha;
+  if (!headSha) return ghError(headRes, "fork-head");
+
+  // 3) Create the working branch on the fork.
+  const refRes = await client.ghJson(`/repos/${enc(forkOwner)}/${enc(target.repo)}/git/refs`, {
+    method: "POST", token: accessToken, body: { ref: `refs/heads/${pidBranch}`, sha: headSha }, timeout: 15_000,
+  });
+  if (refRes.status !== 201) return ghError(refRes, "branch");
+
+  // 4) Write the aggregated likes file on the fork branch.
+  const content = JSON.stringify(normalized, null, 2);
+  const putPath = filePath.split("/").map(enc).join("/");
+  const putRes = await client.ghJson(`/repos/${enc(forkOwner)}/${enc(target.repo)}/contents/${putPath}`, {
+    method: "PUT",
+    token: accessToken,
+    body: { message: `sync like counts (${Object.keys(normalized).length} groups)`, content: Buffer.from(content, "utf8").toString("base64"), branch: pidBranch },
+    timeout: 20_000,
+  });
+  if (putRes.status !== 201) return ghError(putRes, "write");
+
+  // 5) Open the PR against the target base branch.
+  const prBody =
+    `社区点赞计数同步\n\n` +
+    `聚合计数文件：${filePath}\n\n` +
+    `> 由插件服务端定时聚合提交，是否即时可见取决于仓库的合入策略。`;
+  const prRes = await client.ghJson(`/repos/${enc(target.owner)}/${enc(target.repo)}/pulls`, {
+    method: "POST",
+    token: accessToken,
+    body: { title: `点赞同步`, head: `${forkOwner}:${pidBranch}`, base: target.branch, body: prBody },
+    timeout: 20_000,
+  });
+  if (prRes.status !== 201) return ghError(prRes, "pr");
+
+  return {
+    ok: true,
+    pr: {
+      number: prRes?.json?.number ?? null,
+      htmlUrl: prRes?.json?.html_url ?? null,
+      state: prRes?.json?.state ?? null,
+    },
+  };
+}
+
 /**
  * Register the community routes against the host webServer and wire the config
  * target accessor. Returns disposers; index.js folds them into teardown.

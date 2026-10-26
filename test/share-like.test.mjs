@@ -11,6 +11,8 @@ import {
   parseCommunityEntryName,
   parseCommunityEntryText,
   parseCommunityTreePaths,
+  readCommunityLikes,
+  submitCommunityLikes,
 } from "../src/community.js";
 
 describe("C1 share codec (logic.ts)", () => {
@@ -215,6 +217,162 @@ describe("C2 community helper functions (community.js)", () => {
       expect(parseCommunityTreePaths(null)).toEqual([]);
       expect(parseCommunityTreePaths(undefined)).toEqual([]);
       expect(parseCommunityTreePaths([], "custom")).toEqual([]);
+    });
+  });
+
+  describe("readCommunityLikes (PR-backed aggregate count read)", () => {
+    const target = { owner: "octo", repo: "cats", branch: "main", path: "shares" };
+
+    it("returns counts parsed from the likes.json blob", async () => {
+      const client = {
+        rawText: async () => JSON.stringify({ "han-li": 3, "jiu-gong": 12 }),
+      };
+      const res = await readCommunityLikes(client, target);
+      expect(res.ok).toBe(true);
+      expect(res.counts).toEqual({ "han-li": 3, "jiu-gong": 12 });
+    });
+
+    it("drops invalid/dropped entries and floors fractional counts", async () => {
+      const client = {
+        rawText: async () =>
+          JSON.stringify({ ok: 5, "a b": 2, neg: -3, frac: 2.9, zero: 0, long: "x".repeat(200) }),
+      };
+      const res = await readCommunityLikes(client, target);
+      expect(res.ok).toBe(true);
+      // "ok" is valid; "a b" has a space -> dropped; neg/zero dropped; frac floored; long key dropped.
+      expect(res.counts).toEqual({ ok: 5, frac: 2 });
+    });
+
+    it("returns null counts when the file is absent/malformed, without throwing", async () => {
+      const absent = { rawText: async () => null };
+      const absentRes = await readCommunityLikes(absent, target);
+      expect(absentRes.ok).toBe(true);
+      expect(absentRes.counts).toBeNull();
+      expect(absentRes.error.code).toBe("unavailable");
+
+      const bad = { rawText: async () => "{ not json" };
+      const badRes = await readCommunityLikes(bad, target);
+      expect(badRes.ok).toBe(true);
+      expect(badRes.counts).toBeNull();
+      expect(badRes.error.code).toBe("bad-json");
+
+      const panic = { rawText: async () => { throw new Error("boom"); } };
+      const panicRes = await readCommunityLikes(panic, target);
+      expect(panicRes.ok).toBe(true);
+      expect(panicRes.counts).toBeNull();
+    });
+
+    it("short-circuits when the community target is not configured", async () => {
+      const res = await readCommunityLikes({ rawText: async () => null }, null);
+      expect(res.ok).toBe(true);
+      expect(res.counts).toBeNull();
+      expect(res.error.code).toBe("not-configured");
+    });
+  });
+
+  describe("submitCommunityLikes (PR-backed aggregate count write)", () => {
+    const target = { owner: "octo", repo: "cats", branch: "main", path: "shares" };
+    const okFork = async () => ({
+      status: 202,
+      json: { owner: { login: "forky" }, full_name: "forky/cats" },
+    });
+    const dispatch = (overrides = {}) => ({
+      ghJson: overrides.ghJson
+        || (async (path, { method } = {}) => {
+          if (path.endsWith("/forks")) return okFork();
+          if (path.startsWith("/repos/forky/cats/branches/")) {
+            return { status: 200, json: { commit: { sha: "abc123" } } };
+          }
+          if (path.endsWith("/git/refs")) return { status: 201, json: {} };
+          if (/\/contents\//.test(path) && method === "PUT") return { status: 201, json: {} };
+          if (/\/pulls$/.test(path) && method === "POST") {
+            return { status: 201, json: { number: 7, html_url: "https://github.com/octo/cats/pull/7", state: "open" } };
+          }
+          return { status: 200, json: {} };
+        }),
+      rawText: overrides.rawText || (async () => "{}"),
+    });
+
+    it("walks the fork→branch→PUT→PR flow and reports the PR", async () => {
+      const calls = [];
+      const client = {
+        ghJson: async (path, { method } = {}) => {
+          calls.push(`${method} ${path}`);
+          if (path.endsWith("/forks")) return okFork();
+          if (path.startsWith("/repos/forky/cats/branches/")) {
+            return { status: 200, json: { commit: { sha: "abc123" } } };
+          }
+          if (path.endsWith("/git/refs")) return { status: 201, json: {} };
+          if (/\/contents\//.test(path)) {
+            expect(method).toBe("PUT");
+            // The body JSON carries base64 of a likes.json snapshot.
+            return { status: 201, json: {} };
+          }
+          if (/\/pulls$/.test(path)) {
+            expect(method).toBe("POST");
+            return { status: 201, json: { number: 7, html_url: "https://github.com/octo/cats/pull/7", state: "open" } };
+          }
+          return { status: 200, json: {} };
+        },
+        rawText: async () => "{}",
+      };
+      const res = await submitCommunityLikes(client, target, {
+        token: "tok",
+        counts: { "han-li": 3, "jiu-gong": 12 },
+      });
+      expect(res.ok).toBe(true);
+      expect(res.pr.number).toBe(7);
+      expect(res.pr.htmlUrl).toBe("https://github.com/octo/cats/pull/7");
+      // fork → repo(s) → branch → refs → contents PUT → pulls
+      expect(calls.some((c) => c === "POST /repos/octo/cats/forks")).toBe(true);
+      expect(calls.some((c) => c.endsWith("/contents/shares/likes.json"))).toBe(true);
+      expect(calls.some((c) => c === "POST /repos/octo/cats/pulls")).toBe(true);
+    });
+
+    it("drops invalid group/count entries before writing", async () => {
+      let putBody = null;
+      const client = {
+        ghJson: async (path, { method = "GET", body } = {}) => {
+          if (/\/contents\//.test(path) && method === "PUT") { putBody = body; return { status: 201, json: {} }; }
+          if (path.endsWith("/forks")) return okFork();
+          if (path.startsWith("/repos/forky/cats/branches/")) return { status: 200, json: { commit: { sha: "s" } } };
+          if (path.endsWith("/git/refs")) return { status: 201, json: {} };
+          if (/\/pulls$/.test(path)) return { status: 201, json: { number: 1 } };
+          return { status: 200, json: {} };
+        },
+        rawText: async () => "{}",
+      };
+      const res = await submitCommunityLikes(client, target, {
+        token: "tok",
+        counts: { ok: 5, "a b": 2, neg: -3, zero: 0, frac: 2.9 },
+      });
+      expect(res.ok).toBe(true);
+      const decoded = JSON.parse(Buffer.from(putBody.content, "base64").toString("utf8"));
+      expect(decoded).toEqual({ ok: 5, frac: 2 });
+    });
+
+    it("fails cleanly without a token and without a configure target", async () => {
+      const noToken = await submitCommunityLikes(dispatch(), target, { token: "", counts: {} });
+      expect(noToken.ok).toBe(false);
+      expect(noToken.error.code).toBe("bad-token");
+
+      const notConfigured = await submitCommunityLikes(dispatch(), null, { token: "tok", counts: {} });
+      expect(notConfigured.ok).toBe(false);
+      expect(notConfigured.error.code).toBe("not-configured");
+    });
+
+    it("surfaces fork/auth failures without throwing", async () => {
+      const client = {
+        ghJson: async (path, { method } = {}) => {
+          if (path.endsWith("/forks")) return { status: 403, json: {} };
+          if (path.endsWith("/git/refs") && method === "POST") return { status: 403, json: {} };
+          return { status: 200, json: {} };
+        },
+        rawText: async () => "{}",
+      };
+      const res = await submitCommunityLikes(client, target, { token: "tok", counts: { a: 1 } });
+      expect(res.ok).toBe(false);
+      expect(res.error.code).toMatch(/(auth|rate-limited|branch|fork)/);
     });
   });
 });

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import z from "@deepseek-ai/schemastery";
 import { parseSingleRange } from "./range.js";
 import { installLikeRoutes } from "./likes.js";
-import { installCommunityRoutes } from "./community.js";
+import { createGitHubClient, installCommunityRoutes, readCommunityLikes, submitCommunityLikes } from "./community.js";
 
 export { parseSingleRange } from "./range.js";
 
@@ -236,6 +236,18 @@ export const Config = z.object({
       branch: z.string().default("main"),
       /** Tree root; default: shares. */
       path: z.string().default("shares"),
+      /**
+       * Optional GitHub PAT (contents: write) used by the *server* to persist
+       * aggregated like counts into the community directory via PR
+       * (`<path>/likes.json`). When present, the like route batches incremental
+       * local likes into a folder and periodically pushes them through the same
+       * fork→branch→PUT→PR flow as share submissions. When absent (or the whole
+       * communityDirectory is unset) likes gracefully fall back to the local
+       * T1/T3 ledger only — standalone-safe, no credentials required.
+       * Deliberately a config-supplied token, not user-supplied: likes are
+       * triggered by anonymous visitors, so there is no per-user credential.
+       */
+      likesToken: z.string().min(1),
     })
     // Object fields are optional unless `.required()`, so an absent top-level
     // `communityDirectory` validates as `{}` instead of failing activation;
@@ -495,9 +507,10 @@ export function apply(ctx, config) {
     const exampleRoute = ctx.webServer.register({ kind: "prefixes", path: EXAMPLES_PATH, handler: example });
     const remoteRoute = ctx.webServer.register({ kind: "exact", path: REMOTE_ARCHIVE_PATH, handler: remote });
     // Community share + like channels. Likes stay T1-in-memory (+ optional T3
-    // durable mirror when a storage backend is present); the community-directory
+    // durable mirror when a storage backend is present and an optional PR-backed
+    // community sync when a likesToken is configured); the community-directory
     // target resolves at request time from the configured repo, else inert.
-    const { likeRoute, likesRoute } = installLikeRoutes(ctx);
+    const communityClient = createGitHubClient(globalThis.fetch);
     const getCommunityTarget = () => {
       const dir = config?.communityDirectory?.get();
       if (
@@ -514,12 +527,32 @@ export function apply(ctx, config) {
       }
       return null;
     };
-    const { directoryRoute, submitRoute } = installCommunityRoutes(ctx, { getTarget: getCommunityTarget });
+    const getLikesToken = () => {
+      const dir = config?.communityDirectory?.get();
+      return dir && typeof dir.likesToken === "string" && dir.likesToken ? dir.likesToken : null;
+    };
+    const {
+      likeRoute, likesRoute, flushCommunityLikes, communityDispose,
+    } = installLikeRoutes(ctx, {
+      // PR-backed like aggregation: reads the remote <path>/likes.json once to
+      // seed the ledger, then debounced-flushes the merged snapshot through a
+      // single PR channel. Absent/disabled → pure local T1 (+optional T3).
+      community: {
+        getClient: () => communityClient,
+        getTarget: getCommunityTarget,
+        getLikesToken,
+        readCommunityLikes,
+        submitCommunityLikes,
+        debounceMs: 30_000,
+      },
+    });
+    const { directoryRoute, submitRoute } = installCommunityRoutes(ctx, { getTarget: getCommunityTarget, client: communityClient });
     return () => {
       uploadRoute();
       serveRoute();
       exampleRoute();
       remoteRoute();
+      communityDispose();
       likeRoute();
       likesRoute();
       directoryRoute();

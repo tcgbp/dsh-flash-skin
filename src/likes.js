@@ -305,6 +305,118 @@ export function installLikeRoutes(ctx, opts = {}) {
     /* swallow for standalone behavior */
   }
 
+  // ── Optional PR-backed community sync (aggregated like counts) ─────────────
+  // When `opts.community` is present and a token is configured, the like route
+  // batches incremental local likes into a snapshot and eventually persists it
+  // through the `<path>/likes.json` PR channel. When disabled/absent the like
+  // channels stay purely local (T1 + optional T3 mirror) — standalone-safe.
+  //
+  // Design:
+  //   - Community token/target are *config-supplied* (server deployment admin),
+  //     never per-visitor: likes are triggered by anonymous visitors and carry
+  //     no user credential.
+  //   - On install we opportunistically read the remote likes.json and seed the
+  //     ledger, so local tallies already include other hosts' known counts.
+  //   - Toggles schedule a debounced, coalesced flush (one PR per window) rather
+  //     than one PR per like. Any failure just disables the PR channel and the
+  //     ledger stays authoritative.
+  const community = opts.community || null;
+  let communityTimer = null;
+  let communityPending = false;
+  let communityInFlight = false;
+  let communityFailed = false;
+
+  const communityEnabled = () =>
+    !!community &&
+    typeof community.getClient === "function" &&
+    typeof community.getTarget === "function" &&
+    typeof community.getLikesToken === "function" &&
+    typeof community.readCommunityLikes === "function" &&
+    typeof community.submitCommunityLikes === "function";
+
+  const communityToken = () => {
+    try {
+      return community ? community.getLikesToken() || null : null;
+    } catch {
+      return null;
+    }
+  };
+
+  /** Read the remote aggregate once and seed the local ledger from it. */
+  const seedFromCommunity = async () => {
+    if (!communityEnabled()) return;
+    const target = community.getTarget();
+    if (!target) return;
+    const token = communityToken();
+    if (!token) return;
+    const client = community.getClient();
+    if (!client) return;
+    try {
+      const remote = await community.readCommunityLikes(client, target);
+      const counts = remote && remote.counts ? remote.counts : null;
+      if (!counts) return;
+      for (const [groupId, count] of Object.entries(counts)) {
+        try {
+          ledger.seed(groupId, count, []);
+        } catch {
+          /* best-effort */
+        }
+      }
+    } catch {
+      /* offline/rate-limited: keep local */
+    }
+  };
+
+  /** Flush the merged counts through the PR channel (single in-flight). */
+  const flushCommunityLikes = async () => {
+    if (!communityEnabled() || communityFailed || communityInFlight) return;
+    const target = community.getTarget();
+    if (!target) return;
+    const token = communityToken();
+    if (!token) return;
+    const client = community.getClient();
+    if (!client) return;
+    communityInFlight = true;
+    try {
+      const merged = { ...ledger.counts() };
+      const res = await community.submitCommunityLikes(client, target, { token, counts: merged });
+      if (res && res.ok === false) {
+        // Never retry into an unconfigurable state this process lifetime.
+        if (res.error && res.error.code === "not-configured") communityFailed = true;
+      }
+    } catch {
+      /* swallow: local ledger stays authoritative */
+    } finally {
+      communityInFlight = false;
+    }
+  };
+
+  const scheduleCommunityFlush = () => {
+    if (!communityEnabled() || communityFailed || communityPending) return;
+    communityPending = true;
+    const debounce = community && typeof community.debounceMs === "number" ? community.debounceMs : 30_000;
+    communityTimer = setTimeout(() => {
+      communityPending = false;
+      communityTimer = null;
+      void flushCommunityLikes().catch(() => {});
+    }, debounce);
+  };
+
+  const communityDispose = () => {
+    if (communityTimer) {
+      clearTimeout(communityTimer);
+      communityTimer = null;
+    }
+    communityPending = false;
+  };
+
+  // Opportunistic global seed; never blocks the routes and never throws.
+  try {
+    void seedFromCommunity().catch(() => {});
+  } catch {
+    /* swallow for standalone behavior */
+  }
+
   const like = async (req, res) => {
     try {
       if ((req.method ?? "GET") !== "POST") {
@@ -333,6 +445,8 @@ export function installLikeRoutes(ctx, opts = {}) {
       // Durable mirror is fire-and-forget; never delays or fails the response.
       if (result.deleted) void mirror.remove(result.groupId).catch(() => {});
       else void mirror.write(result.groupId, result.count, result.peers).catch(() => {});
+      // Schedule a debounced community PR flush (aggregated likes).
+      scheduleCommunityFlush();
       sendJson(res, 200, {
         ok: true,
         groupId: result.groupId,
@@ -362,5 +476,8 @@ export function installLikeRoutes(ctx, opts = {}) {
     mirror,
     likeRoute: ctx.webServer.register({ kind: "exact", path: LIKE_PATH, handler: like }),
     likesRoute: ctx.webServer.register({ kind: "exact", path: LIKES_PATH, handler: likes }),
+    // Exposed for deterministic tests / manual flush; a no-op when disabled.
+    flushCommunityLikes,
+    communityDispose,
   };
 }

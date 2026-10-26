@@ -1175,3 +1175,277 @@ body[data-flash-skin="on"] .EvIC1a_toBottomSlot {
   opacity: 0.6;
   cursor: default;
 }
+
+/* ── Social: like + share (C1) ───────────────────────────────────────────── */
+
+/* Like is read-only bookkeeping; the filled heart marks the local liked state. */
+.flash-portrait-group__like {
+  color: var(--dsw-alias-label-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.flash-portrait-group__like--on {
+  color: var(--dsw-static-severity-warning-default, #d97706) !important;
+  border-color: color-mix(in srgb, var(--dsw-static-severity-warning-default, #d97706) 55%, transparent) !important;
+  background: color-mix(in srgb, var(--dsw-static-severity-warning-default, #d97706) 10%, transparent);
+}
+
+/* Share packs this group into text; give it the neutral "pack this set" look. */
+.flash-portrait-group__share {
+  color: var(--dsw-alias-interactive-fg-default, var(--dsw-alias-label-primary)) !important;
+  border-color: color-mix(in srgb, var(--dsw-alias-interactive-fg-default, #4d8df5) 42%, transparent) !important;
+}
+
+/* Share modal sits above the lightbox so a preview can stay open behind it. */
+.flash-share {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483001;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgb(0 0 0 / 60%);
+}
+
+.flash-share__box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-sizing: border-box;
+  width: min(680px, 94vw);
+  max-height: min(86vh, 900px);
+  overflow: auto;
+  padding: 18px 20px 20px;
+  border-radius: 14px;
+  background: var(--dsw-alias-bg-module-platform, #fff);
+  color: var(--dsw-alias-label-primary);
+  box-shadow: 0 24px 80px rgb(0 0 0 / 55%);
+}
+
+.flash-share__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.flash-share__title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 16px;
+  line-height: 22px;
+  overflow-wrap: anywhere;
+}
+
+.flash-share__text {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 120px;
+  resize: vertical;
+  padding: 8px 10px;
+  border: 1px solid var(--dsw-alias-border-l3, rgb(0 0 0 / 16%));
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-base, #fff);
+  color: var(--dsw-alias-label-primary);
+  font: 12px/1.5 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+.flash-share__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.flash-share__copy {
+  color: var(--dsw-alias-interactive-fg-default, #4073e0) !important;
+  border-color: color-mix(in srgb, var(--dsw-alias-interactive-fg-default, #4073e0) 45%, transparent) !important;
+  font-weight: 600;
+}
+
+.flash-share__copy:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--dsw-alias-interactive-fg-default, #4073e0) 12%, transparent);
+}
+
+.flash-share__community {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+
+.flash-share__community-title {
+  margin: 0;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 600;
+}
+
+/* ── C2: community directory panel ───────────────────────────────────────── */
+
+.flash-community {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 14px 0 0;
+  padding: 12px 14px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--dsw-alias-bg-base, #fff) 60%, transparent);
+}
+
+.flash-community__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.flash-community__title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+}
+
+.flash-community__learn {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--dsw-alias-link-text, var(--dsw-alias-interactive-fg-default));
+  text-decoration: none;
+}
+
+.flash-community__refresh,
+.flash-community__toggle {
+  padding: 3px 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-primary);
+  background: transparent;
+  cursor: pointer;
+}
+
+.flash-community__refresh:hover:not(:disabled),
+.flash-community__toggle:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.flash-community__refresh:disabled,
+.flash-community__toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.flash-community__list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.flash-community__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.flash-community__set {
+  flex: none;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+
+.flash-community__url {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--dsw-alias-link-text, var(--dsw-alias-interactive-fg-default));
+  text-decoration: none;
+}
+
+.flash-community__url:hover {
+  text-decoration: underline;
+}
+
+.flash-community__import {
+  flex: none;
+  padding: 3px 10px;
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-interactive-fg-default, #4073e0) 45%, transparent);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-interactive-fg-default, #4073e0);
+  background: transparent;
+  cursor: pointer;
+}
+
+.flash-community__import:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--dsw-alias-interactive-fg-default, #4073e0) 12%, transparent);
+}
+
+.flash-community__import:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* Token/url /zip-url fields reuse .flash-weights__input; only wrap + labels. */
+.flash-community__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.flash-community__field-label {
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+
+.flash-community__field-hint {
+  font-style: normal;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.flash-community__submit {
+  padding: 4px 12px;
+  border: none;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--flash-accent, #4176e6);
+  cursor: pointer;
+}
+
+.flash-community__submit:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+.flash-community__submit:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}

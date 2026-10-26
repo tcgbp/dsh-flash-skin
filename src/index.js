@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import z from "@deepseek-ai/schemastery";
 import { parseSingleRange } from "./range.js";
+import { installLikeRoutes } from "./likes.js";
+import { installCommunityRoutes } from "./community.js";
 
 export { parseSingleRange } from "./range.js";
 
@@ -212,6 +214,34 @@ export const Config = z.object({
     }))
     .default([])
     .volatile(),
+  // Optional community-directory target for the C2 share channel. Points at a
+  // public GitHub repo whose tree holds `<path>/<entryId>/<setId>.txt` pointer
+  // files; sharers keep custody of their zip URL (the repo only ever stores the
+  // text pointer — never archive bytes). When absent the community routing is
+  // inert and the C1 text-share channel still works standalone.
+  // Keep non-volatile: this is deliberate admin metadata, not per-user runtime
+  // state, so it persists in the profile patch like any other exposed config.
+  communityDirectory: z.object({
+      /**
+       * GitHub user or organization owning the target repo. Left optional (as
+       * every object sub-field is by default): the loader materialises an
+       * absent object as `{}` during validation, so any `.required()` here
+       * would fail activation for profiles that do not configure sharing.
+       * Completeness is instead checked at request time by getCommunityTarget.
+       */
+      owner: z.string().min(1),
+      /** Repo name holding the community directory tree. */
+      repo: z.string().min(1),
+      /** Default: main. */
+      branch: z.string().default("main"),
+      /** Tree root; default: shares. */
+      path: z.string().default("shares"),
+    })
+    // Object fields are optional unless `.required()`, so an absent top-level
+    // `communityDirectory` validates as `{}` instead of failing activation;
+    // getCommunityTarget then resolves it to null and the C2 channel stays
+    // inert while the C1 text share keeps working.
+  ,
 });
 
 // Live mirror of the volatile section: the loader re-reads it whenever the
@@ -464,11 +494,36 @@ export function apply(ctx, config) {
     const { example, remote } = createNetworkHandlers(activeStreams);
     const exampleRoute = ctx.webServer.register({ kind: "prefixes", path: EXAMPLES_PATH, handler: example });
     const remoteRoute = ctx.webServer.register({ kind: "exact", path: REMOTE_ARCHIVE_PATH, handler: remote });
+    // Community share + like channels. Likes stay T1-in-memory (+ optional T3
+    // durable mirror when a storage backend is present); the community-directory
+    // target resolves at request time from the configured repo, else inert.
+    const { likeRoute, likesRoute } = installLikeRoutes(ctx);
+    const getCommunityTarget = () => {
+      const dir = config?.communityDirectory?.get();
+      if (
+        dir &&
+        typeof dir.owner === "string" && dir.owner &&
+        typeof dir.repo === "string" && dir.repo
+      ) {
+        return {
+          owner: dir.owner,
+          repo: dir.repo,
+          branch: typeof dir.branch === "string" && dir.branch ? dir.branch : "main",
+          path: typeof dir.path === "string" && dir.path ? dir.path : "shares",
+        };
+      }
+      return null;
+    };
+    const { directoryRoute, submitRoute } = installCommunityRoutes(ctx, { getTarget: getCommunityTarget });
     return () => {
       uploadRoute();
       serveRoute();
       exampleRoute();
       remoteRoute();
+      likeRoute();
+      likesRoute();
+      directoryRoute();
+      submitRoute();
     };
   }, "flash-skin: attachment import & serve routes");
 }

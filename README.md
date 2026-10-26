@@ -46,6 +46,30 @@ dsh --profile web --dump-config | grep -B1 -A2 flash-skin
 - `dsh.client.inject` 声明 client 依赖的服务注入；`exports["./client"]` 指向打包产物。
 - client 只渲染 slot 里的 React 组件；本插件注册 `settings.general.item`（外观选项）与 `conversation.input.right`（滑块）两类 slot。
 
+## 分享 + 点赞（社区）
+
+插件提供两条社区渠道，内容共建都走「服务 seam」，绝不直写用户的持久化配置：
+
+### C1：自包含文本分享（零状态、跨设备）
+
+每个肖像组可以打包成**一段自包含文本**：第一行是 manifest 头部 JSON，随后是整组图片字节的 base64url（经 zip 压缩）。接收方把文本粘贴进导入框即可重建整组（ID、中英文名、深浅切换点全在头部里）。实现见 `src/client/logic.ts` 的 `buildShareText` / `parseShareText`。文本可任意大（上限 8 MiB），存入剪贴板发送给朋友即可，不依赖任何后端。
+
+### C2：社区目录（GitHub PR 指针仓库）
+
+- **读**：匿名请求目标仓库的 git tree，遍历 `shares/**/<setId>.txt` 指针文件（内容是分享者自持的 zip 公开 URL），合并成社区目录供一键导入。读取途径是 `git/trees/{branch}?recursive=1` + raw CDN 回落，匿名即可。
+- **写**：aps 分享者在弹窗里填 GitHub 令牌与 zip URL，插件代做 `fork → 写入指针文件 → 提交 PR` 三步（先扫描目录防止同名 setId 冲突，返回 409）。**zip 不入任何仓库**，由分享者自己负责托管 URL。
+- 目录目标：`communityDirectory = { owner, repo, branch?, path? }`（插件设置，volatile，不入 patch）。
+
+### 点赞记账（三档渐进）
+
+- **T2 默认**：本机 `localStorage` 记录已赞态，显示数 = `max(本机已赞?1:0, 社区总数)`（`mergeLikeCount`）。
+- **T3 增强**：若 profile 配了 storage 后端，服务端用 `ctx.storageDomain` durable KV 记账。
+- **T1 兜底**：无后端或写失败时回落到进程内内存账本，全程不抛异常、不脏化配置文档。
+
+### 可选：GitHub Actions 自动合入
+
+默认社区目录走**人工审核**（owner 决定是否 merge 每个 PR）。若希望提交后自动上架，由**目标仓库管理员**放置 `.github/workflows/auto-merge.yml`（非插件内置代码，见 `docs/auto-merge.workflow.yml` 模板）：workflow 第一步做 diff 校验闸门（文件仅限 `shares/**`、文件名匹配、内容仅 http(s) URL 白名单、拒绝 `.github/**` 与其他改动），通过后用 `contents: write` 令牌调用 `POST /repos/{o}/{r}/pulls/{n}/merge`，不通过则关闭 PR 并评论。插件既不内置、也不代管、也不绕过该 workflow 与分支保护。
+
 ## 更多
 
 参考上游：[dsh-liang-skin](https://github.com/kingOfSoySauce/dsh-liang-skin)。社区皮肤市场：[dsh-skin-market](https://github.com/kingOfSoySauce/dsh-skin-market)。

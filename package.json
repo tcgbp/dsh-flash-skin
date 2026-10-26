@@ -25,6 +25,8 @@
     "locale/en.json",
     "src/index.js",
     "src/range.js",
+    "src/likes.js",
+    "src/community.js",
     "icon.svg",
     "README.md",
     "examples/portrait-archives",

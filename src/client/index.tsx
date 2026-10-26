@@ -38,8 +38,13 @@ import {
   type EffortLike,
   type Palette,
   type PortraitImportMeta,
+  type PortraitGroupManifestSource,
   type SpeedTuning,
   buildPortraitManifest,
+  buildShareText,
+  parseShareText,
+  mergeLikeCount,
+  type CommunityEntry,
   parseImportMetaText,
 } from "./logic";
 import { zipSync, strToU8, unzipSync, gunzipSync } from "./vendor/fflate";
@@ -58,6 +63,15 @@ const ATTACHMENT_PATH = `/plugins/${PACKAGE_ID}/attachment`;
 // this prefix) and a server-side proxy for pasting any http(s) archive URL.
 const EXAMPLES_PREFIX = `/plugins/${PACKAGE_ID}/examples/`;
 const REMOTE_ARCHIVE_PATH = `/plugins/${PACKAGE_ID}/archive`;
+// Social channels (C1 text share + C2 community directory/likes). These exact
+// routes mirror src/likes.js and src/community.js path exports.
+const LIKE_PATH = `/plugins/${PACKAGE_ID}/like`;
+const LIKES_PATH = `/plugins/${PACKAGE_ID}/likes`;
+const COMMUNITY_PATH = `/plugins/${PACKAGE_ID}/community`;
+const COMMUNITY_SUBMIT_PATH = `/plugins/${PACKAGE_ID}/community/submit`;
+// Per-device like bookkeeping, keyed by group id ({ [groupId]: boolean }). Not
+// part of the persisted config document, so liking never dirties the patch.
+const FLASH_SKIN_LIKED_KEY = "flash-skin:liked-by-id";
 // Archives bundled into the package (whitelisted in package.json `files`) and
 // offered as one-tap quick imports. Labels are shown in both languages so the
 // picker is usable regardless of the current UI language.
@@ -82,6 +96,64 @@ const MEDIA_TYPE_BY_EXT: Record<string, string> = {
   ".webp": "image/webp",
   ".gif": "image/gif",
 };
+
+// Like bookkeeping: persisted per device under FLASH_SKIN_LIKED_KEY (group id →
+// boolean). Pure/localStorage guarded so a missing or full store degrades to a
+// session-only in-memory ledger instead of throwing.
+function readLikedStore(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(FLASH_SKIN_LIKED_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const out: Record<string, boolean> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === "boolean") out[key] = value;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writeLikedStore(next: Record<string, boolean>): Record<string, boolean> {
+  try {
+    localStorage.setItem(FLASH_SKIN_LIKED_KEY, JSON.stringify(next));
+  } catch {
+    // localStorage 不可用时仅本次会话生效。
+  }
+  return next;
+}
+
+// Clipboard copy with a legacy textarea fallback for browsers that gate
+// navigator.clipboard behind a secure-context / permission requirement.
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      /* fall through to the textarea trick */
+    }
+  }
+  return fallbackCopyText(text);
+}
+
+function fallbackCopyText(text: string): boolean {
+  try {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.left = "-9999px";
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand("copy");
+    area.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+}
 
 // The three original built-in sets (storm/blaze/frost, later renamed to
 // liangsheng/liangshen/liangzu) were archived out of the plugin: their art now
@@ -1453,10 +1525,48 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "importExamplesTitle": "内置示例包",
     "importExamplesHint": "点击即可把内置示例包导入为一个新组：",
     "importNetTitle": "或从网络导入任意压缩包",
-    "netUrlPlaceholder": "粘贴压缩包 URL（http/https，.zip/.tar/.tar.gz）",
+    "netUrlPlaceholder": "粘贴压缩包 URL，或朋友发来的本插件分享文本",
     "importNet": "从网络导入",
-    "netEmpty": "请输入要导入的压缩包 URL",
+    "netEmpty": "请输入要导入的压缩包 URL 或分享文本",
     "zipBadLink": "无法导入：请输入指向 .zip / .tar / .tar.gz 的 http/https 链接",
+    "like": "点赞",
+    "likeTitle": "为这组肖像点赞",
+    "likeCount": "本组获赞 {n} 次",
+    "likeSyncFailed": "点赞未同步到社区，已在本机记录",
+    "shareGroup": "分享",
+    "shareGroupTitle": "把本组图片连同标识、名称、深浅切换点打包成一段自包含文本，可粘贴给任何人直接导入",
+    "shareNoImages": "该组没有图片，无可分享",
+    "sharePacking": "正在打包…",
+    "sharePanelTitle": "分享「{name}」",
+    "sharePanelHint": "下面这段文本已包含本组的全部图片与元数据，复制后发送给朋友，对方粘贴到导入框即可重建整组。文本较大，请完整复制。",
+    "shareCopy": "复制",
+    "shareCopied": "已复制，可粘贴给朋友",
+    "shareClose": "关闭",
+    "shareTooBig": "本组打包后过大，无法生成分享文本",
+    "shareFailed": "分享失败：部分图片无法下载",
+    "communityTitle": "社区分享",
+    "communityAutoMergeTitle": "GitHub 自动合入为可选增强：需由仓库管理员在目标仓库放置 auto-merge workflow",
+    "communityBrowse": "社区目录",
+    "communityBrowseTitle": "浏览社区分享的肖像组并直接导入（压缩包由分享者自行托管）",
+    "communityRefresh": "刷新",
+    "communityLoading": "正在获取社区目录…",
+    "communityEmpty": "社区还没有分享。点「分享到社区」成为第一个分享者。",
+    "communityError": "社区目录暂不可用",
+    "communityNotConfigured": "社区目录尚未配置（插件设置中的 communityDirectory），浏览暂不可用；仍可直接把「分享」文本发给朋友。",
+    "communityImport": "导入",
+    "communityImportTitle": "从该链接导入为一个新组",
+    "communityJoin": "分享到社区",
+    "communitySubmitTitle": "把本组的文本指针提交进社区目录，供所有人浏览导入",
+    "communityFormTokenLabel": "GitHub 访问令牌",
+    "communityFormTokenHint": "建议使用仅具 repo 权限的 Personal Access Token：插件会代你 fork 目标仓库、提交文本指针并创建 Pull Request。",
+    "communityFormUrlLabel": "压缩包 URL",
+    "communityFormUrlHint": "该压缩包由你自己托管（任意公开 URL）；社区仓库只存这一行文本指针。",
+    "communitySubmit": "提交分享",
+    "communitySubmitting": "正在提交 PR…",
+    "communitySubmitDone": "已提交 PR：{url}（默认人工审核，是否即时上架取决于仓库合入策略）",
+    "communitySubmitFailed": "提交失败：{message}",
+    "communityTokenMissing": "请输入 GitHub 访问令牌",
+    "communityUrlMissing": "请输入压缩包 URL",
   },
   en: {
     "loading": "Loading…",
@@ -1515,10 +1625,48 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "importExamplesTitle": "Bundled examples",
     "importExamplesHint": "Click to import a bundled example as a new group:",
     "importNetTitle": "Or import any archive from the network",
-    "netUrlPlaceholder": "Paste an archive URL (http/https, .zip/.tar/.tar.gz)",
+    "netUrlPlaceholder": "Paste an archive URL, or a share text a friend sent you",
     "importNet": "Import from network",
-    "netEmpty": "Enter the archive URL to import",
+    "netEmpty": "Enter the archive URL or share text to import",
     "zipBadLink": "Could not import: please paste an http(s) link to a .zip / .tar / .tar.gz archive",
+    "like": "Like",
+    "likeTitle": "Like this portrait group",
+    "likeCount": "This group has {n} likes",
+    "likeSyncFailed": "Like not synced to the community; recorded on this device",
+    "shareGroup": "Share",
+    "shareGroupTitle": "Package this group's images plus id, names and dark level into a self-contained text anyone can import",
+    "shareNoImages": "This group has no images to share",
+    "sharePacking": "Packing…",
+    "sharePanelTitle": "Share “{name}”",
+    "sharePanelHint": "This text already contains every image and all metadata of the group. Copy it and send it to a friend — they paste it into the import field to rebuild the whole group. The text is large, so copy it completely.",
+    "shareCopy": "Copy",
+    "shareCopied": "Copied — paste it to a friend",
+    "shareClose": "Close",
+    "shareTooBig": "This group is too large to share as text",
+    "shareFailed": "Share failed: some images could not be downloaded",
+    "communityTitle": "Community shares",
+    "communityAutoMergeTitle": "GitHub auto-merge is an optional enhancement: the repo admin drops an auto-merge workflow into the target repository",
+    "communityBrowse": "Community directory",
+    "communityBrowseTitle": "Browse portrait groups shared by the community and import directly (archives are hosted by the sharers themselves)",
+    "communityRefresh": "Refresh",
+    "communityLoading": "Loading community directory…",
+    "communityEmpty": "No community shares yet — press “Share to community” to be the first.",
+    "communityError": "Community directory is unavailable",
+    "communityNotConfigured": "No community directory is configured (communityDirectory in the plugin settings); browsing is unavailable, but you can still share text to friends directly.",
+    "communityImport": "Import",
+    "communityImportTitle": "Import from this link as a new group",
+    "communityJoin": "Share to community",
+    "communitySubmitTitle": "Submit this group's text pointer into the community directory for everyone to browse and import",
+    "communityFormTokenLabel": "GitHub access token",
+    "communityFormTokenHint": "A Personal Access Token with repo scope is recommended: the plugin forks the target repo, commits the text pointer and opens a pull request for you.",
+    "communityFormUrlLabel": "Archive URL",
+    "communityFormUrlHint": "Host this zip yourself (any public URL); the community repo only stores this one-line text pointer.",
+    "communitySubmit": "Submit share",
+    "communitySubmitting": "Submitting PR…",
+    "communitySubmitDone": "PR submitted: {url} (manual review by default; visibility depends on the repo's merge policy)",
+    "communitySubmitFailed": "Submit failed: {message}",
+    "communityTokenMissing": "Please enter a GitHub access token",
+    "communityUrlMissing": "Please enter an archive URL",
     "exportGroup": "Export archive",
     "exportGroupTitle": "Pack all frames plus this group's metadata (id, Chinese/English names, light/dark threshold) into a downloadable .zip that imports straight back",
     "exportNoImages": "This group has no images — nothing to export",
@@ -1948,6 +2096,216 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
     }
   };
 
+  // ── Likes ─────────────────────────────────────────────────────────────────
+  // Per-device like bookkeeping reconciled with the server's community totals
+  // as max(local, community) — a group we liked shows ≥1 even while offline or
+  // before the like round-trips. This route is read-only w.r.t. the config
+  // document, so liking is allowed even when it is not writable.
+  const [likedById, setLikedById] = useState<Record<string, boolean>>(() => readLikedStore());
+  const [communityLikes, setCommunityLikes] = useState<Record<string, number>>({});
+  const [likesError, setLikesError] = useState<string | null>(null);
+  const isLikedById = (groupId: string) => !!likedById[groupId];
+  const likeCountFor = (groupId: string) => mergeLikeCount(isLikedById(groupId), communityLikes[groupId]);
+
+  // One-shot best-effort fetch of community like totals on mount.
+  useEffect(() => {
+    let cancelled = false;
+    fetch(LIKES_PATH)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((payload: unknown) => {
+        if (cancelled || !payload || typeof payload !== "object") return;
+        const counts = (payload as { counts?: unknown }).counts;
+        if (counts && typeof counts === "object") {
+          const normalized: Record<string, number> = {};
+          for (const [key, value] of Object.entries(counts)) {
+            if (typeof value === "number" && Number.isFinite(value) && value > 0) normalized[key] = value;
+          }
+          setCommunityLikes(normalized);
+        }
+      })
+      .catch(() => {
+        // Offline / first run: local bookkeeping stays authoritative, never throw.
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  const toggleLike = async (groupIndex: number) => {
+    const group = groups[groupIndex];
+    if (!group || busy) return;
+    const next = !likedById[group.id];
+    setLikedById((prev) => writeLikedStore({ ...prev, [group.id]: next }));
+    setLikesError(null);
+    try {
+      const response = await fetch(LIKE_PATH, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ groupId: group.id }),
+      });
+      const payload = (await response.json().catch(() => null)) as { count?: unknown } | null;
+      if (payload && typeof payload === "object" && typeof payload.count === "number") {
+        setCommunityLikes((prev) => ({ ...prev, [group.id]: payload.count as number }));
+      }
+    } catch {
+      setLikesError(t("likeSyncFailed"));
+    }
+  };
+
+  // ── C1 share panel ────────────────────────────────────────────────────────
+  // Packs one group (images + identity manifest) into a self-contained text the
+  // user copies out; read-only, so it works even when the document is not
+  // writable. The same packing also feeds the C2 community submit below.
+  const [shareFor, setShareFor] = useState<{ index: number; name: string } | null>(null);
+  const [shareText, setShareText] = useState("");
+  const [sharePhase, setSharePhase] = useState<"idle" | "packing" | "ready">("idle");
+  const [shareNotice, setShareNotice] = useState<string | null>(null);
+  const [shareCopied, setShareCopied] = useState(false);
+
+  const shareGroup = async (groupIndex: number) => {
+    const group = groups[groupIndex];
+    if (!group) return;
+    if (group.images.length === 0) {
+      setShareFor({ index: groupIndex, name: group.name || group.id });
+      setSharePhase("ready");
+      setShareText("");
+      setShareNotice(t("shareNoImages"));
+      setShareCopied(false);
+      return;
+    }
+    setShareFor({ index: groupIndex, name: group.name || group.id });
+    setSharePhase("packing");
+    setShareText("");
+    setShareNotice(null);
+    setShareCopied(false);
+    try {
+      const frames: { bytes: Uint8Array; ext: string }[] = [];
+      for (const source of group.images) {
+        try {
+          const bytes = await fetchExportImageBytes(source);
+          frames.push({ bytes, ext: extensionForImageUrl(source, bytes) });
+        } catch {
+          setSharePhase("ready");
+          setShareNotice(t("shareFailed"));
+          return;
+        }
+      }
+      const entries: Record<string, Uint8Array | [Uint8Array, { level: number }]> = {
+        "portrait.yaml": [strToU8(buildPortraitManifest(group)), { level: 6 }],
+      };
+      frames.forEach((frame, index) => {
+        entries[`${index}${frame.ext}`] = frame.bytes;
+      });
+      const text = buildShareText(zipSync(entries, { level: 6 }), group);
+      if (!text) {
+        setSharePhase("ready");
+        setShareNotice(t("shareTooBig"));
+        return;
+      }
+      setShareText(text);
+      setSharePhase("ready");
+    } catch {
+      setSharePhase("ready");
+      setShareNotice(t("shareFailed"));
+    }
+  };
+
+  const copyShare = async () => {
+    if (!shareText) return;
+    if (await copyTextToClipboard(shareText)) setShareCopied(true);
+  };
+
+  // ── C2 community directory + submit ───────────────────────────────────────
+  const [communityOpen, setCommunityOpen] = useState(false);
+  const [communityPhase, setCommunityPhase] = useState<"idle" | "loading" | "ready">("idle");
+  const [communityEntries, setCommunityEntries] = useState<CommunityEntry[]>([]);
+  const [communityError, setCommunityError] = useState<string | null>(null);
+  const [communityNotConfigured, setCommunityNotConfigured] = useState(false);
+  const [submitToken, setSubmitToken] = useState("");
+  const [submitUrl, setSubmitUrl] = useState("");
+  const [submitPhase, setSubmitPhase] = useState<"idle" | "submitting" | "done" | "error">("idle");
+  const [submitMessage, setSubmitMessage] = useState<string | null>(null);
+
+  const fetchCommunity = async () => {
+    setCommunityPhase("loading");
+    setCommunityError(null);
+    setCommunityNotConfigured(false);
+    try {
+      const response = await fetch(COMMUNITY_PATH);
+      const payload = (await response.json().catch(() => null)) as
+        | { configured?: unknown; entries?: unknown; error?: { code?: string } | null }
+        | null;
+      if (!payload || typeof payload !== "object") {
+        setCommunityError(t("communityError"));
+        return;
+      }
+      setCommunityNotConfigured(payload.configured !== true && !payload.error);
+      setCommunityEntries(
+        Array.isArray(payload.entries)
+          ? (payload.entries.filter(
+              (entry): entry is CommunityEntry =>
+                typeof entry === "object" && entry !== null &&
+                typeof (entry as CommunityEntry).setId === "string" &&
+                typeof (entry as CommunityEntry).url === "string" &&
+                typeof (entry as CommunityEntry).entryId === "string",
+            ))
+          : [],
+      );
+      if (payload.error) setCommunityError(t("communityError"));
+    } catch {
+      setCommunityError(t("communityError"));
+    } finally {
+      setCommunityPhase("ready");
+    }
+  };
+
+  useEffect(() => {
+    if (communityOpen && communityPhase === "idle") void fetchCommunity();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [communityOpen, communityPhase]);
+
+  const importCommunityEntry = (url: string) => {
+    void importFromUrl(url);
+  };
+
+  const submitCommunityShare = async (groupIndex: number) => {
+    const group = groups[groupIndex];
+    const token = submitToken.trim();
+    const url = submitUrl.trim();
+    if (!group) return;
+    if (!token) {
+      setSubmitPhase("error");
+      setSubmitMessage(t("communityTokenMissing"));
+      return;
+    }
+    if (!url) {
+      setSubmitPhase("error");
+      setSubmitMessage(t("communityUrlMissing"));
+      return;
+    }
+    setSubmitPhase("submitting");
+    setSubmitMessage(null);
+    try {
+      const response = await fetch(COMMUNITY_SUBMIT_PATH, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, setId: group.id, url }),
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | { ok?: unknown; pr?: { htmlUrl?: unknown }; error?: { code?: string } }
+        | null;
+      if (payload && payload.ok && payload.pr && typeof payload.pr.htmlUrl === "string") {
+        setSubmitPhase("done");
+        setSubmitMessage(t("communitySubmitDone").replace("{url}", payload.pr.htmlUrl));
+      } else {
+        const code = payload?.error?.code;
+        setSubmitPhase("error");
+        setSubmitMessage(t("communitySubmitFailed").replace("{message}", code && code !== "internal" ? code : t("communityError")));
+      }
+    } catch {
+      setSubmitPhase("error");
+      setSubmitMessage(t("communitySubmitFailed").replace("{message}", t("communityError")));
+    }
+  };
+
   const t = (key: string): string => {
     if (typeof localeT === "function") return localeT(key);
     return CONFIG_TEXTS.en[key] ?? key;
@@ -2273,7 +2631,11 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
   // bundled examples and pasted network URLs all funnel into this so they
   // behave identically (same parse, same upload, same conflict handling).
   // Handles the parse → upload → insert pipeline and any error/conflict notice.
-  const runArchiveImport = async (name: string, buffer: ArrayBuffer) => {
+  const runArchiveImport = async (
+    name: string,
+    buffer: ArrayBuffer,
+    shareMeta?: PortraitGroupManifestSource,
+  ) => {
     if (!writable || busy) return;
     setBusy(true);
     try {
@@ -2288,6 +2650,15 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
       } catch {
         setFileError(t("zipParseFailed"));
         return;
+      }
+      // A pasted C1 share line carries the original group's settings verbatim in
+      // its header manifest — including the raw (possibly non-integer, fine-grained)
+      // light/dark threshold that the archive's rounded portrait.yaml would blur to
+      // the nearest slider stop. Prefer the header so a share → import round-trip
+      // restores the divider exactly where it was on the exporting device. Any
+      // archive-side metadata (e.g. a URL-only `images:` seed list) still merges in.
+      if (shareMeta) {
+        meta = { ...shareMeta, ...(meta ?? {}) };
       }
       // The manifest may carry `images:` URLs to seed the group when the archive
       // itself ships no embedded frames (a tiny, URL-only manifest archive).
@@ -2348,14 +2719,37 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
     }
   };
 
-  // Fetch and import an archive from a pasted http(s) URL. The fetch goes
-  // through the server-side proxy route so a hosting site's CORS policy never
-  // blocks the request; the returned bytes hit the same engine as a local pick.
+  // Fetch and import an archive from a pasted http(s) URL, or decode a pasted
+  // C1 share text. The URL fetch goes through the server-side proxy route so a
+  // hosting site's CORS policy never blocks the request; both paths sink into
+  // the same engine as a local pick. Read-only, so imports work even when the
+  // document is not writable — the group is staged for a later save.
   const importFromUrl = async (rawUrl: string) => {
     if (!writable || busy) return;
     const trimmed = rawUrl.trim();
     if (!trimmed) {
       setFileError(t("netEmpty"));
+      return;
+    }
+    // A C1 share line carries the whole archive inline; rebuild from its bytes
+    // instead of fetching anything. Guarded here (not in the UI) so both the
+    // network input and the community panel accept a share paste.
+    const share = parseShareText(trimmed);
+    if (share) {
+      const slug = (share.manifest.id || "").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+      const name = `${slug || "share"}.zip`;
+      setFileError(null);
+      setBusy(true);
+      try {
+        const zipBytes = share.zip;
+        const buffer = new ArrayBuffer(zipBytes.byteLength);
+        new Uint8Array(buffer).set(zipBytes);
+        await runArchiveImport(name, buffer, share.manifest);
+      } catch {
+        setFileError(t("zipParseFailed"));
+      } finally {
+        setBusy(false);
+      }
       return;
     }
     let name: string;
@@ -2596,6 +2990,27 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
                   </button>
                   <button
                     type="button"
+                    className={isLikedById(group.id) ? "flash-portrait-group__like flash-portrait-group__like--on" : "flash-portrait-group__like"}
+                    title={t("likeTitle")}
+                    aria-pressed={isLikedById(group.id)}
+                    // Liking is route-based bookkeeping, read-only w.r.t. the
+                    // config document, so it works even when it is not writable.
+                    disabled={busy}
+                    onClick={() => void toggleLike(groupIndex)}
+                  >
+                    {isLikedById(group.id) ? "♥" : "♡"} {likeCountFor(group.id)}
+                  </button>
+                  <button
+                    type="button"
+                    className="flash-portrait-group__share"
+                    title={t("shareGroupTitle")}
+                    disabled={busy || group.images.length === 0}
+                    onClick={() => void shareGroup(groupIndex)}
+                  >
+                    {t("shareGroup")}
+                  </button>
+                  <button
+                    type="button"
                     className="flash-portrait-group__export"
                     title={t("exportGroupTitle")}
                     // Export is read-only (never mutates the config), so it also
@@ -2812,6 +3227,66 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
         })}
       </ol>
 
+      {communityOpen && (
+        <section className="flash-community" data-plugin={PACKAGE_ID}>
+          <header className="flash-community__head">
+            <h3 className="flash-community__title">{t("communityTitle")}</h3>
+            <a
+              className="flash-community__learn"
+              href="https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/incorporating-changes-from-a-pull-request/automatically-merging-a-pull-request"
+              target="_blank"
+              rel="noreferrer"
+            >
+              {t("communityAutoMergeTitle")}
+            </a>
+            <button
+              type="button"
+              className="flash-community__refresh"
+              disabled={communityPhase === "loading"}
+              onClick={() => void fetchCommunity()}
+              title={t("communityRefresh")}
+            >
+              {t("communityRefresh")}
+            </button>
+          </header>
+          {communityPhase === "loading" && (
+            <p className="flash-portrait-groups__notice" role="status">{t("communityLoading")}</p>
+          )}
+          {communityPhase === "ready" && communityError && (
+            <p className="flash-portrait-groups__notice flash-portrait-groups__notice--error" role="alert">
+              {communityError}
+            </p>
+          )}
+          {communityPhase === "ready" && !communityError && communityNotConfigured && (
+            <p className="flash-portrait-groups__hint">{t("communityNotConfigured")}</p>
+          )}
+          {communityPhase === "ready" && !communityError && !communityNotConfigured && communityEntries.length === 0 && (
+            <p className="flash-portrait-groups__hint">{t("communityEmpty")}</p>
+          )}
+          {communityPhase === "ready" && !communityError && !communityNotConfigured && communityEntries.length > 0 && (
+            <ul className="flash-community__list">
+              {communityEntries.map((entry) => (
+                <li key={entry.entryId || entry.setId} className="flash-community__item">
+                  <span className="flash-community__set">{entry.setId}</span>
+                  <a className="flash-community__url" href={entry.url} target="_blank" rel="noreferrer" title={entry.url}>
+                    {entry.url}
+                  </a>
+                  <button
+                    type="button"
+                    className="flash-community__import"
+                    disabled={!writable || busy}
+                    onClick={() => void importCommunityEntry(entry.url)}
+                    title={t("communityImportTitle")}
+                  >
+                    {t("communityImport")}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
+
       <footer className="flash-portrait-groups__foot">
         <button type="button" disabled={!writable || busy} onClick={addGroup}>
           + {t("addGroup")}
@@ -2824,6 +3299,16 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
           aria-label={t("importGroupTitle")}
         >
           {t("importGroup")}
+        </button>
+        <button
+          type="button"
+          className="flash-community__toggle"
+          disabled={busy}
+          aria-pressed={communityOpen}
+          onClick={() => setCommunityOpen((value) => !value)}
+          title={t("communityBrowseTitle")}
+        >
+          {t("communityBrowse")}
         </button>
         {busy && <span className="flash-portrait-groups__notice" role="status">…</span>}
       </footer>
@@ -2965,6 +3450,121 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
             draggable={false}
             onClick={(event) => event.stopPropagation()}
           />
+        </div>
+      )}
+
+      {shareFor && (
+        <div
+          className="flash-share"
+          role="dialog"
+          aria-modal="true"
+          aria-label={t("sharePanelTitle").replace("{name}", shareFor.name)}
+          onClick={() => setShareFor(null)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") setShareFor(null);
+          }}
+        >
+          <div className="flash-share__box" onClick={(event) => event.stopPropagation()}>
+            <header className="flash-share__head">
+              <h3 className="flash-share__title">{t("sharePanelTitle").replace("{name}", shareFor.name)}</h3>
+              <button
+                type="button"
+                className="flash-lightbox__close"
+                onClick={() => setShareFor(null)}
+                title={t("shareClose")}
+                aria-label={t("shareClose")}
+              >
+                ✕
+              </button>
+            </header>
+
+            <p className="flash-portrait-groups__hint">{t("sharePanelHint")}</p>
+
+            {sharePhase === "packing" && (
+              <p className="flash-portrait-groups__notice" role="status">{t("sharePacking")}</p>
+            )}
+
+            {sharePhase === "ready" && shareText && (
+              <>
+                <textarea
+                  className="flash-share__text"
+                  readOnly
+                  spellCheck={false}
+                  value={shareText}
+                  onClick={(event) => event.currentTarget.select()}
+                />
+                <div className="flash-share__actions">
+                  <button
+                    type="button"
+                    className="flash-share__copy"
+                    onClick={() => void copyShare()}
+                    title={t("shareCopy")}
+                  >
+                    {t("shareCopy")}
+                  </button>
+                  {shareCopied && <span className="flash-portrait-groups__notice" role="status">{t("shareCopied")}</span>}
+                  <button type="button" onClick={() => setShareFor(null)}>{t("shareClose")}</button>
+                </div>
+              </>
+            )}
+
+            {sharePhase === "ready" && !shareText && shareNotice && (
+              <p className="flash-portrait-groups__notice flash-portrait-groups__notice--error" role="alert">
+                {shareNotice}
+              </p>
+            )}
+
+            <section className="flash-share__community">
+              <h4 className="flash-share__community-title">{t("communityJoin")}</h4>
+              <p className="flash-portrait-groups__hint">{t("communitySubmitTitle")}</p>
+              <label className="flash-community__field">
+                <span className="flash-community__field-label">{t("communityFormTokenLabel")}</span>
+                <input
+                  type="password"
+                  className="flash-weights__input"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  value={submitToken}
+                  onChange={(event) => setSubmitToken(event.currentTarget.value)}
+                  placeholder="ghp_…"
+                />
+                <em className="flash-community__field-hint">{t("communityFormTokenHint")}</em>
+              </label>
+              <label className="flash-community__field">
+                <span className="flash-community__field-label">{t("communityFormUrlLabel")}</span>
+                <input
+                  type="text"
+                  className="flash-weights__input"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  value={submitUrl}
+                  onChange={(event) => setSubmitUrl(event.currentTarget.value)}
+                  placeholder="https://…/group.zip"
+                />
+                <em className="flash-community__field-hint">{t("communityFormUrlHint")}</em>
+              </label>
+              <div className="flash-share__actions">
+                <button
+                  type="button"
+                  className="flash-community__submit"
+                  disabled={submitPhase === "submitting" || submitToken.trim() === "" || submitUrl.trim() === ""}
+                  onClick={() => void submitCommunityShare(shareFor.index)}
+                >
+                  {submitPhase === "submitting" ? t("communitySubmitting") : t("communitySubmit")}
+                </button>
+              </div>
+              {submitPhase === "done" && submitMessage && (
+                <p className="flash-portrait-groups__notice" role="status">{submitMessage}</p>
+              )}
+              {submitPhase === "error" && submitMessage && (
+                <p className="flash-portrait-groups__notice flash-portrait-groups__notice--error" role="alert">
+                  {submitMessage}
+                </p>
+              )}
+            </section>
+          </div>
         </div>
       )}
     </section>

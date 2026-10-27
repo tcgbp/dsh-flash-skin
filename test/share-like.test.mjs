@@ -6,13 +6,17 @@ import {
   SHARE_MAX_BYTES,
 } from "../src/client/logic.ts";
 import {
+  COMMUNITY_PROVIDERS,
+  createCommunityClient,
   normalizeCommunitySetId,
   buildCommunityEntryName,
   parseCommunityEntryName,
   parseCommunityEntryText,
   parseCommunityTreePaths,
+  providerFor,
   readCommunityLikes,
   submitCommunityLikes,
+  submitCommunityShare,
 } from "../src/community.js";
 
 describe("C1 share codec (logic.ts)", () => {
@@ -373,6 +377,77 @@ describe("C2 community helper functions (community.js)", () => {
       const res = await submitCommunityLikes(client, target, { token: "tok", counts: { a: 1 } });
       expect(res.ok).toBe(false);
       expect(res.error.code).toMatch(/(auth|rate-limited|branch|fork)/);
+    });
+  });
+
+  describe("Gitee provider shim (community.js)", () => {
+    const giteeTarget = { owner: "octo", repo: "cats", provider: "gitee", branch: "master", path: "shares" };
+
+    it("resolves provider kind and falls back to github for unknown values", () => {
+      expect(providerFor({ provider: "gitee" }).kind).toBe("gitee");
+      expect(providerFor({ provider: "github" }).kind).toBe("github");
+      expect(providerFor({ provider: "gitlab" }).kind).toBe("github");
+      expect(providerFor({}).kind).toBe("github");
+      expect(providerFor(null).kind).toBe("github");
+      expect(COMMUNITY_PROVIDERS.gitee.label).toMatch(/gitee/i);
+    });
+
+    it("builds a Gitee raw URL with ref and access_token auth", async () => {
+      const urls = [];
+      const fakeFetch = async (url) => { urls.push(url); return { ok: true, text: async () => "https://cdn/x.zip" }; };
+      const client = createCommunityClient(COMMUNITY_PROVIDERS.gitee, fakeFetch);
+      expect(client.provider.kind).toBe("gitee");
+      const text = await client.rawText(
+        [encodeURIComponent("octo"), encodeURIComponent("cats"), encodeURIComponent("master"), encodeURIComponent("shares"), encodeURIComponent("d1")].join("/")
+      );
+      expect(text).toBe("https://cdn/x.zip");
+      expect(urls[0]).toContain("https://gitee.com/api/v5/repos/octo/cats/raw/shares/d1?ref=master");
+    });
+
+    it("writes likes through the Gitee POST /contents + fork_path PR flow", async () => {
+      const calls = [];
+      const fakeFetch = async (url, init = {}) => {
+        const method = init.method || "GET";
+        calls.push({ method, url, body: init.body ? JSON.parse(init.body) : null });
+        const api = url.split("?")[0];
+        if (api.endsWith("/forks")) {
+          return { status: 200, text: async () => JSON.stringify({ id: 1, full_name: "forky/cats", namespace: { path: "forky" } }) };
+        }
+        if (/\/branches\/master$/.test(api)) {
+          return { status: 200, text: async () => JSON.stringify({ name: "master", commit: { sha: "abc123" } }) };
+        }
+        if (/\/branches$/.test(api) && method === "POST") {
+          return { status: 201, text: async () => JSON.stringify({ name: "x" }) };
+        }
+        if (/\/contents\//.test(api) && method === "POST") {
+          return { status: 201, text: async () => JSON.stringify({}) };
+        }
+        if (/\/pulls$/.test(api) && method === "POST") {
+          return { status: 200, text: async () => JSON.stringify({ number: 11, html_url: "https://gitee.com/octo/cats/pulls/11", state: "open" }) };
+        }
+        return { status: 200, text: async () => "{}" };
+      };
+      const client = createCommunityClient(COMMUNITY_PROVIDERS.gitee, fakeFetch);
+      const res = await submitCommunityLikes(client, giteeTarget, { token: "tok", counts: { "han-li": 3 } });
+
+      expect(res.ok).toBe(true);
+      expect(res.pr.number).toBe(11);
+      expect(res.pr.htmlUrl).toBe("https://gitee.com/octo/cats/pulls/11");
+
+      const fork = calls.find((c) => c.url.split("?")[0].endsWith("/forks") && c.method === "POST");
+      expect(fork).toBeTruthy();
+      // Gitee authenticates via query param, not a Bearer header.
+      expect(fork.url).toContain("access_token=tok");
+
+      expect(calls.some((c) => c.method === "POST" && /\/contents\/shares\/likes\.json/.test(c.url))).toBe(true);
+      // Gitee creates branches at /branches (not /git/refs).
+      const pathOf = (u) => u.split("?")[0];
+      expect(calls.some((c) => c.method === "POST" && pathOf(c.url).endsWith("/branches") && !/contents/.test(pathOf(c.url)))).toBe(true);
+      expect(calls.some((c) => c.method === "POST" && pathOf(c.url).endsWith("/git/refs"))).toBe(false);
+
+      const pr = calls.find((c) => c.method === "POST" && /\/pulls/.test(c.url));
+      expect(pr.url).toContain("access_token=tok");
+      expect(pr.body.fork_path).toBe("forky/cats");
     });
   });
 });

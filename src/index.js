@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import z from "@deepseek-ai/schemastery";
 import { parseSingleRange } from "./range.js";
 import { installLikeRoutes } from "./likes.js";
-import { createGitHubClient, installCommunityRoutes, readCommunityLikes, submitCommunityLikes } from "./community.js";
+import { COMMUNITY_PROVIDERS, createCommunityClient, installCommunityRoutes, readCommunityLikes, submitCommunityLikes } from "./community.js";
 
 export { parseSingleRange } from "./range.js";
 
@@ -232,6 +232,13 @@ export const Config = z.object({
       owner: z.string().min(1),
       /** Repo name holding the community directory tree. */
       repo: z.string().min(1),
+      /**
+       * Community platform for the directory channel: `github` (default) or
+       * `gitee`. Selects the provider shim used for every read (tree/raw) and
+       * write (fork→branch→contents→PR) call. Unknown values fall back to
+       * github to keep the config backward compatible.
+       */
+      provider: z.string().default("github"),
       /** Default: main. */
       branch: z.string().default("main"),
       /** Tree root; default: shares. */
@@ -510,7 +517,20 @@ export function apply(ctx, config) {
     // durable mirror when a storage backend is present and an optional PR-backed
     // community sync when a likesToken is configured); the community-directory
     // target resolves at request time from the configured repo, else inert.
-    const communityClient = createGitHubClient(globalThis.fetch);
+    // Built lazily so the provider (github|gitee) always matches the current
+    // config value; every operation resolves its own fresh client. Falls back
+    // to the GitHub shim when the provider field is absent or unknown.
+    const clientForConfig = () => {
+      const dir = config?.communityDirectory?.get();
+      const kind = dir && typeof dir.provider === "string" && dir.provider ? dir.provider : "github";
+      return createCommunityClient(COMMUNITY_PROVIDERS[kind] || COMMUNITY_PROVIDERS.github, globalThis.fetch);
+    };
+    const getCommunityClient = () => clientForConfig();
+    const communityRoutesClient = {
+      get provider() { return clientForConfig().provider; },
+      ghJson: (path, opts) => clientForConfig().ghJson(path, opts),
+      rawText: (rel, opts) => clientForConfig().rawText(rel, opts),
+    };
     const getCommunityTarget = () => {
       const dir = config?.communityDirectory?.get();
       if (
@@ -518,9 +538,11 @@ export function apply(ctx, config) {
         typeof dir.owner === "string" && dir.owner &&
         typeof dir.repo === "string" && dir.repo
       ) {
+        const kind = typeof dir.provider === "string" && dir.provider ? dir.provider : "github";
         return {
           owner: dir.owner,
           repo: dir.repo,
+          provider: COMMUNITY_PROVIDERS[kind] ? kind : "github",
           branch: typeof dir.branch === "string" && dir.branch ? dir.branch : "main",
           path: typeof dir.path === "string" && dir.path ? dir.path : "shares",
         };
@@ -538,7 +560,7 @@ export function apply(ctx, config) {
       // seed the ledger, then debounced-flushes the merged snapshot through a
       // single PR channel. Absent/disabled → pure local T1 (+optional T3).
       community: {
-        getClient: () => communityClient,
+        getClient: getCommunityClient,
         getTarget: getCommunityTarget,
         getLikesToken,
         readCommunityLikes,
@@ -546,7 +568,7 @@ export function apply(ctx, config) {
         debounceMs: 30_000,
       },
     });
-    const { directoryRoute, submitRoute } = installCommunityRoutes(ctx, { getTarget: getCommunityTarget, client: communityClient });
+    const { directoryRoute, submitRoute } = installCommunityRoutes(ctx, { getTarget: getCommunityTarget, client: communityRoutesClient });
     return () => {
       uploadRoute();
       serveRoute();

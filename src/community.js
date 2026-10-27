@@ -30,6 +30,7 @@ export const COMMUNITY_SUBMIT_PATH = "/plugins/dsh-flash-skin/community/submit";
 
 const GH_API = "https://api.github.com";
 const RAW_BASE = "https://raw.githubusercontent.com";
+const GITEE_API = "https://gitee.com/api/v5";
 const DEFAULT_ROOT = "shares";
 /** Max set-id length after normalization. */
 export const COMMUNITY_SET_ID_MAX = 64;
@@ -47,6 +48,161 @@ const TOKEN_MAX = 4096;
 export const SUBMIT_TOKEN_HINT = "Fine-grained PAT with read/write on contents (contents: write).";
 
 const SET_ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
+
+/**
+ * Provider registry for the C2 community-directory channel. Each provider
+ * captures every GitHub/Gitee divergence so the fork→branch→write→PR flow is
+ * written once and reused: base URL, auth injection (Bearer header vs
+ * `?access_token=` query), fork response parsing, branch creation endpoint,
+ * write-file method, PR payload, and per-step expected status codes.
+ *
+ * The default `github` provider reproduces the exact requests the legacy
+ * implementation issued, so existing clients/fakes keep working unchanged.
+ */
+
+const GITHUB_PROVIDER = {
+  kind: "github",
+  label: "GitHub",
+  apiBase: "https://api.github.com",
+  acceptJson: "application/vnd.github+json",
+  /** GitHub authenticates via an Authorization header; no query params. */
+  auth(token) {
+    return token
+      ? { headers: { Authorization: `Bearer ${token}`, "X-GitHub-Api-Version": "2022-11-28" }, query: "" }
+      : { headers: {}, query: "" };
+  },
+  forkOwner(json) {
+    return json?.owner?.login || (typeof json?.full_name === "string" ? json.full_name.split("/")[0] : "") || "";
+  },
+  forkOK: new Set([200, 201, 202]),
+  fork(client, { owner, repo, token }) {
+    return client.ghJson(`/repos/${enc(owner)}/${enc(repo)}/forks`, {
+      method: "POST",
+      token,
+      body: {},
+      maxBytes: 256 * 1024,
+      timeout: 20_000,
+    });
+  },
+  readForkHead(client, { forkOwner, repo, branch, token }) {
+    // Discover the fork's actual default branch, then its head sha.
+    return client.ghJson(`/repos/${enc(forkOwner)}/${enc(repo)}`, { token, timeout: 15_000 }).then(async (repoRes) => {
+      const defaultBranch = repoRes?.json?.default_branch || branch;
+      const head = await client.ghJson(`/repos/${enc(forkOwner)}/${enc(repo)}/branches/${enc(defaultBranch)}`, {
+        token,
+        timeout: 15_000,
+      });
+      return { defaultBranch, sha: head?.json?.commit?.sha || null };
+    });
+  },
+  createBranch(client, { forkOwner, repo, branch, headSha, sourceBranch, token }) {
+    return client.ghJson(`/repos/${enc(forkOwner)}/${enc(repo)}/git/refs`, {
+      method: "POST",
+      token,
+      body: { ref: `refs/heads/${branch}`, sha: headSha },
+      timeout: 15_000,
+    });
+  },
+  branchOK: new Set([201]),
+  writeFile(client, { forkOwner, repo, branch, path, content, message, token }) {
+    const putPath = path.split("/").map(enc).join("/");
+    return client.ghJson(`/repos/${enc(forkOwner)}/${enc(repo)}/contents/${putPath}`, {
+      method: "PUT",
+      token,
+      body: { message, content: Buffer.from(content, "utf8").toString("base64"), branch },
+      timeout: 20_000,
+    });
+  },
+  writeOK: new Set([201]),
+  openPr(client, { owner, repo, title, head, base, body, token }) {
+    return client.ghJson(`/repos/${enc(owner)}/${enc(repo)}/pulls`, {
+      method: "POST",
+      token,
+      body: { title, head, base, body },
+      timeout: 20_000,
+    });
+  },
+  prOK: new Set([201]),
+};
+
+const GITEE_PROVIDER = {
+  kind: "gitee",
+  label: "Gitee",
+  apiBase: "https://gitee.com/api/v5",
+  acceptJson: "application/json",
+  /** Gitee authenticates via an `access_token` query param (user oauth token). */
+  auth(token) {
+    return { headers: {}, query: token ? `access_token=${enc(token)}` : "" };
+  },
+  forkOwner(json) {
+    return json?.namespace?.path || (typeof json?.full_name === "string" ? json.full_name.split("/")[0] : "") || "";
+  },
+  forkOK: new Set([200]),
+  fork(client, { owner, repo, token }) {
+    return client.ghJson(`/repos/${enc(owner)}/${enc(repo)}/forks`, {
+      method: "POST",
+      token,
+      body: {},
+      maxBytes: 256 * 1024,
+      timeout: 20_000,
+    });
+  },
+  readForkHead(client, { forkOwner, repo, branch, token }) {
+    // Fork default branch is the source branch; read its head sha directly.
+    return client.ghJson(`/repos/${enc(forkOwner)}/${enc(repo)}/branches/${enc(branch)}`, {
+      token,
+      timeout: 15_000,
+    }).then((head) => ({ defaultBranch: branch, sha: head?.json?.commit?.sha || null }));
+  },
+  createBranch(client, { forkOwner, repo, branch, headSha, sourceBranch, token }) {
+    // Gitee starts the new branch from a source branch NAME (refs), not a sha.
+    return client.ghJson(`/repos/${enc(forkOwner)}/${enc(repo)}/branches`, {
+      method: "POST",
+      token,
+      body: { refs: sourceBranch, branch_name: branch },
+      timeout: 15_000,
+    });
+  },
+  branchOK: new Set([200, 201]),
+  writeFile(client, { forkOwner, repo, branch, path, content, message, token }) {
+    // Gitee creates blobs with POST (not PUT) to /contents/{path}.
+    const putPath = path.split("/").map(enc).join("/");
+    return client.ghJson(`/repos/${enc(forkOwner)}/${enc(repo)}/contents/${putPath}`, {
+      method: "POST",
+      token,
+      body: { message, content: Buffer.from(content, "utf8").toString("base64"), branch },
+      timeout: 20_000,
+    });
+  },
+  writeOK: new Set([200, 201]),
+  openPr(client, { owner, repo, title, head, base, body, token, forkPath }) {
+    // Cross-repo PRs need the fork's owning repo path (fork_path) on Gitee.
+    return client.ghJson(`/repos/${enc(owner)}/${enc(repo)}/pulls`, {
+      method: "POST",
+      token,
+      body: { title, head, base, body, ...(forkPath ? { fork_path: forkPath } : {}) },
+      timeout: 20_000,
+    });
+  },
+  prOK: new Set([200, 201]),
+};
+
+/** All known providers, keyed by the `provider` config value. */
+export const COMMUNITY_PROVIDERS = { github: GITHUB_PROVIDER, gitee: GITEE_PROVIDER };
+
+/**
+ * Resolve the provider for a community directory target. Falls back to GitHub
+ * when the target or its provider field is absent/unknown (backward compatible).
+ */
+export function providerFor(target) {
+  const kind = target?.provider;
+  return COMMUNITY_PROVIDERS[kind] || GITHUB_PROVIDER;
+}
+
+/** Resolve a client's provider; clients without one default to GitHub. */
+function providerOf(client) {
+  return client?.provider || GITHUB_PROVIDER;
+}
 
 /** Lowercase ASCII slug used for set ids / file names. Returns null when empty. */
 export function normalizeCommunitySetId(raw) {
@@ -124,31 +280,44 @@ function sleep(ms) {
 }
 
 /**
- * Thin GitHub REST + raw CDN client over an injectable fetch (real client uses
+ * Thin community REST + raw client over an injectable fetch (real client uses
  * globalThis.fetch; tests inject a fake). Every call resolves, never throws.
+ * The client is provider-aware: base URL, auth injection, and raw-fetch URL are
+ * delegated to the provider so the same code drives GitHub and Gitee.
  */
-export function createGitHubClient(fetchImpl = globalThis.fetch) {
+export function createCommunityClient(provider = GITHUB_PROVIDER, fetchImpl = globalThis.fetch) {
+  const active = provider || GITHUB_PROVIDER;
   const fetchFn = typeof fetchImpl === "function" ? fetchImpl : globalThis.fetch;
   const controllerTimeout = (timeout) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
     return { controller, timer, clear: () => clearTimeout(timer) };
   };
+  const authFor = (token) => active.auth(typeof token === "string" && token.length > 0 ? token : undefined);
+  /** Append a provider auth query onto a path that already holds `/repos/...`. */
+  const withAuth = (path, auth) => {
+    if (!auth.query) return path;
+    return path.includes("?") ? `${path}&${auth.query}` : `${path}?${auth.query}`;
+  };
 
   return {
     fetchImpl: fetchFn,
+    provider: active,
     /** @returns {Promise<{status:number, json: any|null, error?: {code:string}}>} */
     async ghJson(path, { method = "GET", token, body, timeout = 15_000, maxBytes = 64 * 1024 } = {}) {
       const { controller, timer, clear } = controllerTimeout(timeout);
+      const auth = authFor(token);
+      const hasBody = body !== undefined;
       try {
-        const response = await fetchFn(GH_API + path, {
+        const response = await fetchFn(withAuth(active.apiBase + path, auth), {
           method,
           headers: {
-            Accept: "application/vnd.github+json",
+            Accept: active.acceptJson,
             "User-Agent": "dsh-flash-skin",
-            ...(token ? { Authorization: `Bearer ${token}`, "X-GitHub-Api-Version": "2022-11-28" } : {}),
+            ...auth.headers,
+            ...(hasBody ? { "Content-Type": "application/json" } : {}),
           },
-          body: body === undefined ? undefined : JSON.stringify(body),
+          body: hasBody ? JSON.stringify(body) : undefined,
           signal: controller.signal,
         });
         const text = await response.text();
@@ -167,12 +336,13 @@ export function createGitHubClient(fetchImpl = globalThis.fetch) {
       }
     },
 
-    /** Fetch a raw.githubusercontent.com blob; null on any failure/oversize. */
+    /** Fetch a provider raw blob; null on any failure/oversize. */
     async rawText(relPath, { timeout = 15_000, maxBytes = COMMUNITY_ENTRY_MAX_BYTES } = {}) {
       const { controller, timer, clear } = controllerTimeout(timeout);
       try {
-        const response = await fetchFn(`${RAW_BASE}/${relPath}`, {
-          headers: { "User-Agent": "dsh-flash-skin" },
+        const url = expandRawUrl(active, relPath);
+        const response = await fetchFn(url, {
+          headers: { "User-Agent": "dsh-flash-skin", Accept: "text/plain" },
           signal: controller.signal,
         });
         if (!response.ok) return null;
@@ -185,6 +355,29 @@ export function createGitHubClient(fetchImpl = globalThis.fetch) {
       }
     },
   };
+}
+
+/** Keep the legacy entry point: GitHub provider by default. */
+export function createGitHubClient(fetchImpl = globalThis.fetch) {
+  return createCommunityClient(GITHUB_PROVIDER, fetchImpl);
+}
+
+/**
+ * Build the provider-specific raw URL from the universal relPath contract
+ * `owner/repo/branch/<enc path segments>` used by the readers.
+ */
+function expandRawUrl(provider, relPath) {
+  if (provider.kind === "github") {
+    return `${RAW_BASE}/${relPath}`;
+  }
+  // Gitee raw read: /api/v5/repos/{o}/{r}/raw/{path}?ref={branch}
+  const segs = String(relPath).split("/");
+  const owner = decodeURIComponent(segs[0] || "");
+  const repo = decodeURIComponent(segs[1] || "");
+  const branch = decodeURIComponent(segs[2] || "");
+  const rawPath = segs.slice(3).join("/");
+  const auth = provider.auth(undefined);
+  return `${GITEE_API}/repos/${enc(owner)}/${enc(repo)}/raw/${rawPath}?ref=${enc(branch)}${auth.query ? `&${auth.query}` : ""}`;
 }
 
 /**
@@ -301,32 +494,34 @@ export async function submitCommunityShare(client, target, { token, setId, url }
   }
 
   // 2) Fork the target repo.
-  const forkRes = await client.ghJson(`/repos/${enc(target.owner)}/${enc(target.repo)}/forks`, {
-    method: "POST", token: accessToken, body: {}, maxBytes: 256 * 1024, timeout: 20_000,
-  });
-  if (forkRes.status !== 202 && forkRes.status !== 200 && forkRes.status !== 201) {
-    return ghError(forkRes, "fork");
-  }
-  const forkOwner = forkRes?.json?.owner?.login || forkRes?.json?.full_name?.split("/")[0] || "";
+  const provider = providerOf(client);
+  const forkRes = await provider.fork(client, { owner: target.owner, repo: target.repo, token: accessToken });
+  if (!provider.forkOK.has(forkRes.status)) return ghError(forkRes, "fork");
+  const forkOwner = provider.forkOwner(forkRes?.json);
   if (!forkOwner) return ghError(forkRes, "fork");
   if (!(await waitForkReady(client, forkOwner, target.repo, accessToken))) {
     return { ok: false, error: { code: "fork-timeout", message: "The fork is not ready yet; please retry shortly." } };
   }
 
   // 3) Fork default branch head sha.
-  const forkRepo = await client.ghJson(`/repos/${enc(forkOwner)}/${enc(target.repo)}`, { token: accessToken, timeout: 15_000 });
-  const forkDefault = forkRepo?.json?.default_branch || target.branch;
-  const headRes = await client.ghJson(`/repos/${enc(forkOwner)}/${enc(target.repo)}/branches/${enc(forkDefault)}`, {
-    token: accessToken, timeout: 15_000,
+  const { defaultBranch: forkDefault, sha: headSha } = await provider.readForkHead(client, {
+    forkOwner,
+    repo: target.repo,
+    branch: target.branch,
+    token: accessToken,
   });
-  const headSha = headRes?.json?.commit?.sha;
-  if (!headSha) return ghError(headRes, "fork-head");
+  if (!headSha) return ghError(forkRes, "fork-head");
 
   // 4) Create the working branch on the fork.
-  const refRes = await client.ghJson(`/repos/${enc(forkOwner)}/${enc(target.repo)}/git/refs`, {
-    method: "POST", token: accessToken, body: { ref: `refs/heads/${pidBranch}`, sha: headSha }, timeout: 15_000,
+  const refRes = await provider.createBranch(client, {
+    forkOwner,
+    repo: target.repo,
+    branch: pidBranch,
+    headSha,
+    sourceBranch: forkDefault || target.branch,
+    token: accessToken,
   });
-  if (refRes.status !== 201) return ghError(refRes, "branch");
+  if (!provider.branchOK.has(refRes.status)) return ghError(refRes, "branch");
 
   // 5) Write the pointer file on the fork branch.
   const pointer =
@@ -334,32 +529,33 @@ export async function submitCommunityShare(client, target, { token, setId, url }
     `# dsh-flash-skin community share\n` +
     `# ${filePath}\n` +
     `# The zip lives at the sharer's own URL; the repo only keeps this pointer.\n`;
-  const putPath = `${target.path}/${entryId}/${fileName}`.split("/").map(enc).join("/");
-  const putRes = await client.ghJson(`/repos/${enc(forkOwner)}/${enc(target.repo)}/contents/${putPath}`, {
-    method: "PUT",
+  const writeRes = await provider.writeFile(client, {
+    forkOwner,
+    repo: target.repo,
+    branch: pidBranch,
+    path: `${target.path}/${entryId}/${fileName}`,
+    content: pointer,
+    message: `share ${cleanedId}`,
     token: accessToken,
-    body: { message: `share ${cleanedId}`, content: Buffer.from(pointer, "utf8").toString("base64"), branch: pidBranch },
-    timeout: 20_000,
   });
-  if (putRes.status !== 201) return ghError(putRes, "write");
+  if (!provider.writeOK.has(writeRes.status)) return ghError(writeRes, "write");
 
   // 6) Open the PR against the target base branch.
   const body =
     `社区分享人物组《${cleanedId}》\n\n` +
     `压缩包地址：${cleanUrl}\n\n` +
     `> 该条目为人工审核制（默认），是否即时可见取决于仓库的合入策略。`;
-  const prRes = await client.ghJson(`/repos/${enc(target.owner)}/${enc(target.repo)}/pulls`, {
-    method: "POST",
+  const prRes = await provider.openPr(client, {
+    owner: target.owner,
+    repo: target.repo,
+    title: `分享：${cleanedId}`,
+    head: `${forkOwner}:${pidBranch}`,
+    base: target.branch,
+    body,
     token: accessToken,
-    body: {
-      title: `分享：${cleanedId}`,
-      head: `${forkOwner}:${pidBranch}`,
-      base: target.branch,
-      body,
-    },
-    timeout: 20_000,
+    forkPath: `${forkOwner}/${target.repo}`,
   });
-  if (prRes.status !== 201) return ghError(prRes, "pr");
+  if (!provider.prOK.has(prRes.status)) return ghError(prRes, "pr");
 
   return {
     ok: true,
@@ -448,56 +644,64 @@ export async function submitCommunityLikes(client, target, { token, counts }) {
   const pidBranch = `flash-skin-likes-${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`;
 
   // 1) Fork the target repo.
-  const forkRes = await client.ghJson(`/repos/${enc(target.owner)}/${enc(target.repo)}/forks`, {
-    method: "POST", token: accessToken, body: {}, maxBytes: 256 * 1024, timeout: 20_000,
-  });
-  if (forkRes.status !== 202 && forkRes.status !== 200 && forkRes.status !== 201) {
-    return ghError(forkRes, "fork");
-  }
-  const forkOwner = forkRes?.json?.owner?.login || forkRes?.json?.full_name?.split("/")[0] || "";
+  const provider = providerOf(client);
+  const forkRes = await provider.fork(client, { owner: target.owner, repo: target.repo, token: accessToken });
+  if (!provider.forkOK.has(forkRes.status)) return ghError(forkRes, "fork");
+  const forkOwner = provider.forkOwner(forkRes?.json);
   if (!forkOwner) return ghError(forkRes, "fork");
   if (!(await waitForkReady(client, forkOwner, target.repo, accessToken))) {
     return { ok: false, error: { code: "fork-timeout", message: "The fork is not ready yet; please retry shortly." } };
   }
 
   // 2) Fork default branch head sha.
-  const forkRepo = await client.ghJson(`/repos/${enc(forkOwner)}/${enc(target.repo)}`, { token: accessToken, timeout: 15_000 });
-  const forkDefault = forkRepo?.json?.default_branch || target.branch;
-  const headRes = await client.ghJson(`/repos/${enc(forkOwner)}/${enc(target.repo)}/branches/${enc(forkDefault)}`, {
-    token: accessToken, timeout: 15_000,
+  const { defaultBranch: forkDefault, sha: headSha } = await provider.readForkHead(client, {
+    forkOwner,
+    repo: target.repo,
+    branch: target.branch,
+    token: accessToken,
   });
-  const headSha = headRes?.json?.commit?.sha;
-  if (!headSha) return ghError(headRes, "fork-head");
+  if (!headSha) return ghError(forkRes, "fork-head");
 
   // 3) Create the working branch on the fork.
-  const refRes = await client.ghJson(`/repos/${enc(forkOwner)}/${enc(target.repo)}/git/refs`, {
-    method: "POST", token: accessToken, body: { ref: `refs/heads/${pidBranch}`, sha: headSha }, timeout: 15_000,
+  const refRes = await provider.createBranch(client, {
+    forkOwner,
+    repo: target.repo,
+    branch: pidBranch,
+    headSha,
+    sourceBranch: forkDefault || target.branch,
+    token: accessToken,
   });
-  if (refRes.status !== 201) return ghError(refRes, "branch");
+  if (!provider.branchOK.has(refRes.status)) return ghError(refRes, "branch");
 
   // 4) Write the aggregated likes file on the fork branch.
   const content = JSON.stringify(normalized, null, 2);
-  const putPath = filePath.split("/").map(enc).join("/");
-  const putRes = await client.ghJson(`/repos/${enc(forkOwner)}/${enc(target.repo)}/contents/${putPath}`, {
-    method: "PUT",
+  const writeRes = await provider.writeFile(client, {
+    forkOwner,
+    repo: target.repo,
+    branch: pidBranch,
+    path: filePath,
+    content,
+    message: `sync like counts (${Object.keys(normalized).length} groups)`,
     token: accessToken,
-    body: { message: `sync like counts (${Object.keys(normalized).length} groups)`, content: Buffer.from(content, "utf8").toString("base64"), branch: pidBranch },
-    timeout: 20_000,
   });
-  if (putRes.status !== 201) return ghError(putRes, "write");
+  if (!provider.writeOK.has(writeRes.status)) return ghError(writeRes, "write");
 
   // 5) Open the PR against the target base branch.
   const prBody =
     `社区点赞计数同步\n\n` +
     `聚合计数文件：${filePath}\n\n` +
     `> 由插件服务端定时聚合提交，是否即时可见取决于仓库的合入策略。`;
-  const prRes = await client.ghJson(`/repos/${enc(target.owner)}/${enc(target.repo)}/pulls`, {
-    method: "POST",
+  const prRes = await provider.openPr(client, {
+    owner: target.owner,
+    repo: target.repo,
+    title: `点赞同步`,
+    head: `${forkOwner}:${pidBranch}`,
+    base: target.branch,
+    body: prBody,
     token: accessToken,
-    body: { title: `点赞同步`, head: `${forkOwner}:${pidBranch}`, base: target.branch, body: prBody },
-    timeout: 20_000,
+    forkPath: `${forkOwner}/${target.repo}`,
   });
-  if (prRes.status !== 201) return ghError(prRes, "pr");
+  if (!provider.prOK.has(prRes.status)) return ghError(prRes, "pr");
 
   return {
     ok: true,

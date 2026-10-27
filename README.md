@@ -54,11 +54,12 @@ dsh --profile web --dump-config | grep -B1 -A2 flash-skin
 
 每个肖像组可以打包成**一段自包含文本**：第一行是 manifest 头部 JSON，随后是整组图片字节的 base64url（经 zip 压缩）。接收方把文本粘贴进导入框即可重建整组（ID、中英文名、深浅切换点全在头部里）。实现见 `src/client/logic.ts` 的 `buildShareText` / `parseShareText`。文本可任意大（上限 8 MiB），存入剪贴板发送给朋友即可，不依赖任何后端。
 
-### C2：社区目录（GitHub PR 指针仓库）
+### C2：社区目录（GitHub / Gitee PR 指针仓库）
 
-- **读**：匿名请求目标仓库的 git tree，遍历 `shares/**/<setId>.txt` 指针文件（内容是分享者自持的 zip 公开 URL），合并成社区目录供一键导入。读取途径是 `git/trees/{branch}?recursive=1` + raw CDN 回落，匿名即可。
-- **写**：aps 分享者在弹窗里填 GitHub 令牌与 zip URL，插件代做 `fork → 写入指针文件 → 提交 PR` 三步（先扫描目录防止同名 setId 冲突，返回 409）。**zip 不入任何仓库**，由分享者自己负责托管 URL。
-- 目录目标：`communityDirectory = { owner, repo, branch?, path? }`（插件设置，volatile，不入 patch）。
+- **读**：匿名请求目标仓库的 git tree，遍历 `shares/**/<setId>.txt` 指针文件（内容是分享者自持的 zip 公开 URL），合并成社区目录供一键导入。读取途径是 `git/trees/{branch}?recursive=1` + raw 回落，匿名即可。
+- **写**：aps 分享者在弹窗里填平台令牌与 zip URL，插件代做 `fork → 写入指针文件 → 提交 PR` 三步（先扫描目录防止同名 setId 冲突，返回 409）。**zip 不入任何仓库**，由分享者自己负责托管 URL。
+- 目录目标：`communityDirectory = { owner, repo, provider?, branch?, path?, likesToken? }`（插件设置）。`provider` 选社区平台：`github`（默认）或 `gitee`，未知值回退 github。Gitee 的令牌为**用户授权码（access_token）**，作为查询参数注入；GitHub 则用 fine-grained PAT（`contents: write`）。读写两端（目录快照 + `likes.json` 点赞同步）都按 `provider` 走对应 shim，逻辑复用。
+- `likesToken`：服务端部署者提供、用来把聚合点赞计数通过 PR 渠道持久化/同步到 `<path>/likes.json`（非用户手填——点赞匿名触发，无每用户凭据）。
 
 ### 点赞记账（三档渐进）
 

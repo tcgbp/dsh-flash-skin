@@ -6,6 +6,10 @@ import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
 import type {} from "@deepseek-ai/dsh-client-ui-model-selection/client";
 import type {} from "@deepseek-ai/dsh-client-ui-theme/client";
+import {
+  IconChevronDownOutlineRegular,
+  SegmentedControl,
+} from "@deepseek-ai/dsh-client-ui-primitives";
 import styles from "./skin.css";
 import { createPortraitLoader } from "./portrait-loader";
 import type { PortraitImage, PortraitSource } from "./portrait-loader";
@@ -815,25 +819,25 @@ function DriverRow({ scope, t }: DriverRowProps) {
   return (
     <div className="flash-appearance-binding flash-appearance-binding--driver" data-plugin={PACKAGE_ID}>
       <span className="flash-appearance-binding__label">{t("driver.title")}</span>
-      <div className="flash-segmented" role="radiogroup" aria-label={t("driver.title")}>
-        {options.map((option) => (
-          <button
-            key={option.value}
-            type="button"
-            role="radio"
-            aria-checked={snapshot.driver === option.value}
-            className={snapshot.driver === option.value ? "is-active" : undefined}
-            disabled={pending}
-            onClick={() => {
-              if (pending || snapshot.driver === option.value) return;
-              setPending(true);
-              void scope.setDriver(option.value).catch(() => undefined).finally(() => setPending(false));
-            }}
-          >
-            {option.label}
-          </button>
-        ))}
-      </div>
+      {/* Host-native segmented control (dsh-client-ui-primitives
+          `SegmentedControl`, a tablist with a sliding indicator): the
+          appearance panel renders it with the host's own tokens/CSS, so it
+          matches the rest of the settings surface instead of a hand-drawn
+          button group. */}
+      <SegmentedControl
+        id="flash-skin-driver"
+        value={snapshot.driver}
+        label={t("driver.title")}
+        disabled={pending}
+        options={options.map(({ value, label }) => ({ value, label }))}
+        onChange={(value) => {
+          const driver: DriverMode =
+            value === "composite" ? "composite" : "manual";
+          if (pending || snapshot.driver === driver) return;
+          setPending(true);
+          void scope.setDriver(driver).catch(() => undefined).finally(() => setPending(false));
+        }}
+      />
     </div>
   );
 }
@@ -2847,18 +2851,16 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
         onClick={() => setCollapsed((v) => !v)}
       >
         <span className="flash-portrait-groups__head-text">
-          <span className="flash-portrait-groups__title">{t("title")}</span>
-          <span className="flash-portrait-groups__desc">{t("hint")}</span>
+          <span className="flash-portrait-groups__title">{t("cardTitle")}</span>
+          <span className="flash-portrait-groups__desc">{t("cardDesc")}</span>
         </span>
-        <span
+        <IconChevronDownOutlineRegular
           className={`flash-portrait-groups__chevron${collapsed ? "" : " flash-portrait-groups__chevron--open"}`}
           aria-hidden="true"
-        >
-          ▾
-        </span>
+        />
       </button>
-      {!writable && <p className="flash-portrait-groups__notice flash-portrait-groups__notice--root" role="status">{t("readOnly")}</p>}
       <div className="flash-portrait-groups__body" id="flash-portrait-groups__body">
+        {!writable && <p className="flash-portrait-groups__notice" role="status">{t("readOnly")}</p>}
       <input
         ref={fileInputRef}
         type="file"
@@ -3728,7 +3730,7 @@ export function apply(ctx: ClientContext) {
     return {
       id: PORTRAIT_SLIDER_SWITCH_ID,
       label: () => setLabel("portraitSwitch"),
-      icon: "sliders",
+      icon: "scroll",
       type: "slider",
       group: "appearance",
       order: 26.5,
@@ -3841,15 +3843,15 @@ export function apply(ctx: ClientContext) {
       // (26.25, between the select at 26 and the level slider at 26.5): the
       // same two-option driver selector as the settings row (manual /
       // composite), bound to the same store so both surfaces stay in step.
-      // A `select` (not a buttongroup) so the option labels never truncate in
-      // the compact quick panel.
+      // A `buttongroup` (segmented control) so the two driver options sit as
+      // one-tap buttons side by side, matching the settings-row toggle style.
       // `getValue`/`visible` read live at render time; the scope subscription
       // above bumps the registry when the driver changes from the other row.
       const driverDispose = reg.registerSwitch?.({
         id: DRIVER_SWITCH_ID,
         label: () => setLabel("driver.title"),
         icon: "signal",
-        type: "select",
+        type: "buttongroup",
         group: "appearance",
         order: 26.25,
         options: () => [

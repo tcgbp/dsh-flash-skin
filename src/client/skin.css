@@ -351,7 +351,8 @@ body[data-flash-skin="on"] textarea {
 .flash-portrait-groups__chevron {
   color: var(--dsw-alias-label-tertiary);
   flex: none;
-  display: inline-flex;
+  display: block;
+  transform-origin: 50% 50%;
   transition: transform 0.16s;
 }
 
@@ -1024,8 +1025,10 @@ body[data-flash-skin="on"] .EvIC1a_toBottomSlot {
 }
 
 
-/* 8) 三段强度驱动模式选择行（DriverRow）。
- *    手动 / 跟随推理 / 综合加权 的 segmented 单选组，紧跟在人物肖像组行下方。
+/* 8) 强度驱动模式选择行（DriverRow）。
+ *    手动 / 综合加权 的两段选择。自 dsh-client-ui-primitives 的宿主原生
+ *    SegmentedControl 渲染（胶囊指示器滑动的 tablist），样式完全跟随宿主
+ *    CSS-modules 与 --dsw-* 令牌，无需自绘按钮组。
  */
 .flash-appearance-binding--driver {
   display: flex;
@@ -1041,44 +1044,6 @@ body[data-flash-skin="on"] .EvIC1a_toBottomSlot {
   font-size: 13px;
   line-height: 18px;
   white-space: nowrap;
-}
-
-.flash-segmented {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 2px;
-  border-radius: 8px;
-  background: var(--dsw-alias-surface-muted, rgb(0 0 0 / 6%));
-}
-
-.flash-segmented button {
-  padding: 3px 10px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
-  line-height: 16px;
-  cursor: pointer;
-}
-
-.flash-segmented button:hover:not(:disabled):not(.is-active) {
-  background: var(--dsw-alias-hover, rgb(0 0 0 / 4%));
-  color: var(--dsw-alias-label-primary);
-}
-
-.flash-segmented button.is-active {
-  /* ink/page 同 tooltip 的配对,明暗两套主题都保证文字可读——
-   * 深色接收该别名在深色 shell 下是近白,配白底会完全隐形。 */
-  background: var(--flash-ink, #191b1e);
-  color: var(--flash-page, #f5f6f8);
-  box-shadow: 0 1px 3px rgb(0 0 0 / 18%);
-}
-
-.flash-segmented button:disabled {
-  opacity: 0.6;
-  cursor: default;
 }
 
 /* 9) 综合加权实时仪表。加权模式下不显示滑杆，仅以 output 逐路显示

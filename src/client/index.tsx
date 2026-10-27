@@ -11,6 +11,7 @@ import { createPortraitLoader } from "./portrait-loader";
 import type { PortraitImage, PortraitSource } from "./portrait-loader";
 import {
   COMPACTION_DROP_RATIO,
+  COMPACTION_SCORE_BONUS,
   DEFAULT_COMPOSITE_WEIGHTS,
   DEFAULT_SPEED_TUNING,
   MAX_LEVEL,
@@ -897,9 +898,9 @@ function CompositeLevelControl({
   // event. Each event stamps a fixed-score pulse that decays over a few
   // seconds on the same render clock (`now`) — no extra timer — briefly
   // lifting the composite level right after a compaction. Stale/unmounted
-  // pressure reads are ignored (`enabled` + finite guards); the configured
-  // compaction weight decides how strongly the pulse moves the gauge, so with
-  // the default weight of 0 nothing changes until the user opts in.
+  // pressure reads are ignored (`enabled` + finite guards); while such a pulse
+  // is live it adds a fixed COMPACTION_SCORE_BONUS directly onto the weighted
+  // score (a separate 加分项) instead of folding into the configurable weights.
   const lastPressureRef = useRef<number | null>(null);
   const compactionPulseAtRef = useRef<number | null>(null);
   useEffect(() => {
@@ -922,6 +923,18 @@ function CompositeLevelControl({
     }
   }, [enabled, pressureTokens]);
   const compactionF = contextCompactionFactor(compactionPulseAtRef.current, now);
+  // Compaction bonus: 压缩 is NOT a configurable weight. It lands as a separate
+  // direct add-on on top of the weighted score, and only while a fresh pulse is
+  // live (compactionF > 0): contribution = COMPACTION_SCORE_BONUS × pulse.
+  // The value that actually picks the level/frame is combined = weighted + bonus.
+  const wBase =
+    normalized.usage * usageF
+    + normalized.pressure * pressureF
+    + normalized.effort * effortF
+    + normalized.speed * speedF;
+  const compBonus = COMPACTION_SCORE_BONUS * compactionF;
+  const combined = wBase + compBonus;
+  const compActive = compactionF > 0;
 
   const lastLevelRef = useRef(-1);
 
@@ -930,13 +943,17 @@ function CompositeLevelControl({
   }, [enabled, load]);
 
   useEffect(() => {
-    const next = weightedLevel(weightsSnapshot, {
-      usage: usageF,
-      pressure: pressureF,
-      effort: effortF,
-      speed: speedF,
-      compaction: compactionF,
-    });
+    const next = Math.max(
+      0,
+      Math.min(MAX_LEVEL, Math.round(
+        weightedLevel(weightsSnapshot, {
+          usage: usageF,
+          pressure: pressureF,
+          effort: effortF,
+          speed: speedF,
+        }) + compBonus * MAX_LEVEL,
+      )),
+    );
     // Palette rides the rounded 0..MAX_LEVEL grip (light/dark shell decision);
     // only ever push it when the integer stop actually changes.
     if (lastLevelRef.current !== next) {
@@ -944,15 +961,9 @@ function CompositeLevelControl({
       presenter.setLevel(next);
     }
     if (presenter.isEnabled()) {
-      // Portrait rides the continuous weighted score, mapped straight onto the
-      // group's N frames — so all N are reachable, not just the 7 integer stops.
-      presenter.setPortraitScore(
-        weightsSnapshot.usage * usageF
-        + weightsSnapshot.pressure * pressureF
-        + weightsSnapshot.effort * effortF
-        + weightsSnapshot.speed * speedF
-        + weightsSnapshot.compaction * compactionF,
-      );
+      // Portrait rides the summed weighted + 压缩-bonus score, mapped straight
+      // onto the group's N frames — so all N are reachable, not just the 7 stops.
+      presenter.setPortraitScore(combined);
     }
   }, [
     presenter,
@@ -962,19 +973,15 @@ function CompositeLevelControl({
     effortF,
     speedF,
     compactionF,
+    compBonus,
+    combined,
   ]);
 
   const count = presenter.getPortraitCount();
   const w = normalized;
-  const wSum = (
-    w.usage * usageF
-    + w.pressure * pressureF
-    + w.effort * effortF
-    + w.speed * speedF
-    + w.compaction * compactionF
-  );
-  // 综合加权直接按组内帧数匹配:0..1 连续得分线性落到 N 帧,没有 6 挡这一层。
-  const frame = count > 0 ? frameIndexForScore(wSum, count) : 0;
+  // 综合加权拿去取帧的是「加权得分 + 压缩加分项」的合计(combined):0..1 连续
+  // 得分线性落到组内 N 帧,没有 6 挡这一层。
+  const frame = count > 0 ? frameIndexForScore(combined, count) : 0;
   // 数值格式:去掉小数末尾的多余 0(0.30 → 0.3、0.00 → 0),省空间又直观。
   const fmt = (n: number) => Number(n.toFixed(2)).toString();
   const term = (weight: number, factor: number) => (
@@ -987,7 +994,6 @@ function CompositeLevelControl({
     [t ? t("weights.pressureShort") : "压力", "pressure", w.pressure, pressureF],
     [t ? t("weights.effortShort") : "推理", "effort", w.effort, effortF],
     [t ? t("weights.speedShort") : "速度", "speed", w.speed, speedF],
-    [t ? t("weights.compactionShort") : "压缩", "compaction", w.compaction, compactionF],
   ];
 
   const label = (key: string, fallback: string) => (t ? t(key) : fallback);
@@ -1007,9 +1013,18 @@ function CompositeLevelControl({
               {index < terms.length - 1 && <i className="flash-level-control__plus">+</i>}
             </Fragment>
           ))}
+          {compActive && (
+            <Fragment>
+              <i className="flash-level-control__plus">+</i>
+              <span className="flash-level-control__term flash-level-control__term--bonus">
+                <b>{t ? t("weights.compactionShort") : "压缩"}</b>
+                <span className="flash-level-control__bonus">{fmt(compBonus * MAX_LEVEL)}</span>
+              </span>
+            </Fragment>
+          )}
         </span>
         <span className="flash-level-control__score">
-          {label("weights.score", "得分")} {fmt(wSum * MAX_LEVEL)} · {count > 0 ? `${label("weights.frame", "帧")} ${frame + 1}/${count}` : `${label("weights.frame", "帧")} —`}
+          {label("weights.score", "得分")} {fmt(combined * MAX_LEVEL)} · {count > 0 ? `${label("weights.frame", "帧")} ${frame + 1}/${count}` : `${label("weights.frame", "帧")} —`}
         </span>
       </output>
     </div>
@@ -1297,8 +1312,7 @@ function createWeightsStore(): WeightsStore {
       const same = next.usage === state.weights.usage
         && next.pressure === state.weights.pressure
         && next.effort === state.weights.effort
-        && next.speed === state.weights.speed
-        && next.compaction === state.weights.compaction;
+        && next.speed === state.weights.speed;
       if (same) return;
       state = { ...state, weights: next };
       persist();
@@ -1322,7 +1336,6 @@ function createWeightsStore(): WeightsStore {
         && next.weights.pressure === state.weights.pressure
         && next.weights.effort === state.weights.effort
         && next.weights.speed === state.weights.speed
-        && next.weights.compaction === state.weights.compaction
         && next.tuning.graceMs === state.tuning.graceMs
         && next.tuning.fadeMs === state.tuning.fadeMs;
       if (same) return;
@@ -2735,7 +2748,6 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
             ["pressure", "pressure", "pressureDesc", weightSnapshot.pressure],
             ["effort", "effort", "effortDesc", weightSnapshot.effort],
             ["speed", "speed", "speedDesc", weightSnapshot.speed],
-            ["compaction", "compaction", "compactionDesc", weightSnapshot.compaction],
           ] as const).map(([key, labelKey, descKey, value]) => (
             <label key={key} className="flash-weights__field">
               <span className="flash-weights__caption">{t(`weights.${labelKey}`)}</span>
@@ -2882,7 +2894,6 @@ export function apply(ctx: ClientContext) {
         "weights.pressureDesc": "上下文占用/窗口,无窗口按轮次",
         "weights.effortDesc": "当前推理档位,未设置按 0",
         "weights.speedDesc": "解码速度,饱和 80 t/s",
-        "weights.compactionDesc": "刚压缩的上下文脉冲,几秒内回落;默认 0 表示不参与",
         "weights.reset": "恢复默认",
         "weights.score": "得分",
         "weights.frame": "帧",
@@ -2906,16 +2917,15 @@ export function apply(ctx: ClientContext) {
         "weights.effort": "Reasoning",
         "weights.speed": "Speed",
         "weights.compaction": "Compaction",
-        "weights.usageShort": "Use",
-        "weights.pressureShort": "Press",
-        "weights.effortShort": "Reason",
-        "weights.speedShort": "Spd",
-        "weights.compactionShort": "Comp",
+        "weights.usageShort": "Usage",
+        "weights.pressureShort": "Pressure",
+        "weights.effortShort": "Reasoning",
+        "weights.speedShort": "Speed",
+        "weights.compactionShort": "Compaction",
         "weights.usageDesc": "Tokens generated this turn, saturates at 300k",
         "weights.pressureDesc": "Context used / window; falls back to turns",
         "weights.effortDesc": "Current reasoning level, unknown counts as 0",
         "weights.speedDesc": "Decode speed, saturates at 80 t/s",
-        "weights.compactionDesc": "Pulse right after a context compaction, relaxing over a few seconds; 0 by default opts out",
         "weights.reset": "Restore defaults",
         "weights.score": "Score",
         "weights.frame": "Frame",

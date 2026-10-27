@@ -43,21 +43,21 @@ describe("normalizeWeights", () => {
 
   it("renormalizes a valid set so the weights sum to 1", () => {
     const w = normalizeWeights({ usage: 3, pressure: 1 });
-    expect(w).toEqual({ usage: 0.75, pressure: 0.25, effort: 0, speed: 0, compaction: 0 });
-    const sum = w.usage + w.pressure + w.effort + w.speed + w.compaction;
+    expect(w).toEqual({ usage: 0.75, pressure: 0.25, effort: 0, speed: 0 });
+    const sum = w.usage + w.pressure + w.effort + w.speed;
     expect(Math.abs(sum - 1)).toBeLessThan(1e-9);
   });
 
   it("supports extreme weights pinned to a single axis", () => {
     expect(normalizeWeights({ usage: 1 })).toEqual({
-      usage: 1, pressure: 0, effort: 0, speed: 0, compaction: 0,
+      usage: 1, pressure: 0, effort: 0, speed: 0,
     });
     expect(normalizeWeights({ speed: 1 })).toEqual({
-      usage: 0, pressure: 0, effort: 0, speed: 1, compaction: 0,
+      usage: 0, pressure: 0, effort: 0, speed: 1,
     });
-    expect(normalizeWeights({ compaction: 1 })).toEqual({
-      usage: 0, pressure: 0, effort: 0, speed: 0, compaction: 1,
-    });
+    // 压缩 is not a configurable weight anymore — it is a direct bonus, so a
+    // lone { compaction } input leaves every weighted axis empty -> defaults.
+    expect(normalizeWeights({ compaction: 1 })).toEqual(DEFAULT_COMPOSITE_WEIGHTS);
   });
 });
 
@@ -183,6 +183,27 @@ describe("compositeLevel", () => {
     expect(compositeLevel({ usage: 1 }, { outputTokens: undefined })).toBe(0);
     expect(compositeLevel({ speed: 1 }, {})).toBe(0);
     expect(compositeLevel({ pressure: 1 }, {})).toBe(0);
+  });
+
+  it("adds a direct bonus on top of the weighted score while a compaction pulse is live", () => {
+    const quiet = { outputTokens: 10_000 }; // near-zero weighted axis
+    const baseline = compositeLevel(null, quiet);
+    expect(baseline).toBe(0);
+    // full-strength fresh pulse: COMPACTION_SCORE_BONUS (0.25) x MAX_LEVEL bumps it up.
+    const pulsed = compositeLevel(null, {
+      ...quiet,
+      compactionAtMs: 0,
+      nowMs: 0,
+    });
+    expect(pulsed).toBeGreaterThan(baseline);
+    expect(pulsed).toBeLessThanOrEqual(MAX_LEVEL);
+    // a long-expired pulse contributes nothing -> back to baseline
+    const settled = compositeLevel(null, {
+      ...quiet,
+      compactionAtMs: 0,
+      nowMs: 100_000,
+    });
+    expect(settled).toBe(baseline);
   });
 });
 

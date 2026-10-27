@@ -1047,6 +1047,15 @@ body[data-flash-skin="on"] .EvIC1a_toBottomSlot {
   font-weight: 600;
 }
 
+.flash-level-control__term--bonus b {
+  color: var(--flash-accent, #4176e6);
+}
+
+.flash-level-control__bonus {
+  color: var(--flash-accent, #4176e6);
+  font-weight: 800;
+}
+
 .flash-level-control__mul {
   color: var(--flash-accent, #4176e6);
   font-weight: 800;

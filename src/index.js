@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import z from "@deepseek-ai/schemastery";
 import { parseSingleRange } from "./range.js";
+import { installLikeRoutes } from "./likes.js";
+import { COMMUNITY_PROVIDERS, createCommunityClient, installCommunityRoutes, readCommunityLikes, submitCommunityLikes } from "./community.js";
 
 export { parseSingleRange } from "./range.js";
 
@@ -212,6 +214,53 @@ export const Config = z.object({
     }))
     .default([])
     .volatile(),
+  // Optional community-directory target for the C2 share channel. Points at a
+  // public GitHub repo whose tree holds `<path>/<entryId>/<setId>.txt` pointer
+  // files; sharers keep custody of their zip URL (the repo only ever stores the
+  // text pointer — never archive bytes). When absent the community routing is
+  // inert and the C1 text-share channel still works standalone.
+  // Keep non-volatile: this is deliberate admin metadata, not per-user runtime
+  // state, so it persists in the profile patch like any other exposed config.
+  communityDirectory: z.object({
+      /**
+       * GitHub user or organization owning the target repo. Left optional (as
+       * every object sub-field is by default): the loader materialises an
+       * absent object as `{}` during validation, so any `.required()` here
+       * would fail activation for profiles that do not configure sharing.
+       * Completeness is instead checked at request time by getCommunityTarget.
+       */
+      owner: z.string().min(1),
+      /** Repo name holding the community directory tree. */
+      repo: z.string().min(1),
+      /**
+       * Community platform for the directory channel: `github` (default) or
+       * `gitee`. Selects the provider shim used for every read (tree/raw) and
+       * write (fork→branch→contents→PR) call. Unknown values fall back to
+       * github to keep the config backward compatible.
+       */
+      provider: z.string().default("github"),
+      /** Default: main. */
+      branch: z.string().default("main"),
+      /** Tree root; default: shares. */
+      path: z.string().default("shares"),
+      /**
+       * Optional GitHub PAT (contents: write) used by the *server* to persist
+       * aggregated like counts into the community directory via PR
+       * (`<path>/likes.json`). When present, the like route batches incremental
+       * local likes into a folder and periodically pushes them through the same
+       * fork→branch→PUT→PR flow as share submissions. When absent (or the whole
+       * communityDirectory is unset) likes gracefully fall back to the local
+       * T1/T3 ledger only — standalone-safe, no credentials required.
+       * Deliberately a config-supplied token, not user-supplied: likes are
+       * triggered by anonymous visitors, so there is no per-user credential.
+       */
+      likesToken: z.string().min(1),
+    })
+    // Object fields are optional unless `.required()`, so an absent top-level
+    // `communityDirectory` validates as `{}` instead of failing activation;
+    // getCommunityTarget then resolves it to null and the C2 channel stays
+    // inert while the C1 text share keeps working.
+  ,
 });
 
 // Live mirror of the volatile section: the loader re-reads it whenever the
@@ -464,11 +513,72 @@ export function apply(ctx, config) {
     const { example, remote } = createNetworkHandlers(activeStreams);
     const exampleRoute = ctx.webServer.register({ kind: "prefixes", path: EXAMPLES_PATH, handler: example });
     const remoteRoute = ctx.webServer.register({ kind: "exact", path: REMOTE_ARCHIVE_PATH, handler: remote });
+    // Community share + like channels. Likes stay T1-in-memory (+ optional T3
+    // durable mirror when a storage backend is present and an optional PR-backed
+    // community sync when a likesToken is configured); the community-directory
+    // target resolves at request time from the configured repo, else inert.
+    // Built lazily so the provider (github|gitee) always matches the current
+    // config value; every operation resolves its own fresh client. Falls back
+    // to the GitHub shim when the provider field is absent or unknown.
+    const clientForConfig = () => {
+      const dir = config?.communityDirectory?.get();
+      const kind = dir && typeof dir.provider === "string" && dir.provider ? dir.provider : "github";
+      return createCommunityClient(COMMUNITY_PROVIDERS[kind] || COMMUNITY_PROVIDERS.github, globalThis.fetch);
+    };
+    const getCommunityClient = () => clientForConfig();
+    const communityRoutesClient = {
+      get provider() { return clientForConfig().provider; },
+      ghJson: (path, opts) => clientForConfig().ghJson(path, opts),
+      rawText: (rel, opts) => clientForConfig().rawText(rel, opts),
+    };
+    const getCommunityTarget = () => {
+      const dir = config?.communityDirectory?.get();
+      if (
+        dir &&
+        typeof dir.owner === "string" && dir.owner &&
+        typeof dir.repo === "string" && dir.repo
+      ) {
+        const kind = typeof dir.provider === "string" && dir.provider ? dir.provider : "github";
+        return {
+          owner: dir.owner,
+          repo: dir.repo,
+          provider: COMMUNITY_PROVIDERS[kind] ? kind : "github",
+          branch: typeof dir.branch === "string" && dir.branch ? dir.branch : "main",
+          path: typeof dir.path === "string" && dir.path ? dir.path : "shares",
+        };
+      }
+      return null;
+    };
+    const getLikesToken = () => {
+      const dir = config?.communityDirectory?.get();
+      return dir && typeof dir.likesToken === "string" && dir.likesToken ? dir.likesToken : null;
+    };
+    const {
+      likeRoute, likesRoute, flushCommunityLikes, communityDispose,
+    } = installLikeRoutes(ctx, {
+      // PR-backed like aggregation: reads the remote <path>/likes.json once to
+      // seed the ledger, then debounced-flushes the merged snapshot through a
+      // single PR channel. Absent/disabled → pure local T1 (+optional T3).
+      community: {
+        getClient: getCommunityClient,
+        getTarget: getCommunityTarget,
+        getLikesToken,
+        readCommunityLikes,
+        submitCommunityLikes,
+        debounceMs: 30_000,
+      },
+    });
+    const { directoryRoute, submitRoute } = installCommunityRoutes(ctx, { getTarget: getCommunityTarget, client: communityRoutesClient });
     return () => {
       uploadRoute();
       serveRoute();
       exampleRoute();
       remoteRoute();
+      communityDispose();
+      likeRoute();
+      likesRoute();
+      directoryRoute();
+      submitRoute();
     };
   }, "flash-skin: attachment import & serve routes");
 }

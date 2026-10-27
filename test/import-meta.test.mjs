@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_LEVEL,
+  buildPortraitManifest,
   clampLevel,
   normalizeImportMeta,
   parseImportMetaText,
@@ -242,5 +243,62 @@ describe("parseImportMetaText (JSON then YAML)", () => {
   it("ignores unknown fields (and the legacy name) and keeps zh/en + images", () => {
     const text = "id: a\nname: Legacy\nfolder: x\nzh: 甲\nen: A\nimages:\n  - a.png\n  - b.png\nschema: 2\n";
     expect(parseImportMetaText(text)).toEqual({ id: "a", zh: "甲", en: "A", images: ["a.png", "b.png"] });
+  });
+});
+
+describe("buildPortraitManifest (export side of the round-trip)", () => {
+  it("serializes id/name/zh/en/darkLevel with ---/... markers and comments", () => {
+    const text = buildPortraitManifest({
+      id: " hanli- demo ",
+      name: "Han Li",
+      zh: "韩立",
+      en: "Han Li",
+      darkLevel: 5,
+    });
+    expect(parsePortraitYaml(text)).toEqual({
+      id: "hanli- demo",
+      name: "Han Li",
+      zh: "韩立",
+      en: "Han Li",
+      darkLevel: 5,
+    });
+  });
+
+  it("falls zh/en back to name then id, and clamps darkLevel", () => {
+    const withName = buildPortraitManifest({ id: "liangsheng", name: "Liang the Saint", darkLevel: 99 });
+    expect(parseImportMetaText(withName)).toEqual({
+      id: "liangsheng",
+      zh: "Liang the Saint",
+      en: "Liang the Saint",
+      darkLevel: 6,
+    });
+
+    const withId = buildPortraitManifest({ id: "liangsheng", name: "" });
+    expect(parseImportMetaText(withId)).toEqual({
+      id: "liangsheng",
+      zh: "liangsheng",
+      en: "liangsheng",
+      darkLevel: 5,
+    });
+  });
+
+  it("single-quotes values so embedded quotes and colons round-trip", () => {
+    const text = buildPortraitManifest({
+      id: "a",
+      name: "x",
+      zh: "它: 自带'引号' 与 # 井号",
+      en: "it's: parsed back",
+    });
+    expect(parseImportMetaText(text)).toEqual({
+      id: "a",
+      zh: "它: 自带'引号' 与 # 井号",
+      en: "it's: parsed back",
+      darkLevel: 5,
+    });
+  });
+
+  it("never emits an images: list (embedded frames win on import)", () => {
+    const text = buildPortraitManifest({ id: "a", name: "n" });
+    expect(text).not.toMatch(/images\s*:/);
   });
 });

@@ -1,0 +1,119 @@
+# Optional GitHub Actions auto-merge for a dsh-flash-skin community directory.
+#
+# Place this file at .github/workflows/auto-merge.yml in the *target community
+# repository* (owner side). It is NOT part of the plugin — the plugin never
+# installs, manages, or bypasses it. Without it every community PR stays a
+# normal, human-reviewed pull request.
+#
+# Flow:
+#   1. Runs on pull_request_target so it can see the submitted files and so
+#      the merge runs with the repository's own permissions.
+#   2. Diff guard: rejects anything that is not a `shares/**` pointer file
+#      (a text file named <setId>.txt whose content is a single http(s) URL).
+#      Accepting any other change would make auto-merge a security hole.
+#   3. Guard passed -> merge with a token that has `contents: write`.
+#              failed -> close the PR and leave an explanatory comment.
+#
+# Secrets to configure:
+#   ACTIONS_BOT_TOKEN — a Personal Access Token (classic or fine-grained) with
+#   `contents: write` on this repository. The default GITHUB_TOKEN cannot push
+#   to the protected branch / merge as an external actor consistently.
+#
+# Note: `branches.on` / `paths:` filters only control *when this runs*, they
+# are not an approval barrier — the in-workflow diff check is the gate. If the
+# target branch has branch protection, its rules still apply.
+
+name: auto-merge-flash-skin-shares
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: auto-merge-flash-skin-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  guard-and-merge:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    steps:
+      - name: Check out target repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Reject non-share changes
+        id: guard
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only "$BASE"..."$HEAD")"
+          # No changes is not a share submission either.
+          if [ -z "$changed" ]; then echo "no changed files"; exit 1; fi
+          while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            case "$line" in
+              shares/*/*.txt) ;;
+              *)
+                echo "blocked path: $line"
+                exit 1
+                ;;
+            esac
+          done <<<"$changed"
+
+          # Each added file must be one line: a plain http(s) URL.
+          while IFS= read -r file; do
+            [ -n "$file" ] || continue
+            if [ ! -f "$file" ]; then
+              echo "not present: $file"
+              exit 1
+            fi
+            # Trim CR + leading/trailing whitespace, then require exactly one
+            # line and a URL-only payload.
+            content="$(tr -d '\r' <"$file" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            lines="$(printf '%s' "$content" | wc -l)"
+            if [ "$lines" -ne 1 ]; then
+              echo "not a single line: $file"
+              exit 1
+            fi
+            case "$content" in
+              https://*|http://*) ;;
+              *)
+                echo "not an http(s) URL: $file"
+                exit 1
+                ;;
+            esac
+            # Filename (without .txt) must not be empty or contain separators.
+            name="$(basename "$file" .txt)"
+            case "$name" in
+              ""|*/*|*\\*|*[[:space:]]*) echo "bad name: $name"; exit 1 ;;
+            esac
+          done <<<"$changed"
+
+          echo "guard=ok" >> "$GITHUB_OUTPUT"
+
+      - name: Merge the pull request
+        if: steps.guard.outputs.guard == 'ok'
+        env:
+          GH_TOKEN: ${{ secrets.ACTIONS_BOT_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr review "$PR" --approve
+          gh pr merge "$PR" --merge --admin || gh pr merge "$PR" --merge
+
+      - name: Close and comment when the guard rejects
+        if: steps.guard.outputs.guard != 'ok'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr close "$PR" --comment \
+            "Auto-merge guard rejected this change: it is not a plain \`shares/**/<setId>.txt\` file containing a single http(s) URL. Only such pointer files are auto-merged; everything else needs a human reviewer."

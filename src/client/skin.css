@@ -291,21 +291,88 @@ body[data-flash-skin="on"] textarea {
   font-size: 14px;
   line-height: 22px;
   color: var(--dsw-alias-label-primary);
+  border: 1px solid var(--dsw-alias-border-l2, #e5e7eb);
+  background: var(--dsw-alias-bg-layer-3, #fff);
+  border-radius: 12px;
+  transition: border-color 0.16s, background 0.16s;
 }
 
+.flash-portrait-groups:hover {
+  border-color: var(--dsw-alias-label-dimmed, #c8ccd4);
+}
+
+.flash-portrait-groups--open {
+  background: var(--dsw-alias-bg-layer-2, #f7f8fa);
+  border-color: var(--dsw-alias-label-dimmed, #c8ccd4);
+}
+
+/* 插件详情页整卡折叠（参照 dshmarket 设置卡交互）：整行 header 可点击，
+ * 左侧标题 + 描述，右侧 chevron 展开时旋转 180°；主体默认收起，每次进入
+ * 详情页重置，不做持久化。折叠仅隐藏 body、保留挂载，以保全编辑中瞬时状态。 */
 .flash-portrait-groups__head {
+  appearance: none;
+  width: 100%;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 12px;
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 8px 12px;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.flash-portrait-groups__head-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  gap: 4px;
+  min-width: 0;
 }
 
 .flash-portrait-groups__title {
   margin: 0;
-  font-size: 16px;
+  color: var(--dsw-alias-label-primary);
+  font-size: 15px;
   font-weight: 600;
-  line-height: 24px;
+  line-height: 1.4;
+}
+
+.flash-portrait-groups__desc {
+  margin: 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.flash-portrait-groups__chevron {
+  color: var(--dsw-alias-label-tertiary);
+  flex: none;
+  display: inline-flex;
+  transition: transform 0.16s;
+}
+
+.flash-portrait-groups__chevron--open {
+  transform: rotate(180deg);
+}
+
+.flash-portrait-groups:not(.flash-portrait-groups--open) .flash-portrait-groups__body {
+  display: none;
+}
+
+.flash-portrait-groups__body {
+  border-top: 1px solid var(--dsw-alias-border-l2, #e5e7eb);
+  margin: 0 16px;
+  padding-bottom: 8px;
+}
+
+/* 卡片根级提示（加载态 / 只读提示）：与 header/body 内容同侧留白。 */
+.flash-portrait-groups__notice--root {
+  padding: 14px 16px;
+  margin: 0;
 }
 
 .flash-portrait-groups__hint,

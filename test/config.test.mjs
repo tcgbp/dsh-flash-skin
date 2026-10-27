@@ -48,4 +48,14 @@ describe("Config schema (plugin activation contract)", () => {
       path: "lib/shares",
     });
   });
+
+  it("accepts integer darkLevel thresholds in range and rejects fractional ones", () => {
+    // `darkLevel` is an integer slider stop 0..MAX_LEVEL; fractional values
+    // must fail validation so a persisted float can never slip through.
+    expect(() => Config({ portraitGroups: [{ id: "a", name: "A", darkLevel: 5 }] })).not.toThrow();
+    expect(() => Config({ portraitGroups: [{ id: "a", name: "A", darkLevel: 0 }] })).not.toThrow();
+    expect(() => Config({ portraitGroups: [{ id: "a", name: "A", darkLevel: 2.5 }] })).toThrow();
+    expect(() => Config({ portraitGroups: [{ id: "a", name: "A", darkLevel: -1 }] })).toThrow();
+    expect(() => Config({ portraitGroups: [{ id: "a", name: "A", darkLevel: 7 }] })).toThrow();
+  });
 });

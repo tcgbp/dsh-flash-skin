@@ -20,13 +20,11 @@ import {
   compositeLevel,
   contextCompactionFactor,
   contextPressureFactor,
-  dividerStepFor,
   frameIndexForLevel,
   frameIndexForContinuousLevel,
   frameIndexForScore,
   freshnessDecay,
   levelForEffort,
-  nearestEffortIndex,
   normalizeWeights,
   paletteForLevel,
   reasoningEffortFactor,
@@ -55,7 +53,6 @@ const LOCALE_NAMESPACE = "flash.skin";
 const CONFIG_NAMESPACE = "flash-skin";
 const LEVEL_KEY = "dsh-flash-skin.level";
 const SET_KEY = "dsh-flash-skin.set";
-const BIND_EFFORT_KEY = "dsh-flash-skin.bind-effort";
 const DRIVER_KEY = "dsh-flash-skin.driver";
 const WEIGHTS_KEY = "dsh-flash-skin.weights";
 // Host attachments route (exact path for POST upload, prefix for GET serve).
@@ -233,12 +230,10 @@ const DEFAULT_PORTRAIT_SET: DefaultPortraitSet = {
 
 // How the level slider is driven:
 // - "manual"  → user drags the slider; the value persists across sessions.
-// - "effort"  → the slider follows the conversation's committed reasoning
-//               effort (and dragging issues a directory.select to change it).
 // - "composite" → a read-only weighted gauge computed from live conversation
 //               signals (token usage, context pressure, reasoning effort,
 //               decode speed); never persisted as the manual level.
-type DriverMode = "manual" | "effort" | "composite";
+type DriverMode = "manual" | "composite";
 
 interface SkinSettings {
   enabled: boolean;
@@ -292,7 +287,6 @@ interface ModelDirectory {
 interface RecorderProps {
   directory: SnapshotStore<ModelDirectoryState>;
   load: () => void;
-  select: (selection: ModelSelection) => Promise<boolean>;
   presenter: SkinPresenter;
   scope: PreferenceStore;
   settings: { level: number };
@@ -635,7 +629,6 @@ class SkinPresenter {
 function FlashLevelControl({
   directory,
   load,
-  select,
   presenter,
   scope,
   settings,
@@ -667,12 +660,9 @@ function FlashLevelControl({
     : levelForEffort(committedIndex, efforts.length);
   const driver = skin.driver;
   const [level, setLevel] = useState(() => {
-    if (driver === "effort") return committedLevel;
     if (driver === "composite") return 0;
     return clampLevel(settings.level);
   });
-  const [pending, setPending] = useState(false);
-  const [failed, setFailed] = useState(false);
   const [interacting, setInteracting] = useState(false);
   const dragging = useRef(false);
   const dragStartLevel = useRef(level);
@@ -681,12 +671,6 @@ function FlashLevelControl({
   useEffect(() => {
     if (enabled) load();
   }, [enabled, load]);
-
-  useEffect(() => {
-    if (driver !== "effort" || dragging.current || pending) return;
-    setLevel(committedLevel);
-    presenter.setLevel(committedLevel);
-  }, [driver, committedLevel, pending, presenter]);
 
   useEffect(() => {
     if (enabled) presenter.setLevel(level);
@@ -701,12 +685,8 @@ function FlashLevelControl({
   }, [level, enabled, presenter, driver]);
 
   if (!enabled) return null;
-  if (driver === "effort" && (reasoning === null || efforts.length < 2)) return null;
 
-  const previewIndex = driver === "effort" ? nearestEffortIndex(level, efforts) : -1;
-  const previewEffort = efforts[previewIndex];
   const progressRatio = level / MAX_LEVEL;
-  const tooltipLabel = previewEffort?.name;
   const readOnly = driver === "composite";
 
   // Composite driver: hand the render off to a dedicated component that owns
@@ -745,61 +725,27 @@ function FlashLevelControl({
     );
   }
 
-  const commit = async (rawLevel: number) => {
-    if (driver === "manual") {
-      dragging.current = false;
-      const next = clampLevel(rawLevel);
-      setLevel(next);
-      presenter.setLevel(next);
-      return;
-    }
-    const targetIndex = nearestEffortIndex(rawLevel, efforts);
-    const target = efforts[targetIndex];
-    if (target === undefined) return;
-    const targetLevel = levelForEffort(targetIndex, efforts.length);
+  const commit = (rawLevel: number) => {
     dragging.current = false;
-    setLevel(targetLevel);
-    presenter.setLevel(targetLevel);
-    if (targetIndex === committedIndex || pending) return;
-    setPending(true);
-    setFailed(false);
-    const accepted = await select({
-      provider: reasoning.selection.provider,
-      model: reasoning.selection.model,
-      reasoningEffort: target.id,
-    });
-    setPending(false);
-    if (!accepted) {
-      setFailed(true);
-      setLevel(committedLevel);
-      presenter.setLevel(committedLevel);
-    }
+    const next = clampLevel(rawLevel);
+    setLevel(next);
+    presenter.setLevel(next);
   };
 
   return (
     <div
       className="flash-level-control"
       data-plugin={PACKAGE_ID}
-      data-state={failed ? "error" : pending ? "pending" : "ready"}
-      title={driver === "effort" ? previewEffort?.name : undefined}
+      data-state="ready"
     >
       {interacting && (
         <output
           className="flash-level-control__tooltip"
           style={{ "--flash-slider-ratio": progressRatio } as React.CSSProperties}
         >
-          {tooltipLabel ?? `${Math.round(progressRatio * 100)}%`}
+          {`${Math.round(progressRatio * 100)}%`}
         </output>
       )}
-      <div className="flash-level-control__ticks" aria-hidden="true">
-        {efforts.map((effort, index) => (
-          <i
-            className="flash-level-control__tick"
-            key={effort.id}
-            style={{ left: `${(levelForEffort(index, efforts.length) / MAX_LEVEL) * 100}%` }}
-          />
-        ))}
-      </div>
       <input
         className="flash-level-control__range"
         type="range"
@@ -807,9 +753,9 @@ function FlashLevelControl({
         max={MAX_LEVEL}
         step={1}
         value={level}
-        disabled={pending || state.status === "selecting"}
-        aria-label={driver === "effort" ? "推理强度" : "皮肤强度"}
-        aria-valuetext={driver === "effort" ? previewEffort?.name ?? "" : tooltipLabel ?? ""}
+        disabled={state.status === "selecting"}
+        aria-label="皮肤强度"
+        aria-valuetext={`${Math.round(progressRatio * 100)}%`}
         onPointerDown={() => {
           dragging.current = true;
           dragStartLevel.current = level;
@@ -841,7 +787,7 @@ function FlashLevelControl({
         }}
         onKeyDown={(event) => {
           setInteracting(true);
-          if (event.key === "Escape" && !pending) {
+          if (event.key === "Escape") {
             setInteracting(false);
             dragging.current = false;
             setLevel(dragStartLevel.current);
@@ -863,7 +809,6 @@ function DriverRow({ scope, t }: DriverRowProps) {
 
   const options: { value: DriverMode; label: string }[] = [
     { value: "manual", label: t("driver.manual") },
-    { value: "effort", label: t("driver.effort") },
     { value: "composite", label: t("driver.composite") },
   ];
 
@@ -1231,15 +1176,13 @@ function restoreInitialSet(): string {
   return DEFAULT_PORTRAIT_SET.id;
 }
 
-// Restore the driver mode. The old bind-effort toggle (BIND_EFFORT_KEY) is
-// migrated: "0" → manual (no binding), anything else → effort. New installs
-// default to the full composite mode.
+// Restore the driver mode. A leftover "effort" (the removed 跟随推理 mode)
+// falls back to the default composite gauge. New installs default to the full
+// composite mode.
 function restoreDriver(): DriverMode {
   try {
     const raw = localStorage.getItem(DRIVER_KEY);
-    if (raw === "manual" || raw === "effort" || raw === "composite") return raw;
-    const legacy = localStorage.getItem(BIND_EFFORT_KEY);
-    if (legacy !== null) return legacy === "0" ? "manual" : "effort";
+    if (raw === "manual" || raw === "composite") return raw;
   } catch {
     // storage may be unavailable
   }
@@ -1296,7 +1239,7 @@ function createPreferenceStore(initialSet: string): PreferenceStore {
     const next = {
       enabled: snapshot.enabled,
       set: event.key === SET_KEY ? (nextSetId ?? snapshot.set) : snapshot.set,
-      driver: event.key === DRIVER_KEY && (event.newValue === "manual" || event.newValue === "effort" || event.newValue === "composite")
+      driver: event.key === DRIVER_KEY && (event.newValue === "manual" || event.newValue === "composite")
         ? event.newValue
         : snapshot.driver,
     };
@@ -1478,8 +1421,8 @@ interface FlashSkinConfigCardProps {
 const CONFIG_TEXTS: Record<string, Record<string, string>> = {
   zh: {
     "loading": "正在加载…",
-    "title": "肖像皮肤组",
-    "hint": "每个组是一组有序图片，槽位从左到右对应推理等级由低到高，空槽位会回退到默认素材。",
+    "cardTitle": "Flash 皮肤",
+    "cardDesc": "为对话界面应用随推理等级切换的角色肖像皮肤：管理肖像组、等级绑定与综合权重，支持压缩包导入与分享。",
     "readOnly": "当前文档不允许写入，请先开启连接或权限。",
     "openDetails": "Flash皮肤插件配置",
     "openDetailsHint": "在插件管理页打开本插件（dsh-flash-skin）的详情。",
@@ -1583,8 +1526,8 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
   },
   en: {
     "loading": "Loading…",
-    "title": "Portrait groups",
-    "hint": "Each group is an ordered set of images; slots run from low to high reasoning level left to right. Empty slots fall back to the default art.",
+    "cardTitle": "Flash Skin",
+    "cardDesc": "Portrait skin for the conversation UI that switches with the reasoning level: manage portrait groups, level bindings and composite weights; import archives and share.",
     "readOnly": "The current document does not accept writes; connect or grant permission first.",
     "openDetails": "Flash Skin plugin settings",
     "openDetailsHint": "Open this plugin's (dsh-flash-skin) detail page in the plugin manager.",
@@ -2081,6 +2024,11 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const pendingPick = useRef<{ kind: "add" | "replace"; groupIndex: number; imageIndex?: number } | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
+  // Whether the config card body is collapsed. Defaults to collapsed so the
+  // plugin detail page shows only a compact header until the user expands it
+  // (collapsing the whole card, not just the weights grid). Not persisted:
+  // each entry into the page starts collapsed.
+  const [collapsed, setCollapsed] = useState(true);
   // An imported archive whose manifest id collides with an existing group
   // pauses in `pendingImport` so the user can confirm a unique id before it
   // takes effect, instead of silently appending a `-2`/`-3` suffix.
@@ -2347,7 +2295,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
   if (!ready) {
     return (
       <section className="flash-portrait-groups" data-plugin={PACKAGE_ID} data-state="loading">
-        <p className="flash-portrait-groups__notice">{t("loading")}</p>
+        <p className="flash-portrait-groups__notice flash-portrait-groups__notice--root">{t("loading")}</p>
       </section>
     );
   }
@@ -2358,20 +2306,14 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
     return next;
   };
 
-  // Click-driven threshold: move the light/dark boundary one slider stop at a
-  // time with the left/right arrows that flank the divider. No mouse drag.
+  // Click-driven threshold: move the light/dark boundary one integer slider
+  // stop at a time with the left/right arrows that flank the divider. No mouse
+  // drag. darkLevel is an integer 0..MAX_LEVEL stop whose boundary is clamped.
   const stepDivider = (groupIndex: number, delta: -1 | 1) => {
     if (!writable || busy) return;
     const group = groups[groupIndex];
     const current = group?.darkLevel ?? MAX_LEVEL - 1;
-    // With more frames than integer slider stops (N > MAX_LEVEL + 1) a plain
-    // one-stop bump can never land the divider on some gaps — e.g. a 9-frame
-    // group leaves the 1/4/7 boundary slots unreachable. Once the frame count
-    // exceeds the stops, step by a single image gap instead so every
-    // frame-to-frame position is reachable; smaller sets keep the original
-    // one-stop step and do not regress.
-    const step = dividerStepFor(group?.images?.length ?? 0);
-    const next = Math.round(clampLevelContinuous(current + delta * step) * 1000) / 1000;
+    const next = clampLevel(current + delta);
     if (next !== current) {
       void commit(withGroup(groupIndex, (g) => ({ ...g, darkLevel: next })));
     }
@@ -2892,12 +2834,31 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
   };
 
   return (
-    <section className="flash-portrait-groups" data-plugin={PACKAGE_ID} data-state={writable ? "ready" : "readonly"}>
-      <header className="flash-portrait-groups__head">
-        <h2 className="flash-portrait-groups__title">{t("title")}</h2>
-        {!writable && <p className="flash-portrait-groups__notice" role="status">{t("readOnly")}</p>}
-      </header>
-      <p className="flash-portrait-groups__hint">{t("hint")}</p>
+    <section
+      className={`flash-portrait-groups${collapsed ? "" : " flash-portrait-groups--open"}`}
+      data-plugin={PACKAGE_ID}
+      data-state={writable ? "ready" : "readonly"}
+    >
+      <button
+        type="button"
+        className="flash-portrait-groups__head"
+        aria-expanded={!collapsed}
+        aria-controls="flash-portrait-groups__body"
+        onClick={() => setCollapsed((v) => !v)}
+      >
+        <span className="flash-portrait-groups__head-text">
+          <span className="flash-portrait-groups__title">{t("title")}</span>
+          <span className="flash-portrait-groups__desc">{t("hint")}</span>
+        </span>
+        <span
+          className={`flash-portrait-groups__chevron${collapsed ? "" : " flash-portrait-groups__chevron--open"}`}
+          aria-hidden="true"
+        >
+          ▾
+        </span>
+      </button>
+      {!writable && <p className="flash-portrait-groups__notice flash-portrait-groups__notice--root" role="status">{t("readOnly")}</p>}
+      <div className="flash-portrait-groups__body" id="flash-portrait-groups__body">
       <input
         ref={fileInputRef}
         type="file"
@@ -3434,6 +3395,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
           {t("weights.reset")}
         </button>
       </section>
+      </div>
 
       {preview && (
         <div
@@ -3620,7 +3582,6 @@ export function apply(ctx: ClientContext) {
         "portraitSwitch": "人物强度",
         "driver.title": "强度驱动",
         "driver.manual": "手动",
-        "driver.effort": "跟随推理",
         "driver.composite": "综合加权",
         "weights.title": "综合加权（手动可调）",
         "weights.hint": "按权重合成的 0–6 强度实时驱动人物肖像；全为 0 时回退默认权重。",
@@ -3644,6 +3605,8 @@ export function apply(ctx: ClientContext) {
         "weights.speedTiming": "速度衰减计时（毫秒）",
         "weights.graceMs": "停留",
         "weights.fadeMs": "衰减",
+        "expandDetails": "展开配置",
+        "collapseDetails": "收起配置",
       },
       en: {
         ...CONFIG_TEXTS.en,
@@ -3652,7 +3615,6 @@ export function apply(ctx: ClientContext) {
         "portraitSwitch": "Person level",
         "driver.title": "Level driver",
         "driver.manual": "Manual",
-        "driver.effort": "Follow reasoning",
         "driver.composite": "Composite",
         "weights.title": "Composite weights (editable)",
         "weights.hint": "Live 0–6 portrait level synthesised from these weights; all-zero falls back to defaults.",
@@ -3676,6 +3638,8 @@ export function apply(ctx: ClientContext) {
         "weights.speedTiming": "Speed decay timing (ms)",
         "weights.graceMs": "Hold",
         "weights.fadeMs": "Fade",
+        "expandDetails": "Expand settings",
+        "collapseDetails": "Collapse settings",
       },
     }),
     "flash-skin: settings locale",
@@ -3875,8 +3839,8 @@ export function apply(ctx: ClientContext) {
       });
       // 「强度驱动」dropdown directly UNDER the portrait-set dropdown
       // (26.25, between the select at 26 and the level slider at 26.5): the
-      // same three-option driver selector as the settings row (manual / effort
-      // / composite), bound to the same store so both surfaces stay in step.
+      // same two-option driver selector as the settings row (manual /
+      // composite), bound to the same store so both surfaces stay in step.
       // A `select` (not a buttongroup) so the option labels never truncate in
       // the compact quick panel.
       // `getValue`/`visible` read live at render time; the scope subscription
@@ -3890,13 +3854,12 @@ export function apply(ctx: ClientContext) {
         order: 26.25,
         options: () => [
           { value: "manual", label: setLabel("driver.manual") },
-          { value: "effort", label: setLabel("driver.effort") },
           { value: "composite", label: setLabel("driver.composite") },
         ],
         getValue: () => scope.getSnapshot().driver,
         setValue: (value) => {
           const driver =
-            value === "manual" || value === "effort" || value === "composite"
+            value === "manual" || value === "composite"
               ? value
               : "manual";
           void scope.setDriver(driver).catch(() => undefined)
@@ -4047,9 +4010,6 @@ export function apply(ctx: ClientContext) {
         load: () => {
           if (available) void directory.load().catch(() => undefined);
         },
-        select: (selection: ModelSelection) => available
-          ? directory.select(selection).then((result) => result.ok, () => false)
-          : Promise.resolve(false),
       };
     },
   }, FlashLevelControl));

@@ -872,7 +872,7 @@ body[data-flash-skin="on"] textarea {
  *       timeline 槽宽（默认 50px，可覆盖改）。只保留右侧拖把，并把右拖把重新
  *       钉到内容列右缘。纯 CSS，右拖把沿用原生 ×2 拖拽手感。
  * ========================================================================= */
-body[data-flash-skin="on"] {
+body[data-flash-skin="on"][data-flash-layout="left"] {
   /* 左侧为 timeline 预留的槽宽（px）。需要更大/更小时直接改这里。 */
   --dsh-flash-timeline-gutter: 40px;
   /* 右拖把与内容列右缘的间隙（继承原生 24px 手感）。 */
@@ -891,7 +891,7 @@ body[data-flash-skin="on"] {
  *    calc(var(--dsh-chat-content-width) + 32px)，输入卡比内容列宽 32px。
  *    此处直接在 .wSkVaW_body 级覆写为 = 内容列宽，让输入卡(+todo+排队条)
  *    与内容列同宽、同左缘，右缘也逐点对齐。 */
-body[data-flash-skin="on"] .wSkVaW_body {
+body[data-flash-skin="on"][data-flash-layout="left"] .wSkVaW_body {
   --dsh-composer-card-max-width: var(--dsh-chat-content-width);
 }
 
@@ -899,7 +899,7 @@ body[data-flash-skin="on"] .wSkVaW_body {
  *    右边距 auto（不再对半居中）。
  *    注：.EvIC1a_scroll 自带 padding:16px calc(侧余量+16)，故这里去掉父 padding，
  *    让内容列净左缘 = content-left，与输入卡左缘同基准。 */
-body[data-flash-skin="on"] .EvIC1a_column {
+body[data-flash-skin="on"][data-flash-layout="left"] .EvIC1a_column {
   margin-right: auto !important;
   margin-left: calc(
     var(--dsh-flash-timeline-gutter, 50px)
@@ -908,7 +908,7 @@ body[data-flash-skin="on"] .EvIC1a_column {
 }
 
 /* 2) 隐藏左侧拖把，只保留右侧。 */
-body[data-flash-skin="on"] .wSkVaW_widthHandle[data-side="left"] {
+body[data-flash-skin="on"][data-flash-layout="left"] .wSkVaW_widthHandle[data-side="left"] {
   display: none !important;
 }
 
@@ -920,7 +920,7 @@ body[data-flash-skin="on"] .wSkVaW_widthHandle[data-side="left"] {
  *     + 拖把间隙 24px
  *    拖把自身宽度固定为 10px（原生 min(10px,…) 是专为居中布局写的）。
  */
-body[data-flash-skin="on"] .wSkVaW_widthHandle[data-side="right"] {
+body[data-flash-skin="on"][data-flash-layout="left"] .wSkVaW_widthHandle[data-side="right"] {
   left: calc(
     var(--dsh-composer-side-clearance, 16px) + 16px
     + var(--dsh-flash-timeline-gutter, 50px)
@@ -942,13 +942,13 @@ body[data-flash-skin="on"] .wSkVaW_widthHandle[data-side="right"] {
  *    与皮肤变量/主题耦合低，改槽宽时输入卡与内容列同步移动。同宽 + 同左缘
  *    => 输入卡右缘 = 内容列右缘，滚动到最下按钮(第 7 段)即钉在其上方。
  */
-body[data-flash-skin="on"] .uV2eYG_root {
+body[data-flash-skin="on"][data-flash-layout="left"] .uV2eYG_root {
   align-items: flex-start !important;
 }
-body[data-flash-skin="on"] .uV2eYG_root > .uV2eYG_card {
+body[data-flash-skin="on"][data-flash-layout="left"] .uV2eYG_root > .uV2eYG_card {
   margin-left: calc(16px + var(--dsh-flash-timeline-gutter, 50px)) !important;
 }
-body[data-flash-skin="on"] .wSkVaW_composerHero {
+body[data-flash-skin="on"][data-flash-layout="left"] .wSkVaW_composerHero {
   align-self: flex-start !important;
 }
 
@@ -960,7 +960,7 @@ body[data-flash-skin="on"] .wSkVaW_composerHero {
  *     把该行改为左对齐并施加同样的 margin-left，使统计行最左侧与输入卡
  *     左缘落在同一根垂直线上。
  */
-body[data-flash-skin="on"] .uV2eYG_dock {
+body[data-flash-skin="on"][data-flash-layout="left"] .uV2eYG_dock {
   justify-content: flex-start !important;
   margin-left: calc(16px + var(--dsh-flash-timeline-gutter, 50px)) !important;
 }
@@ -972,7 +972,7 @@ body[data-flash-skin="on"] .uV2eYG_dock {
  *     (._7yHdaG_dock) 完全相同的 margin-left 基准，并去掉那 20px 原生内边距，
  *     让芯片左缘与输入卡左缘落在同一根垂直线。
  */
-body[data-flash-skin="on"] .wSkVaW_heroWorkspaceRow {
+body[data-flash-skin="on"][data-flash-layout="left"] .wSkVaW_heroWorkspaceRow {
   margin-left: calc(
     var(--dsh-composer-side-clearance, 16px) + 16px
     + var(--dsh-flash-timeline-gutter, 50px)
@@ -989,7 +989,7 @@ body[data-flash-skin="on"] .wSkVaW_heroWorkspaceRow {
  *    故把 margin:0 auto 改为 margin-left = 同值、margin-right 保持 auto，
  *    让 todo 条带的左缘与输入卡左缘对齐。
  */
-body[data-flash-skin="on"] .lXshSW_root {
+body[data-flash-skin="on"][data-flash-layout="left"] .lXshSW_root {
   margin-left: calc(
     var(--dsh-composer-side-clearance, 16px) + 16px
     + var(--dsh-flash-timeline-gutter, 50px)
@@ -1002,12 +1002,32 @@ body[data-flash-skin="on"] .lXshSW_root {
  *    同处 .wSkVaW_composerStack，原生 ._7yHdaG_dock{margin:0 auto} 居中。
  *    与 todo 用同一个 margin-left 位移，让排队条左缘与输入卡/内容列左缘对齐。
  */
-body[data-flash-skin="on"] ._7yHdaG_dock {
+body[data-flash-skin="on"][data-flash-layout="left"] ._7yHdaG_dock {
   margin-left: calc(
     var(--dsh-composer-side-clearance, 16px) + 16px
     + var(--dsh-flash-timeline-gutter, 50px)
   ) !important;
   margin-right: auto !important;
+}
+
+/* 6a) 目标显示条（GoalBar，dsh-client-ui-goal，挂 conversation.input.dock，
+ *     与 todo/排队条同处 .wSkVaW_composerStack）。
+ *     原生 .nLMEza_dock{width:calc(100% - …);margin:0 auto} 把整条在输入栈里居中，
+ *     .nLMEza_bar{margin:0 auto} 再在 dock 内部把白色条居中 —— 两层居中叠加导致
+ *     目标条仍贴着视口中线，没跟着左移。这里先把 dock 从左钉死（去掉 auto 居中，
+ *     使公允左缘 = composerStack 原点），再给可见的 .nLMEza_bar 施加与
+ *     todo(.lXshSW_root)/排队条(._7yHdaG_dock) 完全相同的 margin-left 基准，
+ *     让白色目标条左缘与输入卡/内容列左缘落在同一根垂直线上。
+ */
+body[data-flash-skin="on"][data-flash-layout="left"] .nLMEza_dock {
+  margin-left: 0 !important;
+  margin-right: auto !important;
+}
+body[data-flash-skin="on"][data-flash-layout="left"] .nLMEza_bar {
+  margin-left: calc(
+    var(--dsh-composer-side-clearance, 16px) + 16px
+    + var(--dsh-flash-timeline-gutter, 50px)
+  ) !important;
 }
 
 /* 7) “滚动到最下”按钮与左移后的内容列右缘对齐。
@@ -1016,7 +1036,7 @@ body[data-flash-skin="on"] ._7yHdaG_dock {
  *    内容列的右缘。内容列左移槽宽后，右缘也跟着左移，故把 padding-right
  *    改为“右侧实际空余”= 100% − 槽宽 − (侧余量+16) − 列宽。
  */
-body[data-flash-skin="on"] .EvIC1a_toBottomSlot {
+body[data-flash-skin="on"][data-flash-layout="left"] .EvIC1a_toBottomSlot {
   padding-right: calc(
     100% - var(--dsh-flash-timeline-gutter, 50px)
     - var(--dsh-composer-side-clearance, 16px) - 16px

@@ -58,6 +58,7 @@ const CONFIG_NAMESPACE = "flash-skin";
 const LEVEL_KEY = "dsh-flash-skin.level";
 const SET_KEY = "dsh-flash-skin.set";
 const DRIVER_KEY = "dsh-flash-skin.driver";
+const LAYOUT_KEY = "dsh-flash-skin.layout-left";
 const WEIGHTS_KEY = "dsh-flash-skin.weights";
 // Host attachments route (exact path for POST upload, prefix for GET serve).
 const ATTACHMENT_PATH = `/plugins/${PACKAGE_ID}/attachment`;
@@ -376,6 +377,9 @@ class SkinPresenter {
   private enabled = true;
   private level = 0;
   private set: PortraitSet = DEFAULT_PORTRAIT_SET;
+  // Left-aligned layout gate (persisted). Drives `data-flash-layout` on
+  // <body>; the skin.css left-align rules activate only while this is ON.
+  private layout = restoreLayout();
   // Per-group config mirrored from the persisted config card. images drive the
   // portrait sequence; darkLevel (absent → MAX_LEVEL - 1) drives the flip to
   // the dark shell.
@@ -494,6 +498,30 @@ class SkinPresenter {
     return this.set;
   }
 
+  getLayout() {
+    return this.layout;
+  }
+
+  setLayout(left: boolean) {
+    if (this.disposed) return;
+    this.layout = left;
+    try {
+      if (left) localStorage.setItem(LAYOUT_KEY, "1");
+      else localStorage.setItem(LAYOUT_KEY, "0");
+    } catch {
+      // storage may be unavailable
+    }
+    this.applyLayout();
+  }
+
+  // Mirror the skin on/off body-attribute pattern: `data-flash-layout="left"`
+  // activates the gated left-align rules; removing it returns to native.
+  private applyLayout() {
+    if (this.disposed) return;
+    if (this.enabled && this.layout) document.body.dataset.flashLayout = "left";
+    else document.body.removeAttribute("data-flash-layout");
+  }
+
   setPortraitSet(set: PortraitSet) {
     if (this.disposed || set.id === this.set.id) return;
     this.set = set;
@@ -515,6 +543,7 @@ class SkinPresenter {
     if (enabled) {
       if (!this.root.isConnected) document.body.prepend(this.root);
       document.body.dataset.flashSkin = "on";
+      this.applyLayout();
       this.applyPalette();
       this.portraits.start();
     } else {
@@ -523,6 +552,7 @@ class SkinPresenter {
       this.root.replaceChildren();
       this.root.dataset.media = "color";
       document.body.removeAttribute("data-flash-skin");
+      this.applyLayout();
       for (const name of cssVariables) document.body.style.removeProperty(name);
     }
   }
@@ -625,6 +655,7 @@ class SkinPresenter {
     this.portraits.dispose();
     this.root.remove();
     document.body.removeAttribute("data-flash-skin");
+    document.body.removeAttribute("data-flash-layout");
     delete document.body.dataset.flashStage;
     for (const name of cssVariables) document.body.style.removeProperty(name);
   }
@@ -1191,6 +1222,18 @@ function restoreDriver(): DriverMode {
     // storage may be unavailable
   }
   return "composite";
+}
+
+// Restore the left-aligned layout gate. Default ON so existing installs keep
+// the requested left-aligned layout unchanged; only an explicit persisted "0"
+// returns to the native centered layout.
+function restoreLayout(): boolean {
+  try {
+    return localStorage.getItem(LAYOUT_KEY) !== "0";
+  } catch {
+    // storage may be unavailable
+  }
+  return true;
 }
 
 function readWeightsState(): { weights: CompositeWeights; tuning: SpeedTuning } {
@@ -3580,8 +3623,10 @@ export function apply(ctx: ClientContext) {
       zh: {
         ...CONFIG_TEXTS.zh,
         "appearance": "人物肖像",
+        "flashSkin": "Flash 皮肤",
         "portraitSet": "人物肖像组",
         "portraitSwitch": "人物强度",
+        "layout.title": "内容居左对齐",
         "driver.title": "强度驱动",
         "driver.manual": "手动",
         "driver.composite": "综合加权",
@@ -3613,8 +3658,10 @@ export function apply(ctx: ClientContext) {
       en: {
         ...CONFIG_TEXTS.en,
         "appearance": "Portrait group",
+        "flashSkin": "Flash Skin",
         "portraitSet": "Portrait set",
         "portraitSwitch": "Person level",
+        "layout.title": "Left-aligned layout",
         "driver.title": "Level driver",
         "driver.manual": "Manual",
         "driver.composite": "Composite",
@@ -3681,6 +3728,10 @@ export function apply(ctx: ClientContext) {
   const PORTRAIT_SET_SWITCH_ID = `${PACKAGE_ID}:portrait-set`;
   const PORTRAIT_SLIDER_SWITCH_ID = `${PACKAGE_ID}:portrait-slider`;
   const DRIVER_SWITCH_ID = `${PACKAGE_ID}:driver`;
+  const LAYOUT_SWITCH_ID = `${PACKAGE_ID}:layout-left`;
+  // 这五个皮肤开关共享同一个簇字符串，宿主会把它们折叠成一张以
+  // 「Flash 皮肤」为标题的卡片（首行控件常开、其余收进折叠体）。
+  const FLASH_SKIN_CLUSTER = "flash-skin";
   let quickControl: {
     registerSwitch?: (def: unknown) => (() => void) | void;
     unregisterSwitch?: (id: string) => void;
@@ -3730,6 +3781,7 @@ export function apply(ctx: ClientContext) {
     return {
       id: PORTRAIT_SLIDER_SWITCH_ID,
       label: () => setLabel("portraitSwitch"),
+      cluster: FLASH_SKIN_CLUSTER,
       icon: "scroll",
       type: "slider",
       group: "appearance",
@@ -3826,7 +3878,11 @@ export function apply(ctx: ClientContext) {
       // `select`, and that cluster is already closed with its two members.
       const setDispose = reg.registerSwitch?.({
         id: PORTRAIT_SET_SWITCH_ID,
-        label: () => setLabel("portraitSet"),
+        // This row is the CLUSTER HEAD (lowest `order` of the five skin rows);
+        // the host renders its label as the fold card's title「Flash 皮肤」.
+        label: () => setLabel("flashSkin"),
+        clusterLabel: () => setLabel("flashSkin"),
+        cluster: FLASH_SKIN_CLUSTER,
         icon: "palette",
         type: "select",
         group: "appearance",
@@ -3850,6 +3906,7 @@ export function apply(ctx: ClientContext) {
       const driverDispose = reg.registerSwitch?.({
         id: DRIVER_SWITCH_ID,
         label: () => setLabel("driver.title"),
+        cluster: FLASH_SKIN_CLUSTER,
         icon: "signal",
         type: "buttongroup",
         group: "appearance",
@@ -3869,7 +3926,27 @@ export function apply(ctx: ClientContext) {
         },
         visible: () => presenter.isEnabled(),
       });
-      // Level slider directly UNDER the portrait-set dropdown (26.5, between
+      // Content left-alignment gate (26.7, just under the level slider at
+      // 26.5): a boolean on/off that toggles the whole left-align CSS rule set
+      // in skin.css via `data-flash-layout` on <body>. This bundles every prior
+      // left-shift layout override (timeline gutter, width handles, composer
+      // card, hero workspace, todo/queue docks) behind a single switch. It
+      // only ever touches this skin's own CSS gate — no host coupling.
+      const layoutDispose = reg.registerSwitch?.({
+        id: LAYOUT_SWITCH_ID,
+        label: () => setLabel("layout.title"),
+        cluster: FLASH_SKIN_CLUSTER,
+        icon: "rail",
+        type: "toggle",
+        group: "appearance",
+        order: 26.7,
+        getValue: () => presenter.getLayout(),
+        setValue: (value) => {
+          presenter.setLayout(Boolean(value));
+          quickControl?.notifyChange?.(LAYOUT_SWITCH_ID);
+        },
+        visible: () => presenter.isEnabled(),
+      });
       // the select at 26 and the open-details action at 27): it switches the
       // ACTIVE person's level and gives one stop per frame of that group, so
       // sliding walks through every image of the current person. For a group
@@ -3888,6 +3965,7 @@ export function apply(ctx: ClientContext) {
       const openDispose = reg.registerSwitch?.({
         id: OPEN_DETAILS_SWITCH_ID,
         label: () => setLabel("openDetails"),
+        cluster: FLASH_SKIN_CLUSTER,
         icon: "doc",
         type: "action",
         // Built-in Appearance group (just past the person-switch row at 26.5),
@@ -3908,6 +3986,8 @@ export function apply(ctx: ClientContext) {
         else reg.unregisterSwitch?.(PORTRAIT_SLIDER_SWITCH_ID);
         if (typeof openDispose === "function") openDispose();
         else reg.unregisterSwitch?.(OPEN_DETAILS_SWITCH_ID);
+        if (typeof layoutDispose === "function") layoutDispose();
+        else reg.unregisterSwitch?.(LAYOUT_SWITCH_ID);
         offScope();
       };
     }, "flash-skin: quick switches");

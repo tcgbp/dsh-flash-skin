@@ -3,6 +3,8 @@ import {
   MAX_LEVEL,
   IDLE_GRACE_MS,
   IDLE_FADE_MS,
+  USAGE_FULL,
+  TPS_FULL,
   DEFAULT_COMPOSITE_WEIGHTS,
   DEFAULT_SPEED_TUNING,
   normalizeWeights,
@@ -98,8 +100,8 @@ describe("signal factor helpers", () => {
   });
 
   it("tokenSpeedFactor measures tokens per second, saturated at TPS_FULL", () => {
-    expect(tokenSpeedFactor(80, 1000)).toBe(1);
-    expect(tokenSpeedFactor(40, 1000)).toBeCloseTo(0.5, 5);
+    expect(tokenSpeedFactor(100, 1000)).toBe(1);
+    expect(tokenSpeedFactor(50, 1000)).toBeCloseTo(0.5, 5);
     expect(tokenSpeedFactor(200, 1000)).toBe(1); // clamped
     expect(tokenSpeedFactor(0, 1000)).toBe(0);
     expect(tokenSpeedFactor(100, 0)).toBe(0);
@@ -126,7 +128,7 @@ describe("compositeLevel", () => {
       pressureTokens: 10_000,
       contextWindow: 10_000,
       committedLevel: MAX_LEVEL,
-      decodeTokens: 80,
+      decodeTokens: 100,
       decodeMs: 1000,
     })).toBe(MAX_LEVEL);
     expect(compositeLevel(DEFAULT_COMPOSITE_WEIGHTS, {
@@ -134,7 +136,7 @@ describe("compositeLevel", () => {
       pressureTokens: 10_000,
       contextWindow: 10_000,
       committedLevel: MAX_LEVEL,
-      decodeTokens: 80,
+      decodeTokens: 100,
       decodeMs: 1000,
     })).toBe(MAX_LEVEL);
   });
@@ -412,6 +414,16 @@ describe("DEFAULT_SPEED_TUNING wiring", () => {
     expect(freshnessDecay(0)).toBe(1); // default grace => fresh
     // just after grace+fade with defaults => fully stale
     expect(freshnessDecay(IDLE_GRACE_MS + IDLE_FADE_MS + 1)).toBe(0);
+  });
+
+  it("saturation thresholds are configurable via SpeedTuning", () => {
+    expect(DEFAULT_SPEED_TUNING.usageFull).toBe(USAGE_FULL);
+    expect(DEFAULT_SPEED_TUNING.tpsFull).toBe(TPS_FULL);
+    // scaled saturation changes the reported factor
+    expect(usageFactor(300_000, 300_000)).toBe(1);
+    expect(usageFactor(300_000, 600_000)).toBeCloseTo(0.5, 5);
+    expect(tokenSpeedFactor(40, 1000, 80)).toBeCloseTo(0.5, 5);
+    expect(tokenSpeedFactor(40, 1000, 160)).toBeCloseTo(0.25, 5);
   });
 });
 

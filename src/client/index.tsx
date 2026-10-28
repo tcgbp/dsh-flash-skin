@@ -918,10 +918,11 @@ function CompositeLevelControl({
   const decodeMs = sessionStats?.decodeMs;
 
   const normalized = normalizeWeights(weightsSnapshot);
-  const usageF = usageFactor(outputTokens ?? 0);
+  const tuning = weights.getTuning();
+  const usageF = usageFactor(outputTokens ?? 0, tuning.usageFull);
   const pressureF = contextPressureFactor(pressureTokens, contextWindow, turns);
   const effortF = reasoningEffortFactor(committedLevel);
-  const speedBase = tokenSpeedFactor(decodeTokens ?? 0, decodeMs ?? 0);
+  const speedBase = tokenSpeedFactor(decodeTokens ?? 0, decodeMs ?? 0, tuning.tpsFull);
   const decodingActive = decodeTokens != null && Number.isFinite(decodeTokens) && decodeTokens > 0
     && decodeMs != null && Number.isFinite(decodeMs) && decodeMs > 0;
 
@@ -931,7 +932,6 @@ function CompositeLevelControl({
   // arrived for the configured grace window, the speed factor decays toward 0
   // over the configured fade window and the composite level relaxes back down
   // instead of pinning at the last run's saturated speed.
-  const tuning = weights.getTuning();
   const [now, setNow] = useState(() => Date.now());
   const lastDecodeAt = useRef<number | null>(null);
   useEffect(() => {
@@ -1037,9 +1037,18 @@ function CompositeLevelControl({
   const frame = count > 0 ? frameIndexForScore(combined, count) : 0;
   // 数值格式:去掉小数末尾的多余 0(0.30 → 0.3、0.00 → 0),省空间又直观。
   const fmt = (n: number) => Number(n.toFixed(2)).toString();
-  const term = (weight: number, factor: number) => (
-    <Fragment>{fmt(weight)}<b className="flash-level-control__mul">·</b>{fmt(factor)}</Fragment>
-  );
+  // 落帧刻度:直接取「帧数」——0..1 得分 × count 映射到组内帧,与 frameIndexForScore
+  // 同一个量纲(见 logic.ts);没有肖像组(count≤1)时退回 MAX_LEVEL 作为兜底刻度。
+  const displayScale = count > 1 ? count : MAX_LEVEL;
+  // 每路「权重 × 因子」即该维度的加权贡献,四路求和得到 0..1 的加权得分 base,
+  // 这正是取帧与推滑杆所依据的真实算式(见 weightedLevel/compositeLevel):
+  //   base   = Σ 权重·因子(0..1)
+  //   score  = base + 压缩加分(0..1)
+  //   frame  = frameIndexForScore(score, count) → 组内第几帧
+  // 因子已归一化到 0..1,贡献相加不回缩放,公式可直接与上面的得分/帧核对。
+  // 每路只展示计算后的贡献值 权重×因子(0..1);「权重·因子=」的展开放在该路
+  // tooltip 里,悬停可核对,正文保持精简。
+  const part = (weight: number, factor: number) => fmt(weight * factor);
   // 公式行里给每路加名称短标,方便直接读懂每项是哪个维度。短标随活动语言
   // 中英切换(用量/压力/推理/速度 ↔ Usage/Pressure/Reasoning/Speed)。
   const terms: Array<[string, string, number, number]> = [
@@ -1059,25 +1068,39 @@ function CompositeLevelControl({
       title={label("driver.composite", "综合加权")}
     >
       <output className="flash-level-control__gauge" aria-hidden="true">
-        <span className="flash-level-control__formula">
+        <span className="flash-level-control__formula" title={`真实算式:得分 = Σ(权重×因子) + 压缩加分,再映射到组内 ${count > 0 ? `${count} 帧` : "帧"}`}>
           {terms.map(([label, id, weight, factor], index) => (
             <Fragment key={id}>
-              <span className="flash-level-control__term"><b>{label}</b>{term(weight, factor)}</span>
-              {index < terms.length - 1 && <i className="flash-level-control__plus">+</i>}
+              <span className="flash-level-control__term" title={`${label}:权重 ${fmt(weight)} × 因子 ${fmt(factor)} = 贡献 ${fmt(weight * factor)}`}>
+                <b>{label}</b>
+                <span className="flash-level-control__part">{part(weight, factor)}</span>
+              </span>
+              {index < terms.length - 1 && <i className="flash-level-control__plus" title="各维度贡献相加">+</i>}
             </Fragment>
           ))}
+          <i className="flash-level-control__eq">=</i>
+          <span className="flash-level-control__sum" title={`加权得分 = ${fmt(wBase)} (0..1)`}>{fmt(wBase)}</span>
           {compActive && (
             <Fragment>
               <i className="flash-level-control__plus">+</i>
-              <span className="flash-level-control__term flash-level-control__term--bonus">
+              <span className="flash-level-control__term flash-level-control__term--bonus" title={`压缩加分 = 加分系数 ${fmt(COMPACTION_SCORE_BONUS)} × 压缩脉冲 ${fmt(compactionF)} = ${fmt(compBonus)}`}>
                 <b>{t ? t("weights.compactionShort") : "压缩"}</b>
-                <span className="flash-level-control__bonus">{fmt(compBonus * MAX_LEVEL)}</span>
+                <i className="flash-level-control__eq">=</i>
+                <span className="flash-level-control__bonus">{fmt(compBonus)}</span>
               </span>
+              <i className="flash-level-control__eq">=</i>
+              <span className="flash-level-control__sum" title={`最终得分 = 加权 ${fmt(wBase)} + 压缩 ${fmt(compBonus)} = ${fmt(combined)} (0..1)`}>{fmt(combined)}</span>
             </Fragment>
           )}
-        </span>
-        <span className="flash-level-control__score">
-          {label("weights.score", "得分")} {fmt(combined * MAX_LEVEL)} · {count > 0 ? `${label("weights.frame", "帧")} ${frame + 1}/${count}` : `${label("weights.frame", "帧")} —`}
+          {/* 落帧 + 得分,同一行:0..1 总得分 × 帧数映射到组内第几帧,
+           * 与 frameIndexForScore(score, count) 同一条取帧路径。 */}
+          <i className="flash-level-control__arrow">→</i>
+          <span className="flash-level-control__frame-step" title={`落帧:总得分 ${fmt(combined)} × ${displayScale} 帧 = ${fmt(combined * displayScale)} → frameIndexForScore 映射到第 ${frame + 1} 帧`}>
+            {fmt(combined)}<b className="flash-level-control__mul">·</b>{displayScale}{label("weights.frame", "帧")}=
+          </span>
+          <span className="flash-level-control__score" title={`得分 ${fmt(combined * displayScale)} · 帧 ${count > 0 ? `${frame + 1}/${count}` : "—"} (由 ${fmt(combined)} × ${displayScale} 帧映射)`}>
+            {label("weights.score", "得分")} {fmt(combined * displayScale)}· {label("weights.frame", "帧")} {count > 0 ? `${frame + 1}/${count}` : "—"}
+          </span>
         </span>
       </output>
     </div>
@@ -1275,9 +1298,18 @@ function normalizeTuning(tuning: Partial<SpeedTuning> | null | undefined): Speed
       ? Math.min(60_000, Math.max(0, value as number))
       : fallback
   );
+  // Usage saturation is a token count, speed saturation a rate — different units
+  // and ranges than the millisecond grace/fade windows, so clamp them separately.
+  const clampPositive = (value: number | undefined, fallback: number, min: number, max: number): number => (
+    Number.isFinite(value) && (value as number) > 0
+      ? Math.min(max, Math.max(min, value as number))
+      : fallback
+  );
   return {
     graceMs: clamp(tuning?.graceMs, DEFAULT_SPEED_TUNING.graceMs),
     fadeMs: clamp(tuning?.fadeMs, DEFAULT_SPEED_TUNING.fadeMs),
+    usageFull: clampPositive(tuning?.usageFull, DEFAULT_SPEED_TUNING.usageFull, 1, 10_000_000),
+    tpsFull: clampPositive(tuning?.tpsFull, DEFAULT_SPEED_TUNING.tpsFull, 100, 1000),
   };
 }
 
@@ -1392,7 +1424,9 @@ function createWeightsStore(): WeightsStore {
     setTuning(tuning) {
       const next = normalizeTuning({ ...state.tuning, ...tuning });
       const same = next.graceMs === state.tuning.graceMs
-        && next.fadeMs === state.tuning.fadeMs;
+        && next.fadeMs === state.tuning.fadeMs
+        && next.usageFull === state.tuning.usageFull
+        && next.tpsFull === state.tuning.tpsFull;
       if (same) return;
       state = { ...state, tuning: next };
       persist();
@@ -3413,28 +3447,31 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
           ))}
         </div>
 
-        <p className="flash-weights__subtitle">{t("weights.speedTiming")}</p>
+        <p className="flash-weights__subtitle">{t("weights.saturation")} · {t("weights.speedTiming")}</p>
         <div className="flash-weights__grid">
           {([
-            ["graceMs", "weights.graceMs", tuningSnapshot.graceMs],
-            ["fadeMs", "weights.fadeMs", tuningSnapshot.fadeMs],
-          ] as const).map(([key, labelKey, value]) => (
+            ["usageFull", "weights.usageFull", tuningSnapshot.usageFull, 1, 10_000_000, 1000],
+            ["tpsFull", "weights.tpsFull", tuningSnapshot.tpsFull, 100, 1000, 1],
+            ["graceMs", "weights.graceMs", tuningSnapshot.graceMs, 0, 60_000, 100],
+            ["fadeMs", "weights.fadeMs", tuningSnapshot.fadeMs, 0, 60_000, 100],
+          ] as const).map(([key, labelKey, value, min, max, step]) => (
             <label key={key} className="flash-weights__field">
               <span className="flash-weights__caption">{t(labelKey)}</span>
               <input
                 type="number"
                 className="flash-weights__input"
-                min={0}
-                max={60000}
-                step={100}
+                min={min}
+                max={max}
+                step={step}
                 value={Math.round(value)}
                 disabled={!writable || busy}
                 onChange={(event) => {
                   const parsed = Number(event.currentTarget.value);
-                  const clamped = Number.isFinite(parsed) ? Math.min(60_000, Math.max(0, parsed)) : 0;
+                  const clamped = Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : 0;
                   weights.setTuning({ [key]: clamped });
                 }}
               />
+              <span className="flash-weights__desc">{t(`weights.${key}Desc`)}</span>
             </label>
           ))}
         </div>
@@ -3653,13 +3690,20 @@ export function apply(ctx: ClientContext) {
         "weights.usageDesc": "本次已生成 token,饱和 30 万",
         "weights.pressureDesc": "上下文占用/窗口,无窗口按轮次",
         "weights.effortDesc": "当前推理档位,未设置按 0",
-        "weights.speedDesc": "解码速度,饱和 80 t/s",
+        "weights.speedDesc": "解码速度,饱和 100 t/s",
         "weights.reset": "恢复默认",
         "weights.score": "得分",
         "weights.frame": "帧",
+        "weights.saturation": "饱和阈值",
+        "weights.usageFull": "用量饱和",
+        "weights.usageFullDesc": "生成多少 token 后用量记满",
+        "weights.tpsFull": "速度饱和",
+        "weights.tpsFullDesc": "多少 t/s 后解码速度记满",
         "weights.speedTiming": "速度衰减计时（毫秒）",
         "weights.graceMs": "停留",
+        "weights.graceMsDesc": "速度记满后保持全速的宽限时长",
         "weights.fadeMs": "衰减",
+        "weights.fadeMsDesc": "宽限期后速度衰减到 0 所需时长",
         "expandDetails": "展开配置",
         "collapseDetails": "收起配置",
       },
@@ -3688,13 +3732,20 @@ export function apply(ctx: ClientContext) {
         "weights.usageDesc": "Tokens generated this turn, saturates at 300k",
         "weights.pressureDesc": "Context used / window; falls back to turns",
         "weights.effortDesc": "Current reasoning level, unknown counts as 0",
-        "weights.speedDesc": "Decode speed, saturates at 80 t/s",
+        "weights.speedDesc": "Decode speed, saturates at 100 t/s",
         "weights.reset": "Restore defaults",
         "weights.score": "Score",
         "weights.frame": "Frame",
+        "weights.saturation": "Saturation thresholds",
+        "weights.usageFull": "Usage saturates at",
+        "weights.usageFullDesc": "Tokens per turn that saturate usage",
+        "weights.tpsFull": "Speed saturates at",
+        "weights.tpsFullDesc": "Tokens/second that saturate decode speed",
         "weights.speedTiming": "Speed decay timing (ms)",
         "weights.graceMs": "Hold",
+        "weights.graceMsDesc": "How long full speed holds after saturation before decay",
         "weights.fadeMs": "Fade",
+        "weights.fadeMsDesc": "How long speed takes to decay to 0 after the hold",
         "expandDetails": "Expand settings",
         "collapseDetails": "Collapse settings",
       },
@@ -4078,14 +4129,16 @@ export function apply(ctx: ClientContext) {
     }
   };
 
-  ctx.slots.inject("conversation.input.dock", () => ctx.slots.register({
-    name: "conversation.input.dock",
+  ctx.slots.inject("conversation.input.left", () => ctx.slots.register({
+    name: "conversation.input.left",
     id: "flash-level-control",
     order: 10,
-    // The host's `conversation.input.dock` binding auto-injects `useProjection`
+    // The host's `conversation.input.left` binding auto-injects `useProjection`
     // as a standard prop (see dsh-client-ui-conversation slot contract — the
     // QueueDock/TodoDock occupants receive it the same way); we only return our
     // own session props here and let the renderer mix the projection hook in.
+    // 该控件随驱动模式切换:手动=滑杆,综合加权=复合公式仪表(CompositeLevelControl),
+    // 都显示在输入卡原生的左侧工具行(conversation.input.left)。
     inject: (sessionId: string) => {
       const available = ctx.sessions.subagentAddress(sessionId) === undefined;
       const directory = ctx.modelDirectories.directoryFor(sessionId) as ModelDirectory;

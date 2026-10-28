@@ -1106,8 +1106,8 @@ body[data-flash-skin="on"][data-flash-layout="left"] .EvIC1a_toBottomSlot {
   margin-top: 2px;
   padding-left: 2px;
   color: var(--flash-secondary, #5b6470);
-  font-size: 10px;
-  line-height: 1.2;
+  font-size: 11px;
+  line-height: 1.25;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1118,6 +1118,42 @@ body[data-flash-skin="on"][data-flash-layout="left"] .EvIC1a_toBottomSlot {
 
 .flash-level-control__term {
   white-space: nowrap;
+}
+
+/* 「加权数值 → 得分」的中间环节:每路的 =贡献 用强调色,预示其将并入总分。
+ * eq(=) 为运算符,part(贡献)/sum(总和) 为权重×因子后落到得分刻度的数值。 */
+.flash-level-control__eq {
+  margin: 0 4px;
+  color: var(--flash-secondary, #5b6470);
+  font-style: normal;
+  font-weight: 600;
+}
+
+.flash-level-control__part {
+  color: var(--flash-accent, #4176e6);
+  font-weight: 800;
+}
+
+.flash-level-control__sum {
+  color: var(--flash-ink, #191b1e);
+  font-weight: 800;
+}
+
+/* 「落帧」一步:0..1 最终得分 × 帧数映射到组内第几帧,与 frameIndexForScore 同路径。 */
+.flash-level-control__frame-step {
+  color: var(--flash-accent, #4176e6);
+  font-weight: 800;
+}
+
+.flash-level-control__frame-step .flash-level-control__mul {
+  color: var(--flash-accent, #4176e6);
+}
+
+.flash-level-control__arrow {
+  margin: 0 4px;
+  color: var(--flash-secondary, #5b6470);
+  font-style: normal;
+  font-weight: 600;
 }
 
 .flash-level-control__term b {

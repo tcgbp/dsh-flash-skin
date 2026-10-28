@@ -258,8 +258,8 @@ export function frameIndexForScore(score: number, count: number): number {
 export const USAGE_FULL = 300_000;
 /** Context-pressure fallback (no window/pressure info) saturates at these many turns. */
 export const TURNS_FULL = 20;
-/** Decode speed saturates at this many tokens per second. */
-export const TPS_FULL = 80;
+/** Decode speed saturates at this many tokens per second (default tuning). */
+export const TPS_FULL = 100;
 
 /**
  * Tunable timing for the live "speed" axis's staleness decay. Because the
@@ -272,11 +272,17 @@ export const TPS_FULL = 80;
 export interface SpeedTuning {
   graceMs: number;
   fadeMs: number;
+  /** Produced-token count at which the usage axis saturates (tokens). */
+  usageFull: number;
+  /** Decode tokens-per-second at which the speed axis saturates. */
+  tpsFull: number;
 }
 
 export const DEFAULT_SPEED_TUNING: SpeedTuning = {
   graceMs: 600,
   fadeMs: 1500,
+  usageFull: USAGE_FULL,
+  tpsFull: TPS_FULL,
 };
 
 /** Back-compat aliases for code and tests that reference the old constants. */
@@ -368,9 +374,10 @@ export function normalizeWeights(weights: Partial<CompositeWeights> | null | und
   };
 }
 
-export function usageFactor(outputTokens: number): number {
+export function usageFactor(outputTokens: number, usageFull: number = USAGE_FULL): number {
+  const full = Number.isFinite(usageFull) && usageFull > 0 ? usageFull : USAGE_FULL;
   const safe = Number.isFinite(outputTokens) && outputTokens > 0 ? outputTokens : 0;
-  return Math.min(1, safe / USAGE_FULL);
+  return Math.min(1, safe / full);
 }
 
 export function contextPressureFactor(
@@ -395,10 +402,15 @@ export function reasoningEffortFactor(committedLevel: number): number {
   return Math.min(1, Math.max(0, safe / MAX_LEVEL));
 }
 
-export function tokenSpeedFactor(decodeTokens: number, decodeMs: number): number {
+export function tokenSpeedFactor(
+  decodeTokens: number,
+  decodeMs: number,
+  tpsFull: number = TPS_FULL,
+): number {
   if (!Number.isFinite(decodeTokens) || !Number.isFinite(decodeMs)) return 0;
   if (decodeTokens <= 0 || decodeMs <= 0) return 0;
-  return Math.min(1, decodeTokens / (decodeMs / 1000) / TPS_FULL);
+  const full = Number.isFinite(tpsFull) && tpsFull > 0 ? tpsFull : TPS_FULL;
+  return Math.min(1, decodeTokens / (decodeMs / 1000) / full);
 }
 
 /**

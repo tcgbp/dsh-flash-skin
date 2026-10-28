@@ -223,15 +223,17 @@ export const Config = z.object({
   // state, so it persists in the profile patch like any other exposed config.
   communityDirectory: z.object({
       /**
-       * GitHub user or organization owning the target repo. Left optional (as
-       * every object sub-field is by default): the loader materialises an
-       * absent object as `{}` during validation, so any `.required()` here
-       * would fail activation for profiles that do not configure sharing.
-       * Completeness is instead checked at request time by getCommunityTarget.
+       * GitHub user or organization owning the target repo. Defaults to the
+       * plugin owner's shared directory repo (`tcgbp`), so an unconfigured
+       * install is still able to browse out of the box; a site admin may
+       * override it to point at their own directory. Object sub-fields stay
+       * optional so an absent object validates as `{}` without failing
+       * activation — getCommunityTarget then falls back to these defaults at
+       * request time.
        */
-      owner: z.string().min(1),
-      /** Repo name holding the community directory tree. */
-      repo: z.string().min(1),
+      owner: z.string().min(1).default("tcgbp"),
+      /** Repo name holding the community directory tree. Default: dsh-flash-skin. */
+      repo: z.string().min(1).default("dsh-flash-skin"),
       /**
        * Community platform for the directory channel: `github` (default) or
        * `gitee`. Selects the provider shim used for every read (tree/raw) and
@@ -239,8 +241,8 @@ export const Config = z.object({
        * github to keep the config backward compatible.
        */
       provider: z.string().default("github"),
-      /** Default: main. */
-      branch: z.string().default("main"),
+      /** Default: master. */
+      branch: z.string().default("master"),
       /** Tree root; default: shares. */
       path: z.string().default("shares"),
       /**
@@ -532,22 +534,17 @@ export function apply(ctx, config) {
       rawText: (rel, opts) => clientForConfig().rawText(rel, opts),
     };
     const getCommunityTarget = () => {
-      const dir = config?.communityDirectory?.get();
-      if (
-        dir &&
-        typeof dir.owner === "string" && dir.owner &&
-        typeof dir.repo === "string" && dir.repo
-      ) {
-        const kind = typeof dir.provider === "string" && dir.provider ? dir.provider : "github";
-        return {
-          owner: dir.owner,
-          repo: dir.repo,
-          provider: COMMUNITY_PROVIDERS[kind] ? kind : "github",
-          branch: typeof dir.branch === "string" && dir.branch ? dir.branch : "main",
-          path: typeof dir.path === "string" && dir.path ? dir.path : "shares",
-        };
-      }
-      return null;
+      const dir = config?.communityDirectory?.get() ?? {};
+      const owner = typeof dir.owner === "string" && dir.owner ? dir.owner : "tcgbp";
+      const repo = typeof dir.repo === "string" && dir.repo ? dir.repo : "dsh-flash-skin";
+      const kind = typeof dir.provider === "string" && dir.provider ? dir.provider : "github";
+      return {
+        owner,
+        repo,
+        provider: COMMUNITY_PROVIDERS[kind] ? kind : "github",
+        branch: typeof dir.branch === "string" && dir.branch ? dir.branch : "master",
+        path: typeof dir.path === "string" && dir.path ? dir.path : "shares",
+      };
     };
     const getLikesToken = () => {
       const dir = config?.communityDirectory?.get();

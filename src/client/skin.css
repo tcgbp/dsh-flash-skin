@@ -251,6 +251,28 @@ body[data-flash-skin="on"] textarea {
   object-position: 50% 30%;
 }
 
+/* Light/dark divider marker in the general-settings filmstrip, mirroring the
+   threshold line shown on the config card. Non-interactive: it only previews
+   where the dark shell begins among the frames. */
+.flash-appearance-choice__divider {
+  display: block;
+  flex: 0 0 auto;
+  align-self: stretch;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--dsw-alias-border-l2);
+}
+
+.flash-appearance-choice__divider::after {
+  content: "";
+  display: block;
+  width: 100%;
+  height: 8px;
+  margin-top: 22px;
+  border-radius: 999px;
+  background: var(--dsw-static-neutral-bluish-400);
+}
+
 .flash-appearance-choice__icon {
   display: block;
   flex: 0 0 16px;

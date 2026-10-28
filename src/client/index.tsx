@@ -1126,6 +1126,7 @@ function PortraitSetRow({ scope, presenter, form, locale, t }: PortraitSetRowPro
   const sets = (configured.length > 0 ? configured : [DEFAULT_PORTRAIT_SET]).map((set) => ({
     id: set.id,
     label: setDisplayName(set, localeSnapshot.active),
+    darkLevel: (set as PortraitGroupConfig).darkLevel,
     frames: setFrames(set),
   }));
 
@@ -1161,19 +1162,26 @@ function PortraitSetRow({ scope, presenter, form, locale, t }: PortraitSetRowPro
               {frames.length > 0 && (
                 <span className="flash-appearance-choice__filmstrip" aria-hidden="true">
                   {frames.map((url, index) => (
-                    <img
-                      key={index}
-                      className="flash-appearance-choice__frame"
-                      src={url}
-                      alt=""
-                      loading="lazy"
-                      decoding="async"
-                      onError={(event) => {
-                        // Drop a broken frame from the strip.
-                        event.currentTarget.style.display = "none";
-                      }}
-                    />
+                    <Fragment key={index}>
+                      {index === boundaryForDarkLevel(frames.length, set.darkLevel ?? MAX_LEVEL - 1) && (
+                        <span className="flash-appearance-choice__divider" title={t("dividerHint")} />
+                      )}
+                      <img
+                        className="flash-appearance-choice__frame"
+                        src={url}
+                        alt=""
+                        loading="lazy"
+                        decoding="async"
+                        onError={(event) => {
+                          // Drop a broken frame from the strip.
+                          event.currentTarget.style.display = "none";
+                        }}
+                      />
+                    </Fragment>
                   ))}
+                  {boundaryForDarkLevel(frames.length, set.darkLevel ?? MAX_LEVEL - 1) >= frames.length && (
+                    <span className="flash-appearance-choice__divider" title={t("dividerHint")} />
+                  )}
                 </span>
               )}
             </button>
@@ -4070,14 +4078,14 @@ export function apply(ctx: ClientContext) {
     }
   };
 
-  ctx.slots.inject("conversation.input.left", () => ctx.slots.register({
-    name: "conversation.input.left",
+  ctx.slots.inject("conversation.input.dock", () => ctx.slots.register({
+    name: "conversation.input.dock",
     id: "flash-level-control",
     order: 10,
-    // The host's `conversation.input.left` binding auto-injects `useProjection`
-    // as a standard prop (see dsh-client-ui-conversation slot contract); we only
-    // return our own session props here and let the renderer mix the projection
-    // hook in.
+    // The host's `conversation.input.dock` binding auto-injects `useProjection`
+    // as a standard prop (see dsh-client-ui-conversation slot contract — the
+    // QueueDock/TodoDock occupants receive it the same way); we only return our
+    // own session props here and let the renderer mix the projection hook in.
     inject: (sessionId: string) => {
       const available = ctx.sessions.subagentAddress(sessionId) === undefined;
       const directory = ctx.modelDirectories.directoryFor(sessionId) as ModelDirectory;

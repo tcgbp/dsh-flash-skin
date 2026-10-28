@@ -328,6 +328,18 @@ interface ContextPressureProjection {
   contextWindow?: number;
 }
 
+/**
+ * Real-event compaction clock from the host's `sessionProjections` seam
+ * (key `flash-skin-compaction`, registered by this skin's server side).
+ * `seq`/`atWallMs` move once per completed `compaction/summary` event;
+ * absent on hosts without the seam.
+ */
+interface FlashSkinCompactionProjection {
+  seq?: number;
+  atWallMs?: number;
+  model?: string;
+}
+
 interface DriverRowProps {
   scope: PreferenceStore;
   t: (key: string) => string;
@@ -909,6 +921,7 @@ function CompositeLevelControl({
   const sessionStats = useProjection("sessionStats") as SessionStatsProjection | null | undefined;
   const tokenUsage = useProjection("tokenUsage") as TokenUsageProjection | null | undefined;
   const contextPressure = useProjection("contextPressure") as ContextPressureProjection | null | undefined;
+  const compactionProj = useProjection("flash-skin-compaction") as FlashSkinCompactionProjection | null | undefined;
 
   const outputTokens = tokenUsage?.outputTokens;
   const pressureTokens = contextPressure?.projectedTokens ?? contextPressure?.pressureTokens;
@@ -946,22 +959,51 @@ function CompositeLevelControl({
     ? speedBase * freshnessDecay(now - lastDecodeAt.current, tuning.graceMs, tuning.fadeMs)
     : 0;
 
-  // Compaction (压缩) pulse: a compaction collapses the projected prompt
-  // window, so a sharp relative drop in projected context tokens marks an
-  // event. Each event stamps a fixed-score pulse that decays over a few
-  // seconds on the same render clock (`now`) — no extra timer — briefly
-  // lifting the composite level right after a compaction. Stale/unmounted
-  // pressure reads are ignored (`enabled` + finite guards); while such a pulse
-  // is live it adds a fixed COMPACTION_SCORE_BONUS directly onto the weighted
-  // score (a separate 加分项) instead of folding into the configurable weights.
+  // Compaction (压缩) pulse: a compaction briefly lifts the composite level.
+  // Two sources feed the same pulse stamp, never both at once:
+  //   1. Real event clock (`compactionProj`, key `flash-skin-compaction`): the
+  //      plugin's server side folds every completed `compaction/summary` event
+  //      into the host projection, which re-renders us with a fresh `seq` and
+  //      `atWallMs`. A new finite `seq` with a positive finite `atWallMs` is the
+  //      authoritative, host-verified signal — each completed compaction stamps
+  //      exactly one pulse.
+  //   2. Heuristic fallback (projected pressure drop): used only when the host
+  //      has no `sessionProjections` seam (`!compactionProj`), so the plugin
+  //      still shows the pulse on standalone hosts — never both, never a crash.
+  // The stamp is a wall-clock ms on the same render clock (`now`) — no extra
+  // timer — and decays over a few seconds, adding a fixed COMPACTION_SCORE_BONUS
+  // directly onto the weighted score (a separate 加分项).
   const lastPressureRef = useRef<number | null>(null);
   const compactionPulseAtRef = useRef<number | null>(null);
+  const lastCompactionSeqRef = useRef<number | null>(null);
   useEffect(() => {
     if (!enabled) {
       lastPressureRef.current = null;
       compactionPulseAtRef.current = null;
+      lastCompactionSeqRef.current = null;
       return;
     }
+    // Real-event clock takes priority whenever the projection reads as present.
+    const hasProjection =
+      compactionProj !== null && compactionProj !== undefined
+      && typeof compactionProj === "object";
+    if (hasProjection) {
+      const seq = compactionProj.seq;
+      const atWallMs = compactionProj.atWallMs;
+      const fresh =
+        seq !== null && seq !== undefined && Number.isInteger(seq) && seq >= 0
+        && atWallMs !== null && atWallMs !== undefined
+        && Number.isFinite(atWallMs) && atWallMs > 0
+        && lastCompactionSeqRef.current !== seq;
+      if (fresh) {
+        lastCompactionSeqRef.current = seq;
+        compactionPulseAtRef.current = Math.min(atWallMs, Date.now());
+      }
+      return;
+    }
+    // Heuristic fallback (no seam): a sharp relative drop in projected context
+    // tokens marks a compaction. Stale/unmounted reads are ignored (finite
+    // guards). This path is skipped entirely when the real clock is present.
     if (pressureTokens === undefined || pressureTokens === null || !Number.isFinite(pressureTokens)) {
       lastPressureRef.current = null;
       return;
@@ -974,7 +1016,7 @@ function CompositeLevelControl({
     ) {
       compactionPulseAtRef.current = Date.now();
     }
-  }, [enabled, pressureTokens]);
+  }, [enabled, pressureTokens, compactionProj]);
   const compactionF = contextCompactionFactor(compactionPulseAtRef.current, now);
   // Compaction bonus: 压缩 is NOT a configurable weight. It lands as a separate
   // direct add-on on top of the weighted score, and only while a fresh pulse is
@@ -3676,7 +3718,7 @@ export function apply(ctx: ClientContext) {
         "driver.manual": "手动",
         "driver.composite": "综合加权",
         "weights.title": "综合加权（手动可调）",
-        "weights.hint": "按权重合成的 0–6 强度实时驱动人物肖像；全为 0 时回退默认权重。",
+        "weights.hint": "按权重加权实时信号合成 0–1 连续得分，直接匹配当前肖像组实际张数取帧实时驱动人物肖像；全为 0 时回退默认权重。",
         "weights.usage": "用量",
         "weights.pressure": "压力",
         "weights.effort": "推理",
@@ -3718,7 +3760,7 @@ export function apply(ctx: ClientContext) {
         "driver.manual": "Manual",
         "driver.composite": "Composite",
         "weights.title": "Composite weights (editable)",
-        "weights.hint": "Live 0–6 portrait level synthesised from these weights; all-zero falls back to defaults.",
+        "weights.hint": "A continuous 0–1 score from these weighted live signals maps straight onto the portrait group's actual frame count; all-zero falls back to defaults.",
         "weights.usage": "Usage",
         "weights.pressure": "Pressure",
         "weights.effort": "Reasoning",

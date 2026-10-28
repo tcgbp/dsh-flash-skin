@@ -39,6 +39,78 @@ const SLUG_BY_MEDIA_TYPE = Object.freeze(
 );
 const HEX64_RE = /^[0-9a-f]{64}$/;
 
+// ── Compaction projection unit ──────────────────────────────────────────────
+// A projection registers as a *unit* in the host's `sessionProjections` seam:
+// the registry folds every committed `session/event` through this unit's `apply`
+// (eager drive), keeps a per-session watermark cell, and streams the client
+// view to the bundle's `useProjection`. This skin registers a real-event clock
+// so the 压缩 (compaction) pulse is driven by an actual completed compaction
+// (a `compaction/summary` event) instead of a mere heuristic.
+//
+// The unit is registered under `ctx.inject(['sessionProjections'], …)`, so on a
+// host where the seam (or a registrant of the same key/stateVersion) is absent
+// the whole block is inert and the plugin keeps working standalone — the client
+// degrades to its pressure-drop heuristic, as the AGENTS.md rule requires.
+//
+// State is deliberately tiny and plain-JSON-safe so it ships across the wire
+// unchanged. `apply` returns a *fresh reference only when* a real
+// `compaction/summary` lands, so the host's `Object.is` change feed fires once
+// per completed compaction; every other event returns `state` unchanged (same
+// reference → zero downstream churn). `event.time` is the host's monotonic wall
+// clock in ms; `event.seq` is the session sequence the event was committed at.
+const COMPACTION_PROJECTION_KEY = "flash-skin-compaction";
+const COMPACTION_PROJECTION_STATE_VERSION = 1;
+
+const compactionProjectionInit = () => ({
+  seq: -1,
+  atWallMs: 0,
+  model: "",
+});
+
+/**
+ * @param {object} state
+ * @param {{ seq:number, time:number, type:string, data?:Record<string, unknown> }} event
+ * @returns {object}
+ */
+function compactionProjectionApply(state, event) {
+  // Only a genuine completed compaction anchors a pulse. Non-summary events
+  // (compaction/start, compaction/end, anything else) must not move the clock.
+  if (event.type !== "compaction/summary") return state;
+  const data = event.data ?? {};
+  const provider = typeof data.provider === "string" && data.provider ? data.provider : "unknown";
+  const model = typeof data.model === "string" && data.model ? data.model : "";
+  return {
+    seq: event.seq,
+    atWallMs: event.time,
+    model: model ? `${provider}:${model}` : provider,
+  };
+}
+
+// The wire block is what makes this key client-visible. The client actually
+// consumes the raw plain-JSON snapshot (seq/atWallMs/model), so `view` is the
+// identity map and `viewSchema` mirrors the state shape for downstream checks.
+const compactionProjectionWire = {
+  viewSchema: z.object({
+    seq: z.number(),
+    atWallMs: z.number(),
+    model: z.string(),
+  }),
+  view: (state) => state,
+};
+
+const compactionProjectionDefinition = {
+  key: COMPACTION_PROJECTION_KEY,
+  stateVersion: COMPACTION_PROJECTION_STATE_VERSION,
+  stateSchema: z.object({
+    seq: z.number(),
+    atWallMs: z.number(),
+    model: z.string(),
+  }),
+  init: compactionProjectionInit,
+  apply: compactionProjectionApply,
+  wire: compactionProjectionWire,
+};
+
 // ── Bundled example archives ────────────────────────────────────────────────
 // The four/ﬁve demo archives ship inside the package (`examples/portrait-archives/`,
 // whitelisted in package.json `files`) and are served back to any client over the
@@ -502,6 +574,20 @@ export function apply(ctx, config) {
     });
     return () => unregister();
   }, "flash-skin: portrait groups mirror");
+
+  // Compaction pulse driver: register the real-event projection unit onto the
+  // host's `sessionProjections` seam. `ctx.inject(['sessionProjections'], …)`
+  // runs this contribution only when the seam is present and mounts its disposer
+  // on a child fiber, so on hosts without the seam (or with a registrant already
+  // holding this key at the same stateVersion) this block is inert and the
+  // plugin still loads and works standalone. The registry adds its own effect
+  // wrap, so the unit (and its cached cells) rides the plugin's unload.
+  ctx.effect(() => {
+    const deregister = ctx.inject(["sessionProjections"], (scoped) => {
+      return scoped.sessionProjections.register(compactionProjectionDefinition);
+    }, "flash-skin: compaction projection");
+    return () => deregister?.();
+  }, "flash-skin: compaction projection scope");
 
   const activeStreams = new Set();
   ctx.effect(() => {

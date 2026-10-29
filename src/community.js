@@ -235,7 +235,8 @@ function apiError(res, step, fallback = "feishu") {
   if (authCodes.has(code)) return { code: "auth", status: code, step, message: "飞书应用凭据或令牌无效/无权限。" };
   if (existsCodes.has(code)) return { code: "exists", status: code, step, message: "该条目已存在。" };
   if (notFoundCodes.has(code)) return { code: "not-found", status: code, step, message: "飞书表格或记录不存在。" };
-  return { code: fallback, status: code ?? status, step, message: "飞书 API 返回异常。" };
+  const feishuMsg = json && typeof json.msg === "string" && json.msg ? `（飞书：${json.msg}）` : "";
+  return { code: fallback, status: code ?? status, step, message: `飞书 API 返回异常${feishuMsg}。` };
 }
 
 /**
@@ -427,7 +428,12 @@ export async function submitCommunityShare(client, target, { setId, url } = {}) 
     [SHARES_FIELDS.url]: cleanUrl,
     [SHARES_FIELDS.md5]: md5,
   });
-  if (!client.provider.ok(res && res.json)) return { ok: false, error: apiError(res, "create") };
+  if (!client.provider.ok(res && res.json)) {
+    const status = res ? res.status : 0;
+    const code = res && res.json && typeof res.json.code === "number" ? res.json.code : "no-code";
+    console.error(`[dsh-flash-skin] Bitable create failed: HTTP ${status}, feishu code=${code}`, res && res.json ? res.json : "");
+    return { ok: false, error: apiError(res, "create") };
+  }
   const recordId = res.json && res.json.data && res.json.data.record ? res.json.data.record.record_id : null;
   return { ok: true, entry: { entryId, setId: cleanedId, md5 }, recordId };
 }

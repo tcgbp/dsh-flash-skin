@@ -24,11 +24,12 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
 
       # 1. 先安装 pnpm（必须在 setup-node 之前，否则 cache: 'pnpm' 无法工作）
-      #    使用 11.5.3+ 以原生支持 OIDC Trusted Publishing
+      #    版本与 package.json 的 packageManager 对齐（pnpm@12.11.2），
+      #    避免 action-setup 与 packageManager 双版本冲突（ERR_PNPM_BAD_PM_VERSION）。
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 11.5.3
+          version: 12.11.2
 
       # 2. 设置 Node.js 并启用 pnpm 缓存
       #    注意：不要加 registry-url，否则会写入占位 token，干扰 OIDC 认证

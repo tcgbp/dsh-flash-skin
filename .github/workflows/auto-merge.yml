@@ -1,0 +1,44 @@
+# src/.github/workflows/auto-merge.yml
+# Optional auto-merge for the C2 community-directory channel (see src/community.js).
+#
+# This plugin's share/like writes arrive as pull requests opened from a FORK
+# (head: `${forkOwner}:flash-skin-shares-*` / `flash-skin-likes-*`). Merging the
+# PR is the repo owner's policy decision; this workflow only flips on GitHub's
+# native auto-merge for those plugin PRs once their required checks pass, and
+# lets everything else (other PRs, manual branches) flow through normal review.
+#
+# NOTES
+# - Uses `pull_request_target` (not `pull_request`) because fork-PR events carry
+#   a read-only GITHUB_TOKEN; the _target variant runs in the base repo context
+#   so the `pull-requests: write` permission can enable auto-merge.
+# - This workflow does NOT check out or execute any code from the PR head, so
+#   there is no injection surface from untrusted fork changes.
+# - Requires the repo setting "Allow auto-merge" (Settings -> General -> Pull
+#   requests). Full automation additionally needs branch protection with
+#   `Require approvals` = 0 (or an approval bot); required status checks are
+#   honored and auto-merge waits for them.
+name: auto-merge flash-skin community PRs
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  enable-auto-merge:
+    if: >-
+      startsWith(github.event.pull_request.head.ref, 'flash-skin-shares-') ||
+      startsWith(github.event.pull_request.head.ref, 'flash-skin-likes-')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr merge "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            --auto --squash --delete-branch \
+          || echo "::warning::auto-merge not available yet (Allow auto-merge off, or requirements unmet)"

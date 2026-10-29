@@ -31,6 +31,7 @@ import {
   levelForEffort,
   normalizeWeights,
   paletteForLevel,
+  PORTRAIT_IMPORT_MIN_IMAGES,
   reasoningEffortFactor,
   selectedEffortIndex,
   stagedFrames,
@@ -733,8 +734,12 @@ function FlashLevelControl({
 
   if (!enabled) return null;
 
-  const progressRatio = level / MAX_LEVEL;
+  const progressRatio = Math.min(1, level / MAX_LEVEL);
   const readOnly = driver === "composite";
+  // The grip spans the active group's staged frame count plus one (N+1 stops)
+  // so every frame stays reachable; a set with no frames keeps the fixed
+  // 0..MAX_LEVEL baseline instead of collapsing the slider.
+  const sliderMax = Math.max(MAX_LEVEL, presenter.getPortraitCount());
 
   // Composite driver: hand the render off to a dedicated component that owns
   // the projection hooks — a separate component means the useProjection calls
@@ -761,7 +766,7 @@ function FlashLevelControl({
           className="flash-level-control__range"
           type="range"
           min={0}
-          max={MAX_LEVEL}
+          max={sliderMax}
           step={1}
           value={0}
           disabled
@@ -797,7 +802,7 @@ function FlashLevelControl({
         className="flash-level-control__range"
         type="range"
         min={0}
-        max={MAX_LEVEL}
+        max={sliderMax}
         step={1}
         value={level}
         disabled={state.status === "selecting"}
@@ -1584,6 +1589,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "darkLevel": "深浅切换点",
     "darkLevelHint": "用左右箭头逐档移动深浅切换点：箭头左侧为浅色外壳，右侧为深色外壳。",
     "dividerHint": "点击分割线两侧的左右箭头，把深色外壳的起始档位逐档调低或调高。",
+    "tooFewImagesHint": "该组仅 {n} 张图片，不足所需的 {min} 张；请继续添加图片，满 {min} 张后即可分享与导出（新建的空组不受此限制）。",
     "dividerLeft": "深色切换点左移一档",
     "dividerRight": "深色切换点右移一档",
     "setId": "标识（Set ID）",
@@ -1594,6 +1600,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "exportGroup": "导出压缩包",
     "exportGroupTitle": "把本组全部图片连同其元数据（标识、中英文名称、深浅切换点）打包下载为一个 .zip 压缩包，可直接再次导入",
     "exportNoImages": "该组没有图片，无可导出",
+    "exportTooFew": "该组图片不足 {min} 张（当前 {n} 张），至少满 {min} 张才能导出",
     "exportDownloadFailed": "导出失败：本组有 {n} 张图片，部分图片无法下载，未生成压缩包",
     "exportDone": "已导出压缩包",
     "importGroup": "从压缩包导入新组",
@@ -1603,6 +1610,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "zipParseFailed": "无法解析压缩包，请确认它是有效的 .zip / .tar / .tar.gz 文件",
     "zipTooManyImages": "单次导入最多 64 张，已截取前 64 张",
     "zipSkippedOversize": "已跳过 {n} 张超过 2MB 的图片",
+    "zipTooFewImages": "图片不足：一个皮肤组至少需要 {min} 张图片（当前 {n} 张）",
     "zipImported": "已导入 {n} 张图片，创建了新的皮肤组",
     "zipImportedMeta": "，并按压缩包内元数据设置了标识、中英文名称与深浅切换点",
     "metaImported": "已按清单创建新组（{n} 张在线图片）",
@@ -1623,6 +1631,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "shareGroup": "分享",
     "shareGroupTitle": "把本组图片连同标识、名称、深浅切换点打包成一段自包含文本，可粘贴给任何人直接导入",
     "shareNoImages": "该组没有图片，无可分享",
+    "shareTooFew": "该组图片不足 {min} 张（当前 {n} 张），至少满 {min} 张才能分享",
     "sharePacking": "正在打包…",
     "sharePanelTitle": "分享「{name}」",
     "sharePanelHint": "下面这段文本已包含本组的全部图片与元数据，复制后发送给朋友，对方粘贴到导入框即可重建整组。文本较大，请完整复制。",
@@ -1689,6 +1698,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "darkLevel": "Light/dark threshold",
     "darkLevelHint": "Use the arrows to move the light/dark threshold one level at a time: images to their left keep the light shell, images to their right switch to dark.",
     "dividerHint": "Click the arrows beside the divider to raise or lower the slider level at which the dark shell begins.",
+    "tooFewImagesHint": "This group has only {n} of the {min} images needed — keep adding frames to enable share/export (a brand-new empty group is exempt).",
     "dividerLeft": "Move threshold left",
     "dividerRight": "Move threshold right",
     "setId": "Set ID (identifier)",
@@ -1703,6 +1713,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "zipParseFailed": "Could not parse the archive — make sure it is a valid .zip / .tar / .tar.gz file",
     "zipTooManyImages": "At most 64 images per import; kept the first 64",
     "zipSkippedOversize": "Skipped {n} images over 2MB",
+    "zipTooFewImages": "Too few images to import — a portrait group needs at least {min} (currently {n})",
     "zipImported": "Imported {n} images and created a new group",
     "zipImportedMeta": ", and set the id, Chinese/English names and light/dark threshold from the archive metadata",
     "metaImported": "Created a new group from the manifest metadata with {n} image URLs",
@@ -1723,6 +1734,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "shareGroup": "Share",
     "shareGroupTitle": "Package this group's images plus id, names and dark level into a self-contained text anyone can import",
     "shareNoImages": "This group has no images to share",
+    "shareTooFew": "This group needs at least {min} images to share (currently {n})",
     "sharePacking": "Packing…",
     "sharePanelTitle": "Share “{name}”",
     "sharePanelHint": "This text already contains every image and all metadata of the group. Copy it and send it to a friend — they paste it into the import field to rebuild the whole group. The text is large, so copy it completely.",
@@ -1757,6 +1769,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "exportGroup": "Export archive",
     "exportGroupTitle": "Pack all frames plus this group's metadata (id, Chinese/English names, light/dark threshold) into a downloadable .zip that imports straight back",
     "exportNoImages": "This group has no images — nothing to export",
+    "exportTooFew": "This group needs at least {min} images to export (currently {n})",
     "exportDownloadFailed": "Export failed: the group has {n} images and some could not be downloaded, so no archive was written",
     "exportDone": "Archive exported",
   },
@@ -2130,6 +2143,13 @@ function boundaryForDarkLevel(count: number, level: number): number {
   return Math.min(count, Math.max(0, Math.round((level / MAX_LEVEL) * count)));
 }
 
+// When「Flash皮肤插件配置」opens the plugin-manager detail page, the host cannot
+// pass a "jump to config" hint through pluginNavigation.openBundle (its only API).
+// So the button sets this module-level flag right before navigating; the config
+// card consults it on mount (the page builds the config section fresh on each
+// entry) and auto-expands + scrolls into view exactly once, then clears it.
+let expandConfigOnNextMount = false;
+
 function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardProps) {
   const snapshot = useSyncExternalStore(
     (listener) => form.subscribe(listener),
@@ -2158,8 +2178,18 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
   // Whether the config card body is collapsed. Defaults to collapsed so the
   // plugin detail page shows only a compact header until the user expands it
   // (collapsing the whole card, not just the weights grid). Not persisted:
-  // each entry into the page starts collapsed.
-  const [collapsed, setCollapsed] = useState(true);
+  // each entry into the page starts collapsed — unless「Flash皮肤插件配置」was
+  // the entry (openDetails sets expandConfigOnNextMount), in which case it
+  // starts expanded and is scrolled into view, once.
+  const [collapsed, setCollapsed] = useState(() => {
+    const expand = expandConfigOnNextMount;
+    expandConfigOnNextMount = false;
+    return !expand;
+  });
+  const cardRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!collapsed) cardRef.current?.scrollIntoView({ block: "nearest" });
+  }, [collapsed, cardRef]);
   // An imported archive whose manifest id collides with an existing group
   // pauses in `pendingImport` so the user can confirm a unique id before it
   // takes effect, instead of silently appending a `-2`/`-3` suffix.
@@ -2260,6 +2290,18 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
       setSharePhase("ready");
       setShareText("");
       setShareNotice(t("shareNoImages"));
+      setShareCopied(false);
+      return;
+    }
+    if (group.images.length < PORTRAIT_IMPORT_MIN_IMAGES) {
+      setShareFor({ index: groupIndex, name: group.name || group.id });
+      setSharePhase("ready");
+      setShareText("");
+      setShareNotice(
+        t("shareTooFew")
+          .replace("{min}", String(PORTRAIT_IMPORT_MIN_IMAGES))
+          .replace("{n}", String(group.images.length)),
+      );
       setShareCopied(false);
       return;
     }
@@ -2521,6 +2563,14 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
       setFileError(t("exportNoImages"));
       return;
     }
+    if (group.images.length < PORTRAIT_IMPORT_MIN_IMAGES) {
+      setFileError(
+        t("exportTooFew")
+          .replace("{min}", String(PORTRAIT_IMPORT_MIN_IMAGES))
+          .replace("{n}", String(group.images.length)),
+      );
+      return;
+    }
     setBusy(true);
     try {
       const frames: { bytes: Uint8Array; ext: string }[] = [];
@@ -2780,6 +2830,17 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
         if (skippedOversize > 0) {
           notice += " " + t("zipSkippedOversize").replace("{n}", String(skippedOversize));
         }
+        // Reject external imports that carry fewer frames than a meaningful
+        // portrait group needs (>= PORTRAIT_IMPORT_MIN_IMAGES). The brand-new
+        // empty placeholder group is exempt: it is grown locally frame by frame.
+        if (images.length < PORTRAIT_IMPORT_MIN_IMAGES) {
+          setFileError(
+            t("zipTooFewImages")
+              .replace("{min}", String(PORTRAIT_IMPORT_MIN_IMAGES))
+              .replace("{n}", String(images.length)),
+          );
+          return;
+        }
         if (meta?.id && groups.some((group) => group.id === meta.id)) {
           // The manifest's set id collides with an existing group: surface the
           // conflict and let the user confirm a unique id, rather than silently
@@ -2900,6 +2961,17 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
 
   const confirmImport = () => {
     if (!pendingImport) return;
+    // Second gate: never import a group whose resolved frame list is below the
+    // minimum, even when the pending import was seeded some other way.
+    if (pendingImport.images.length < PORTRAIT_IMPORT_MIN_IMAGES) {
+      setFileError(
+        t("zipTooFewImages")
+          .replace("{min}", String(PORTRAIT_IMPORT_MIN_IMAGES))
+          .replace("{n}", String(pendingImport.images.length)),
+      );
+      setPendingImport(null);
+      return;
+    }
     const draftId = pendingImport.draftId.trim();
     if (!draftId) return;
     if (groups.some((group) => group.id === draftId)) {
@@ -2966,6 +3038,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
 
   return (
     <section
+      ref={cardRef}
       className={`flash-portrait-groups${collapsed ? "" : " flash-portrait-groups--open"}`}
       data-plugin={PACKAGE_ID}
       data-state={writable ? "ready" : "readonly"}
@@ -3107,7 +3180,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
                     type="button"
                     className="flash-portrait-group__share"
                     title={t("shareGroupTitle")}
-                    disabled={busy || group.images.length === 0}
+                    disabled={busy || group.images.length < PORTRAIT_IMPORT_MIN_IMAGES}
                     onClick={() => void shareGroup(groupIndex)}
                   >
                     {t("shareGroup")}
@@ -3118,7 +3191,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
                     title={t("exportGroupTitle")}
                     // Export is read-only (never mutates the config), so it also
                     // works when the document is not writable.
-                    disabled={busy || group.images.length === 0}
+                    disabled={busy || group.images.length < PORTRAIT_IMPORT_MIN_IMAGES}
                     onClick={() => void exportGroup(groupIndex)}
                   >
                     {t("exportGroup")}
@@ -3133,6 +3206,14 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
                   </button>
                 </div>
               </header>
+
+              {group.images.length < PORTRAIT_IMPORT_MIN_IMAGES && (
+                <p className="flash-portrait-groups__hint flash-portrait-group__too-few">
+                  {t("tooFewImagesHint")
+                    .replace("{min}", String(PORTRAIT_IMPORT_MIN_IMAGES))
+                    .replace("{n}", String(group.images.length))}
+                </p>
+              )}
 
               <p className="flash-portrait-groups__hint flash-portrait-group__divider-hint">
                 {t("dividerHint")}
@@ -3699,7 +3780,12 @@ export function apply(ctx: ClientContext) {
     try {
       const navigation = (ctx.reflect as unknown as { get?: (id: string) => unknown }).get?.("pluginNavigation");
       const open = (navigation as { openBundle?: (name: string) => void } | undefined)?.openBundle;
-      if (typeof open === "function") open(PACKAGE_ID);
+      if (typeof open === "function") {
+        // The host API can't carry a "jump to the config section" hint, so flag
+        // it here; the config card consumes it on mount (auto-expand + scroll).
+        expandConfigOnNextMount = true;
+        open(PACKAGE_ID);
+      }
     } catch {
       // 反射服务不可用时静默降级，按钮只是不跳转。
     }

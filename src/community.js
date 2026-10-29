@@ -196,6 +196,14 @@ export async function computeUrlMd5(url, { fetchImpl = globalThis.fetch, timeout
     const body = Buffer.from(await response.arrayBuffer());
     if (body.length === 0) return fail("empty body");
     if (body.length > maxBytes) return fail(`too large ${body.length}B > ${maxBytes}B`);
+    // A shared archive must actually be an archive: refuse to fingerprint
+    // anything that is not a zip (PK\x03\x04) or gzip (0x1f 0x8b) container,
+    // so a mis-pasted webpage URL can never be recorded as the archive's
+    // fingerprint. Import re-checks the same bytes, so a non-archive would
+    // otherwise sail through the MD5 gate only to fail at parse time.
+    const isZip = body[0] === 0x50 && body[1] === 0x4b;
+    const isGzip = body[0] === 0x1f && body[1] === 0x8b;
+    if (!isZip && !isGzip) return fail("not an archive (bad magic bytes)");
     return createHash("md5").update(body).digest("hex");
   } catch (error) {
     return fail("fetch threw", error instanceof Error ? error.message : String(error));

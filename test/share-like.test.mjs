@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import {
   buildShareText,
   parseShareText,
@@ -378,10 +379,14 @@ describe("C2 community helper functions (community.js)", () => {
         provider: COMMUNITY_PROVIDERS.feishu,
         tenantToken: async () => "tok",
         // Server fingerprints the archive behind the url; the test injects a
-        // fetch returning a known body ("hello world") -> fixed MD5 below.
+        // fetch returning a known zip-signed body; the expected MD5 is
+        // computed in-test from the same bytes.
         fetchImpl: async () => ({
           ok: true,
-          arrayBuffer: async () => new TextEncoder().encode("hello world").buffer,
+          arrayBuffer: async () => {
+            const bytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x61, 0x62, 0x63]);
+            return bytes.buffer;
+          },
         }),
         listRecords: async () => ({ status: 200, json: { code: 0, data: { items: [], has_more: false } } }),
         createRecord: async (appToken, tableId, token, fields) => {
@@ -389,18 +394,19 @@ describe("C2 community helper functions (community.js)", () => {
           return { status: 200, json: { code: 0, data: { record: { record_id: "rec-1" } } } };
         },
       };
+      const expectedMd5 = createHash("md5").update(Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x61, 0x62, 0x63])).digest("hex");
       const res = await submitCommunityShare(client, target, { setId: "Han-Li", url: "https://cdn/h.zip" });
       expect(res.ok).toBe(true);
       expect(res.recordId).toBe("rec-1");
       expect(res.entry.setId).toBe("han-li");
-      expect(res.entry.md5).toBe("5eb63bbbe01eeed093cb22bb8f5acdc3");
+      expect(res.entry.md5).toBe(expectedMd5);
       expect(res.entry.entryId).toBeTruthy();
       expect("pr" in res).toBe(false);
       expect(calls.length).toBe(1);
       expect(calls[0].tableId).toBe("tbl-shares");
       expect(calls[0].fields.setId).toBe("han-li");
       expect(calls[0].fields.url).toBe("https://cdn/h.zip");
-      expect(calls[0].fields.md5).toBe("5eb63bbbe01eeed093cb22bb8f5acdc3");
+      expect(calls[0].fields.md5).toBe(expectedMd5);
     });
 
     it("rejects an existing set id with code exists and never calls create", async () => {

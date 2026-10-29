@@ -2134,6 +2134,13 @@ function boundaryForDarkLevel(count: number, level: number): number {
   return Math.min(count, Math.max(0, Math.round((level / MAX_LEVEL) * count)));
 }
 
+// When「Flash皮肤插件配置」opens the plugin-manager detail page, the host cannot
+// pass a "jump to config" hint through pluginNavigation.openBundle (its only API).
+// So the button sets this module-level flag right before navigating; the config
+// card consults it on mount (the page builds the config section fresh on each
+// entry) and auto-expands + scrolls into view exactly once, then clears it.
+let expandConfigOnNextMount = false;
+
 function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardProps) {
   const snapshot = useSyncExternalStore(
     (listener) => form.subscribe(listener),
@@ -2162,8 +2169,18 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
   // Whether the config card body is collapsed. Defaults to collapsed so the
   // plugin detail page shows only a compact header until the user expands it
   // (collapsing the whole card, not just the weights grid). Not persisted:
-  // each entry into the page starts collapsed.
-  const [collapsed, setCollapsed] = useState(true);
+  // each entry into the page starts collapsed — unless「Flash皮肤插件配置」was
+  // the entry (openDetails sets expandConfigOnNextMount), in which case it
+  // starts expanded and is scrolled into view, once.
+  const [collapsed, setCollapsed] = useState(() => {
+    const expand = expandConfigOnNextMount;
+    expandConfigOnNextMount = false;
+    return !expand;
+  });
+  const cardRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!collapsed) cardRef.current?.scrollIntoView({ block: "nearest" });
+  }, [collapsed, cardRef]);
   // An imported archive whose manifest id collides with an existing group
   // pauses in `pendingImport` so the user can confirm a unique id before it
   // takes effect, instead of silently appending a `-2`/`-3` suffix.
@@ -2970,6 +2987,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
 
   return (
     <section
+      ref={cardRef}
       className={`flash-portrait-groups${collapsed ? "" : " flash-portrait-groups--open"}`}
       data-plugin={PACKAGE_ID}
       data-state={writable ? "ready" : "readonly"}
@@ -3703,7 +3721,12 @@ export function apply(ctx: ClientContext) {
     try {
       const navigation = (ctx.reflect as unknown as { get?: (id: string) => unknown }).get?.("pluginNavigation");
       const open = (navigation as { openBundle?: (name: string) => void } | undefined)?.openBundle;
-      if (typeof open === "function") open(PACKAGE_ID);
+      if (typeof open === "function") {
+        // The host API can't carry a "jump to the config section" hint, so flag
+        // it here; the config card consumes it on mount (auto-expand + scroll).
+        expandConfigOnNextMount = true;
+        open(PACKAGE_ID);
+      }
     } catch {
       // 反射服务不可用时静默降级，按钮只是不跳转。
     }

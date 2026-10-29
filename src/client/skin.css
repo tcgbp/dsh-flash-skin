@@ -1041,9 +1041,11 @@ body[data-flash-skin="on"][data-flash-layout="left"] [class*="_heroWorkspaceRow"
  *      = 侧余量 + 16 + 槽。这里 TodoPanel 与输入卡同原点，
  *    故把 margin:0 auto 改为 margin-left = 同值、margin-right 保持 auto，
  *    让 todo 条带的左缘与输入卡左缘对齐。
- *    注：todo 根同名 .uV2eYG_root，用精确类名 .lXshSW_root 定位。
+ *    注：todo 根与输入卡根同为 *_root，但 todo 根不含直接 _card 子节点，
+ *    用「composerStack 内非卡片 _root」跨构建定位，不再依赖单次编译的哈希前缀
+ *    （与第 4 段输入卡根的定位方式对称互补，二者在栈内互斥）。
  */
-body[data-flash-skin="on"][data-flash-layout="left"] .lXshSW_root {
+body[data-flash-skin="on"][data-flash-layout="left"] [class*="_composerStack"] [class*="_root"]:not(:has(> [class*="_card"])) {
   margin-left: calc(
     var(--dsh-composer-side-clearance, 16px) + 16px
     + var(--dsh-flash-timeline-gutter, 50px)

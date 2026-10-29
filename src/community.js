@@ -1,23 +1,28 @@
 // src/community.js
 // C2 community-directory channel for the dsh-flash-skin share + like set.
 //
-// Model (per the approved plan):
-//   - The community directory is a plain text bank inside a GitHub repo the
-//     *plugin owner* designates through the `communityDirectory` config:
-//       <root>/<entryId>/<setId>.txt   (root defaults to "shares")
-//   - Each entry file is a tiny text pointer whose first non-comment line is the
-//     http(s) URL of the sharer's own hosted zip. Zips NEVER go into the repo;
-//     sharers keep custody of their archive URL (hard user constraint).
-//   - READING is anonymous over GitHub's public read APIs (git/trees recursive +
-//     raw.githubusercontent.com), merged into the community directory.
-//   - WRITING is a GitHub pull-request flow using a sharer-provided personal
-//     access token (contents:write). The plugin performs a pre-write directory
-//     scan and answers 409 when the same set id already exists, then forks,
-//     creates a branch, writes the pointer file and opens a PR. Merging stays
-//     with the target repo's own review policy (+ optional owner-side
-//     .github/workflows/auto-merge.yml, NOT shipped by this plugin).
+// Model (pluggable backend — the shipped backend is Feishu Bitable):
+//   - The community directory lives in a Feishu Bitable base that the *plugin
+//     owner* designates through the `communityDirectory` config.
+//       shares table: one record per shared set -> text fields { entryId, setId, url }
+//       likes  table: one record per group    -> fields { groupId, count }
+//   - Sharers keep custody of their archive URL: the table stores only the
+//     text pointer (url), never archive bytes (hard user constraint).
+//   - The plugin *server* holds the Feishu app credentials (app_id + app_secret)
+//     and exchanges them for a short-lived tenant_access_token that it uses for
+//     every Bitable call. No credential ever reaches the client bundle: the
+//     browser reads/writes only through this plugin's own routes (/community,
+//     /community/submit) which the server-side proxy handles.
+//   - READING lists the shares table (directory) and the likes table (counts).
+//   - WRITING creates a shares record for a submitted URL (409 when the same
+//     set id already exists) and upserts likes records.
 //
-// Nothing here throws outward: every step resolves to { ok, entries|entry|pr } or
+// "Pluggable backend": the provider seam (provider object + createCommunityClient)
+// isolates every host/API divergence so a future backend can be swapped in by
+// plugging a new provider that satisfies the same read/write surface consumed by
+// the directory/like routes.
+//
+// Nothing here throws outward: every step resolves to { ok, ... } or
 // { ok:false, error:{ code, status?, step?, message? } } so the client can render
 // structured Chinese notices and fall back to empty/zero values.
 
@@ -28,9 +33,10 @@ export const COMMUNITY_PATH = "/plugins/dsh-flash-skin/community";
 /** Exact-match route for POST share submissions. */
 export const COMMUNITY_SUBMIT_PATH = "/plugins/dsh-flash-skin/community/submit";
 
-const GH_API = "https://api.github.com";
-const RAW_BASE = "https://raw.githubusercontent.com";
-const GITEE_API = "https://gitee.com/api/v5";
+const FEISHU_OPEN_API = "https://open.feishu.cn/open-apis";
+const FEISHU_TOKEN_PATH = "/auth/v3/tenant_access_token/internal";
+const FEISHU_PAGE_SIZE = 500;
+/** Likes count is non-idempotent per tally; no token/client knob to expose. */
 const DEFAULT_ROOT = "shares";
 /** Max set-id length after normalization. */
 export const COMMUNITY_SET_ID_MAX = 64;
@@ -39,687 +45,401 @@ export const COMMUNITY_MAX_ENTRIES = 200;
 /** Hard cap per pointer file / per URL line. */
 export const COMMUNITY_ENTRY_MAX_BYTES = 64 * 1024;
 export const COMMUNITY_URL_MAX = 2048;
-/** Tree listing read cap so a huge repo cannot blow the response buffer. */
-const MAX_TREE_BYTES = 2 * 1024 * 1024;
-/** Submit body budget: token + url + id metadata. */
+/** Submit body budget: url + id metadata. */
 export const MAX_SUBMIT_BODY_BYTES = 256 * 1024;
-const TOKEN_MAX = 4096;
-/** GitHub token scope hint for the UI copy. */
-export const SUBMIT_TOKEN_HINT = "Fine-grained PAT with read/write on contents (contents: write).";
+/** Field-name mapping for the Feishu Bitable shares/likes tables. */
+export const SHARES_FIELDS = { entryId: "entryId", setId: "setId", url: "url" };
+export const LIKES_FIELDS = { groupId: "groupId", count: "count" };
 
 const SET_ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 
+const enc = (seg) => encodeURIComponent(String(seg));
+
 /**
- * Provider registry for the C2 community-directory channel. Each provider
- * captures every GitHub/Gitee divergence so the fork→branch→write→PR flow is
- * written once and reused: base URL, auth injection (Bearer header vs
- * `?access_token=` query), fork response parsing, branch creation endpoint,
- * write-file method, PR payload, and per-step expected status codes.
+ * Feishu Bitable provider for the C2 community-directory channel. It captures
+ * every backend-specific divergence so the read/write flow is written once and
+ * reused: token-exchange endpoint, API base, record endpoints, and the success
+ * predicate (Bitable returns HTTP 200 with a body-level `code`; 0 = success).
  *
- * The default `github` provider reproduces the exact requests the legacy
- * implementation issued, so existing clients/fakes keep working unchanged.
+ * Being the only shipped provider it also doubles as the reference shape any
+ * future pluggable backend must satisfy: `{ kind, label, apiBase, ok, ...paths }`.
  */
-
-const GITHUB_PROVIDER = {
-  kind: "github",
-  label: "GitHub",
-  apiBase: "https://api.github.com",
-  acceptJson: "application/vnd.github+json",
-  /** GitHub authenticates via an Authorization header; no query params. */
-  auth(token) {
-    return token
-      ? { headers: { Authorization: `Bearer ${token}`, "X-GitHub-Api-Version": "2022-11-28" }, query: "" }
-      : { headers: {}, query: "" };
+const FEISHU_PROVIDER = {
+  kind: "feishu",
+  label: "飞书多维表格",
+  apiBase: FEISHU_OPEN_API,
+  tokenPath: FEISHU_TOKEN_PATH,
+  /** Bitable APIs answer HTTP 200 and signal success via `code === 0`. */
+  ok(json) {
+    return !!json && typeof json.code === "number" && json.code === 0;
   },
-  forkOwner(json) {
-    return json?.owner?.login || (typeof json?.full_name === "string" ? json.full_name.split("/")[0] : "") || "";
+  listRecordsPath(appToken, tableId, pageToken) {
+    let p = `/bitable/v1/apps/${enc(appToken)}/tables/${enc(tableId)}/records?page_size=${FEISHU_PAGE_SIZE}`;
+    if (pageToken) p += `&page_token=${enc(pageToken)}`;
+    return p;
   },
-  forkOK: new Set([200, 201, 202]),
-  fork(client, { owner, repo, token }) {
-    return client.ghJson(`/repos/${enc(owner)}/${enc(repo)}/forks`, {
-      method: "POST",
-      token,
-      body: {},
-      maxBytes: 256 * 1024,
-      timeout: 20_000,
-    });
+  createRecordPath(appToken, tableId) {
+    return `/bitable/v1/apps/${enc(appToken)}/tables/${enc(tableId)}/records`;
   },
-  readForkHead(client, { forkOwner, repo, branch, token }) {
-    // Discover the fork's actual default branch, then its head sha.
-    return client.ghJson(`/repos/${enc(forkOwner)}/${enc(repo)}`, { token, timeout: 15_000 }).then(async (repoRes) => {
-      const defaultBranch = repoRes?.json?.default_branch || branch;
-      const head = await client.ghJson(`/repos/${enc(forkOwner)}/${enc(repo)}/branches/${enc(defaultBranch)}`, {
-        token,
-        timeout: 15_000,
-      });
-      return { defaultBranch, sha: head?.json?.commit?.sha || null };
-    });
+  updateRecordPath(appToken, tableId, recordId) {
+    return `/bitable/v1/apps/${enc(appToken)}/tables/${enc(tableId)}/records/${enc(recordId)}`;
   },
-  createBranch(client, { forkOwner, repo, branch, headSha, sourceBranch, token }) {
-    return client.ghJson(`/repos/${enc(forkOwner)}/${enc(repo)}/git/refs`, {
-      method: "POST",
-      token,
-      body: { ref: `refs/heads/${branch}`, sha: headSha },
-      timeout: 15_000,
-    });
-  },
-  branchOK: new Set([201]),
-  writeFile(client, { forkOwner, repo, branch, path, content, message, token }) {
-    const putPath = path.split("/").map(enc).join("/");
-    return client.ghJson(`/repos/${enc(forkOwner)}/${enc(repo)}/contents/${putPath}`, {
-      method: "PUT",
-      token,
-      body: { message, content: Buffer.from(content, "utf8").toString("base64"), branch },
-      timeout: 20_000,
-    });
-  },
-  writeOK: new Set([201]),
-  openPr(client, { owner, repo, title, head, base, body, token }) {
-    return client.ghJson(`/repos/${enc(owner)}/${enc(repo)}/pulls`, {
-      method: "POST",
-      token,
-      body: { title, head, base, body },
-      timeout: 20_000,
-    });
-  },
-  prOK: new Set([201]),
 };
 
-const GITEE_PROVIDER = {
-  kind: "gitee",
-  label: "Gitee",
-  apiBase: "https://gitee.com/api/v5",
-  acceptJson: "application/json",
-  /** Gitee authenticates via an `access_token` query param (user oauth token). */
-  auth(token) {
-    return { headers: {}, query: token ? `access_token=${enc(token)}` : "" };
-  },
-  forkOwner(json) {
-    return json?.namespace?.path || (typeof json?.full_name === "string" ? json.full_name.split("/")[0] : "") || "";
-  },
-  forkOK: new Set([200]),
-  fork(client, { owner, repo, token }) {
-    return client.ghJson(`/repos/${enc(owner)}/${enc(repo)}/forks`, {
-      method: "POST",
-      token,
-      body: {},
-      maxBytes: 256 * 1024,
-      timeout: 20_000,
-    });
-  },
-  readForkHead(client, { forkOwner, repo, branch, token }) {
-    // Fork default branch is the source branch; read its head sha directly.
-    return client.ghJson(`/repos/${enc(forkOwner)}/${enc(repo)}/branches/${enc(branch)}`, {
-      token,
-      timeout: 15_000,
-    }).then((head) => ({ defaultBranch: branch, sha: head?.json?.commit?.sha || null }));
-  },
-  createBranch(client, { forkOwner, repo, branch, headSha, sourceBranch, token }) {
-    // Gitee starts the new branch from a source branch NAME (refs), not a sha.
-    return client.ghJson(`/repos/${enc(forkOwner)}/${enc(repo)}/branches`, {
-      method: "POST",
-      token,
-      body: { refs: sourceBranch, branch_name: branch },
-      timeout: 15_000,
-    });
-  },
-  branchOK: new Set([200, 201]),
-  writeFile(client, { forkOwner, repo, branch, path, content, message, token }) {
-    // Gitee creates blobs with POST (not PUT) to /contents/{path}.
-    const putPath = path.split("/").map(enc).join("/");
-    return client.ghJson(`/repos/${enc(forkOwner)}/${enc(repo)}/contents/${putPath}`, {
-      method: "POST",
-      token,
-      body: { message, content: Buffer.from(content, "utf8").toString("base64"), branch },
-      timeout: 20_000,
-    });
-  },
-  writeOK: new Set([200, 201]),
-  openPr(client, { owner, repo, title, head, base, body, token, forkPath }) {
-    // Cross-repo PRs need the fork's owning repo path (fork_path) on Gitee.
-    return client.ghJson(`/repos/${enc(owner)}/${enc(repo)}/pulls`, {
-      method: "POST",
-      token,
-      body: { title, head, base, body, ...(forkPath ? { fork_path: forkPath } : {}) },
-      timeout: 20_000,
-    });
-  },
-  prOK: new Set([200, 201]),
-};
-
-/** All known providers, keyed by the `provider` config value. */
-export const COMMUNITY_PROVIDERS = { github: GITHUB_PROVIDER, gitee: GITEE_PROVIDER };
+export const COMMUNITY_PROVIDERS = { feishu: FEISHU_PROVIDER };
 
 /**
- * Resolve the provider for a community directory target. Falls back to GitHub
- * when the target or its provider field is absent/unknown (backward compatible).
+ * Resolve the provider (pluggable backend) for a community target. Unknown
+ * kinds fall back to the shipped feishu provider.
  */
 export function providerFor(target) {
-  const kind = target?.provider;
-  return COMMUNITY_PROVIDERS[kind] || GITHUB_PROVIDER;
+  const kind = target && typeof target.provider === "string" && target.provider ? target.provider : "feishu";
+  return COMMUNITY_PROVIDERS[kind] || COMMUNITY_PROVIDERS.feishu;
 }
 
-/** Resolve a client's provider; clients without one default to GitHub. */
-function providerOf(client) {
-  return client?.provider || GITHUB_PROVIDER;
-}
-
-/** Lowercase ASCII slug used for set ids / file names. Returns null when empty. */
+/** Slug a free-form set id down to a safe `[a-z0-9-]` token, or null if empty/too long. */
 export function normalizeCommunitySetId(raw) {
   if (typeof raw !== "string") return null;
-  let slug = raw.trim().toLowerCase();
-  if (slug.length === 0 || slug.length > COMMUNITY_SET_ID_MAX) return null;
-  slug = slug.replace(/[^a-z0-9-]+/g, "-").replace(/-{2,}/g, "-").replace(/^-+|-+$/g, "");
-  return slug.length > 0 && slug.length <= COMMUNITY_SET_ID_MAX ? slug : null;
+  const cleaned = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (!cleaned) return null;
+  if (cleaned.length > COMMUNITY_SET_ID_MAX) return null;
+  return cleaned;
 }
 
-/** Pointer file name for a normalized set id. */
+/** pointer file name "<setId>.txt" (legacy tree shape, kept as a pure helper). */
 export function buildCommunityEntryName(setId) {
-  return `${setId}.txt`;
+  const id = normalizeCommunitySetId(setId);
+  return id ? `${id}.txt` : "";
 }
 
-/** Extract a valid normalized set id from a pointer file name, else null. */
+/** Parse "<setId>.txt" back into the normalized set id, or null when invalid/too long. */
 export function parseCommunityEntryName(name) {
-  if (typeof name !== "string" || !name.endsWith(".txt")) return null;
-  const inner = name.slice(0, -4);
-  if (inner.length === 0 || inner.length > COMMUNITY_SET_ID_MAX) return null;
-  return SET_ID_RE.test(inner) ? inner : null;
+  if (typeof name !== "string") return null;
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?\.txt$/.test(name)) return null;
+  const base = name.slice(0, -4);
+  return base.length <= COMMUNITY_SET_ID_MAX ? base : null;
 }
 
-/** First meaningful line of a pointer file must be a bare http(s) URL. */
+/**
+ * Parse a pointer-file body: returns the first non-comment line that is a bare
+ * http(s) URL, or null when the text is empty/oversized or the line is not a
+ * single sane archive URL.
+ */
 export function parseCommunityEntryText(text) {
-  if (typeof text !== "string" || text.length > COMMUNITY_ENTRY_MAX_BYTES) return null;
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (line.length === 0 || line.startsWith("#")) continue;
+  if (typeof text !== "string") return null;
+  const clean = text.replace(/\r/g, "").trim();
+  if (clean.length === 0 || clean.length > COMMUNITY_ENTRY_MAX_BYTES) return null;
+  for (const raw of clean.split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.startsWith("#")) continue;
+    if (!/^https?:\/\/\S+$/.test(line)) return null;
     if (line.length > COMMUNITY_URL_MAX) return null;
-    if (!/^https?:\/\//i.test(line)) return null;
-    if (/[\u0000-\u0020\u007f]/.test(line)) return null;
     return line;
   }
   return null;
 }
 
-/**
- * Extract { entryId, setId, path } entries from a `git/trees` path list for the
- * configured root, deduped by set id (first wins, others ignored).
- */
+/** Leave the legacy tree path parser in place as a pure helper. */
 export function parseCommunityTreePaths(paths, root = DEFAULT_ROOT) {
-  const out = [];
+  const output = [];
   const seen = new Set();
+  if (!Array.isArray(paths)) return output;
   const prefix = `${root}/`;
-  for (const p of Array.isArray(paths) ? paths : []) {
-    if (typeof p !== "string" || !p.startsWith(prefix)) continue;
-    const parts = p.slice(prefix.length).split("/");
-    if (parts.length !== 2) continue;
-    const [entryId, filename] = parts;
-    const setId = parseCommunityEntryName(filename);
-    if (!setId || !entryId || entryId.length === 0 || entryId.length > 64) continue;
+  for (const path of paths) {
+    if (typeof path !== "string" || !path.startsWith(prefix)) continue;
+    const segs = path.slice(prefix.length).split("/");
+    if (segs.length !== 2) continue;
+    const [entryId, fileName] = segs;
+    const setId = parseCommunityEntryName(fileName);
+    if (!setId) continue;
     if (seen.has(setId)) continue;
     seen.add(setId);
-    out.push({ entryId, setId, path: p });
+    output.push({ entryId, setId, path });
   }
-  return out;
+  return output;
 }
 
-/** Folder-ish slug for the community directory target fields. */
-function cleanSegment(raw, { max = 64, allowDot = true } = {}) {
-  if (typeof raw !== "string") return "";
-  const cleaned = raw
-    .trim()
-    .replace(new RegExp(allowDot ? "[^A-Za-z0-9._-]+" : "[^A-Za-z0-9_-]+", "g"), "-")
-    .replace(/-{2,}/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return cleaned.length > max ? "" : cleaned;
+const buildCommunityEntryId = () => {
+  const rand = Math.random().toString(36).slice(2, 8);
+  return `d${Date.now().toString(36)}${rand}`;
+};
+
+function controllerTimeout(timeout) {
+  const controller = typeof AbortController === "function" ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeout) : null;
+  return {
+    controller,
+    timer,
+    clear() {
+      if (timer) clearTimeout(timer);
+    },
+  };
 }
 
-const enc = encodeURIComponent;
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function apiError(res, step, fallback = "feishu") {
+  const status = res ? res.status : 0;
+  const json = res && res.json;
+  const code = json && typeof json.code === "number" ? json.code : null;
+  if (status === 0) return { code: "network", status: 0, step, message: "飞书请求失败（网络错误）。" };
+  const authCodes = new Set([99991663, 1254042, 1254040, 110001, 1130004, 11401]);
+  const existsCodes = new Set([1254003, 1254004, 1254001]);
+  const notFoundCodes = new Set([11407, 11406, 1254006]);
+  if (authCodes.has(code)) return { code: "auth", status: code, step, message: "飞书应用凭据或令牌无效/无权限。" };
+  if (existsCodes.has(code)) return { code: "exists", status: code, step, message: "该条目已存在。" };
+  if (notFoundCodes.has(code)) return { code: "not-found", status: code, step, message: "飞书表格或记录不存在。" };
+  return { code: fallback, status: code ?? status, step, message: "飞书 API 返回异常。" };
 }
 
 /**
- * Thin community REST + raw client over an injectable fetch (real client uses
- * globalThis.fetch; tests inject a fake). Every call resolves, never throws.
- * The client is provider-aware: base URL, auth injection, and raw-fetch URL are
- * delegated to the provider so the same code drives GitHub and Gitee.
+ * Build the C2 backend client for a provider (pluggable backend). The client
+ * is host/credential-aware while staying provider-agnostic: it caches the
+ * short-lived tenant_access_token and exposes record read/write primitives
+ * that the directory/like operations below drive for any provider.
  */
-export function createCommunityClient(provider = GITHUB_PROVIDER, fetchImpl = globalThis.fetch) {
-  const active = provider || GITHUB_PROVIDER;
+export function createCommunityClient(provider = FEISHU_PROVIDER, fetchImpl = globalThis.fetch) {
+  const active = (provider && provider.kind && COMMUNITY_PROVIDERS[provider.kind]) || FEISHU_PROVIDER;
   const fetchFn = typeof fetchImpl === "function" ? fetchImpl : globalThis.fetch;
-  const controllerTimeout = (timeout) => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeout);
-    return { controller, timer, clear: () => clearTimeout(timer) };
-  };
-  const authFor = (token) => active.auth(typeof token === "string" && token.length > 0 ? token : undefined);
-  /** Append a provider auth query onto a path that already holds `/repos/...`. */
-  const withAuth = (path, auth) => {
-    if (!auth.query) return path;
-    return path.includes("?") ? `${path}&${auth.query}` : `${path}?${auth.query}`;
-  };
+
+  async function request(path, { method = "GET", token = "", body, timeout = 15_000, maxBytes = 512 * 1024 } = {}) {
+    const { controller, timer, clear } = controllerTimeout(timeout);
+    const headers = { "User-Agent": "dsh-flash-skin", Accept: "application/json" };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const hasBody = body !== undefined;
+    if (hasBody) headers["Content-Type"] = "application/json";
+    try {
+      const response = await fetchFn(active.apiBase + path, {
+        method,
+        headers,
+        body: hasBody ? JSON.stringify(body) : undefined,
+        signal: controller ? controller.signal : undefined,
+      });
+      const text = await response.text();
+      if (!text || text.length > maxBytes) return { status: response.status, json: null, error: { code: "too-large" } };
+      let json = null;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        json = null;
+      }
+      return { status: response.status, json };
+    } catch {
+      return { status: 0, json: null, error: { code: "network" } };
+    } finally {
+      clear();
+    }
+  }
+
+  // tenant_access_token lives ~2h server-side; cache it and prefetch/refresh lazily.
+  let cachedToken = "";
+  let cachedExpiresAt = 0;
+  let tokenInflight = null;
+
+  async function exchangeToken(target) {
+    const res = await request(active.tokenPath, {
+      method: "POST",
+      body: { app_id: target.appId, app_secret: target.appSecret },
+      timeout: 20_000,
+      maxBytes: 64 * 1024,
+    });
+    const json = res && res.json;
+    if (!active.ok(json)) return null;
+    const t = typeof json.tenant_access_token === "string" ? json.tenant_access_token : "";
+    if (!t) return null;
+    const expire = Number(json.expire) > 0 ? Number(json.expire) : 7200;
+    cachedToken = t;
+    cachedExpiresAt = Date.now() + (expire - 60) * 1000;
+    return t;
+  }
+
+  async function tenantToken(target) {
+    if (!target || !target.appId || !target.appSecret) return null;
+    if (cachedToken && Date.now() < cachedExpiresAt) return cachedToken;
+    if (tokenInflight) return tokenInflight;
+    tokenInflight = exchangeToken(target);
+    try {
+      return await tokenInflight;
+    } finally {
+      tokenInflight = null;
+    }
+  }
+
+  async function listRecords(appToken, tableId, token, pageToken = "") {
+    return request(active.listRecordsPath(appToken, tableId, pageToken), { method: "GET", token, timeout: 20_000 });
+  }
+  async function createRecord(appToken, tableId, token, fields) {
+    return request(active.createRecordPath(appToken, tableId), { method: "POST", token, body: { fields }, timeout: 20_000 });
+  }
+  async function updateRecord(appToken, tableId, token, recordId, fields) {
+    return request(active.updateRecordPath(appToken, tableId, recordId), { method: "PUT", token, body: { fields }, timeout: 20_000 });
+  }
 
   return {
     fetchImpl: fetchFn,
     provider: active,
-    /** @returns {Promise<{status:number, json: any|null, error?: {code:string}}>} */
-    async ghJson(path, { method = "GET", token, body, timeout = 15_000, maxBytes = 64 * 1024 } = {}) {
-      const { controller, timer, clear } = controllerTimeout(timeout);
-      const auth = authFor(token);
-      const hasBody = body !== undefined;
-      try {
-        const response = await fetchFn(withAuth(active.apiBase + path, auth), {
-          method,
-          headers: {
-            Accept: active.acceptJson,
-            "User-Agent": "dsh-flash-skin",
-            ...auth.headers,
-            ...(hasBody ? { "Content-Type": "application/json" } : {}),
-          },
-          body: hasBody ? JSON.stringify(body) : undefined,
-          signal: controller.signal,
-        });
-        const text = await response.text();
-        if (text.length > maxBytes) return { status: response.status, error: { code: "too-large" } };
-        let json = null;
-        try {
-          json = JSON.parse(text);
-        } catch {
-          json = null;
-        }
-        return { status: response.status, json };
-      } catch {
-        return { status: 0, error: { code: "network" } };
-      } finally {
-        clear();
-      }
-    },
-
-    /** Fetch a provider raw blob; null on any failure/oversize. */
-    async rawText(relPath, { timeout = 15_000, maxBytes = COMMUNITY_ENTRY_MAX_BYTES } = {}) {
-      const { controller, timer, clear } = controllerTimeout(timeout);
-      try {
-        const url = expandRawUrl(active, relPath);
-        const response = await fetchFn(url, {
-          headers: { "User-Agent": "dsh-flash-skin", Accept: "text/plain" },
-          signal: controller.signal,
-        });
-        if (!response.ok) return null;
-        const text = await response.text();
-        return text.length <= maxBytes ? text : null;
-      } catch {
-        return null;
-      } finally {
-        clear();
-      }
-    },
+    tenantToken,
+    listRecords,
+    createRecord,
+    updateRecord,
   };
 }
 
-/** Keep the legacy entry point: GitHub provider by default. */
-export function createGitHubClient(fetchImpl = globalThis.fetch) {
-  return createCommunityClient(GITHUB_PROVIDER, fetchImpl);
-}
+const configuredShares = (target) => !!(target && target.sharesTableId);
+const configuredLikes = (target) => !!(target && target.likesTableId);
 
-/**
- * Build the provider-specific raw URL from the universal relPath contract
- * `owner/repo/branch/<enc path segments>` used by the readers.
- */
-function expandRawUrl(provider, relPath) {
-  if (provider.kind === "github") {
-    return `${RAW_BASE}/${relPath}`;
-  }
-  // Gitee raw read: /api/v5/repos/{o}/{r}/raw/{path}?ref={branch}
-  const segs = String(relPath).split("/");
-  const owner = decodeURIComponent(segs[0] || "");
-  const repo = decodeURIComponent(segs[1] || "");
-  const branch = decodeURIComponent(segs[2] || "");
-  const rawPath = segs.slice(3).join("/");
-  const auth = provider.auth(undefined);
-  return `${GITEE_API}/repos/${enc(owner)}/${enc(repo)}/raw/${rawPath}?ref=${enc(branch)}${auth.query ? `&${auth.query}` : ""}`;
-}
-
-/**
- * Tree helper used by both the directory reader and the submit pre-check.
- * Returns the parsed entries or null when the tree could not be read.
- */
-async function readDirectoryEntries(client, target) {
-  const path = `/repos/${enc(target.owner)}/${enc(target.repo)}/git/trees/${enc(target.branch)}?recursive=1`;
-  const res = await client.ghJson(path, { maxBytes: MAX_TREE_BYTES });
-  if (res.status !== 200 || !Array.isArray(res?.json?.tree)) return null;
-  const paths = res.json.tree.filter((t) => t && t.type === "blob").map((t) => t.path);
-  return parseCommunityTreePaths(paths, target.path);
-}
-
-/**
- * Anonymous community-directory snapshot. When the target repo is not
- * configured, or the tree cannot be read (private/rate-limit/offline), the
- * result stays { ok:true, configured:…, entries:[] } with an optional error so
- * the UI can show a soft notice instead of crashing.
- */
-export async function fetchCommunityDirectory(client, target) {
-  if (!target) return { ok: true, configured: false, entries: [], error: null };
-  const entries = await readDirectoryEntries(client, target);
-  if (entries === null) {
-    return {
-      ok: true,
-      configured: true,
-      entries: [],
-      error: { code: "directory-unavailable", message: "Community directory is currently unavailable." },
-    };
-  }
-  const capped = entries.slice(0, COMMUNITY_MAX_ENTRIES);
+/** List every record of a Bitable table (paginated, capped by guard loop). */
+async function listAllRecords(client, target, tableId) {
+  const token = await client.tenantToken(target);
+  if (!token) return { ok: false, error: { code: "auth", step: "token" } };
   const out = [];
-  for (const { entryId, setId, path } of capped) {
-    const parts = path.split("/").map(enc);
-    const text = await client.rawText([enc(target.owner), enc(target.repo), enc(target.branch), ...parts].join("/"));
-    const url = text === null ? null : parseCommunityEntryText(text);
-    if (!url) continue;
-    out.push({ entryId, setId, url });
+  let pageToken = "";
+  for (let guard = 0; guard < 40; guard++) {
+    const res = await client.listRecords(target.appToken, tableId, token, pageToken);
+    const json = res && res.json;
+    if (!client.provider.ok(json)) return { ok: false, error: apiError(res, "list") };
+    const data = json.data;
+    if (data && Array.isArray(data.items)) {
+      for (const item of data.items) out.push({ recordId: item.record_id, fields: item.fields || {} });
+      pageToken = data.has_more ? data.page_token : "";
+    } else {
+      pageToken = "";
+    }
+    if (!pageToken) break;
   }
-  out.sort((a, b) => a.setId.localeCompare(b.setId));
-  return { ok: true, configured: true, entries: out, error: null };
+  return { ok: true, records: out };
 }
 
-function ghError(res, step) {
-  const rawMsg = typeof res?.json?.message === "string" ? res.json.message : "";
-  const status = typeof res?.status === "number" ? res.status : 0;
-  let code = "github";
-  if (status === 0 || res?.error?.code === "network") code = "network";
-  else if (status === 401 || status === 403) code = "auth";
-  if (status === 403 && /rate limit/i.test(rawMsg)) code = "rate-limited";
-  if (status === 409) code = "exists";
-  if (status === 404) code = "not-found";
-  if (status === 422) code = "unprocessable";
-  return {
-    ok: false,
-    error: {
-      code,
-      status,
-      step,
-      message: rawMsg || "GitHub request failed.",
-    },
-  };
-}
-
-/** Wait for a freshly created fork to become readable (forking is async). */
-async function waitForkReady(client, forkOwner, repo, token, attempts = 12) {
-  for (let i = 0; i < attempts; i += 1) {
-    const res = await client.ghJson(`/repos/${enc(forkOwner)}/${enc(repo)}`, { token, timeout: 10_000 });
-    if (res.status === 200) return true;
-    await sleep(1_500);
+/** Read the community directory (shares table) into { ok, configured, entries, error }. */
+export async function readCommunityDirectory(client, target) {
+  if (!configuredShares(target)) {
+    return { ok: true, configured: false, entries: [], error: null };
   }
-  return false;
+  const listed = await listAllRecords(client, target, target.sharesTableId);
+  if (!listed.ok) {
+    const code = listed.error.code === "auth" || listed.error.code === "not-found" ? listed.error.code : "directory-unavailable";
+    return { ok: true, configured: true, entries: [], error: { code } };
+  }
+  const entries = [];
+  for (const rec of listed.records) {
+    const f = rec.fields || {};
+    const setId = typeof f[SHARES_FIELDS.setId] === "string" ? f[SHARES_FIELDS.setId].trim() : "";
+    const url = typeof f[SHARES_FIELDS.url] === "string" ? f[SHARES_FIELDS.url].trim() : "";
+    const entryIdRaw = typeof f[SHARES_FIELDS.entryId] === "string" ? f[SHARES_FIELDS.entryId].trim() : "";
+    const entryId = entryIdRaw || rec.recordId;
+    const cleanSetId = normalizeCommunitySetId(setId);
+    const cleanUrl = parseCommunityEntryText(url);
+    if (!cleanSetId || !cleanUrl || !entryId) continue;
+    entries.push({ entryId, setId: cleanSetId, url: cleanUrl });
+  }
+  entries.sort((a, b) => (a.setId < b.setId ? -1 : a.setId > b.setId ? 1 : 0));
+  return { ok: true, configured: true, entries: entries.slice(0, COMMUNITY_MAX_ENTRIES), error: null };
 }
 
 /**
- * Submit a community share as a pull request.
- * Steps: validate → best-effort set-id de-dup (409) → fork → wait-ready →
- * read fork default head → create branch → PUT pointer file → open PR.
- * Sharer keeps custody of the zip URL; the repo only ever stores the pointer.
+ * Submit a new share pointer to the community directory (server-side write via
+ * the Feishu tenant token). Answers 409 when the set id already exists.
  */
-export async function submitCommunityShare(client, target, { token, setId, url }) {
-  if (!target) {
+export async function submitCommunityShare(client, target, { setId, url } = {}) {
+  if (!configuredShares(target)) {
     return { ok: false, error: { code: "not-configured", message: "Community directory is not configured." } };
   }
-  if (typeof token !== "string" || token.trim().length === 0 || token.length > TOKEN_MAX) {
-    return { ok: false, error: { code: "bad-token", message: "A GitHub token is required to submit." } };
-  }
   const cleanedId = normalizeCommunitySetId(setId);
-  if (!cleanedId) {
-    return { ok: false, error: { code: "bad-set-id", message: "Set id must be 1..64 ASCII letters/digits/hyphens." } };
-  }
-  if (typeof url !== "string" || !/^https?:\/\//i.test(url.trim()) || url.trim().length > COMMUNITY_URL_MAX || /[\u0000-\u0020\u007f]/.test(url.trim())) {
-    return { ok: false, error: { code: "bad-url", message: "Share url must be a bare http(s) link (no spaces/controls)." } };
-  }
-  const accessToken = token.trim();
-  const cleanUrl = url.trim();
-  const entryId = `d${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`;
-  const fileName = buildCommunityEntryName(cleanedId);
-  const filePath = `${target.path}/${entryId}/${fileName}`;
-  const pidBranch = `flash-skin-shares-${cleanedId}-${entryId}`;
+  if (!cleanedId) return { ok: false, error: { code: "bad-set-id", message: "Invalid set id." } };
+  const cleanUrl = parseCommunityEntryText(url);
+  if (!cleanUrl) return { ok: false, error: { code: "bad-url", message: "Invalid archive URL." } };
 
-  // 1) De-dup pre-check: same set id anywhere under the root → 409.
-  const existing = await readDirectoryEntries(client, target);
-  if (Array.isArray(existing) && existing.some((e) => e.setId === cleanedId)) {
-    return {
-      ok: false,
-      error: {
-        code: "exists",
-        message: `A share named "${cleanedId}" already exists in the community directory.`,
-        setId: cleanedId,
-      },
-    };
+  const token = await client.tenantToken(target);
+  if (!token) return { ok: false, error: { code: "auth", message: "Feishu app credentials invalid or missing." } };
+
+  // Pre-write directory scan for duplicate set ids.
+  const listed = await listAllRecords(client, target, target.sharesTableId);
+  if (!listed.ok) return { ok: false, error: listed.error };
+  for (const rec of listed.records) {
+    const sf = rec.fields || {};
+    if (typeof sf[SHARES_FIELDS.setId] === "string" && normalizeCommunitySetId(sf[SHARES_FIELDS.setId]) === cleanedId) {
+      return { ok: false, error: { code: "exists", message: "This set id is already shared." } };
+    }
   }
 
-  // 2) Fork the target repo.
-  const provider = providerOf(client);
-  const forkRes = await provider.fork(client, { owner: target.owner, repo: target.repo, token: accessToken });
-  if (!provider.forkOK.has(forkRes.status)) return ghError(forkRes, "fork");
-  const forkOwner = provider.forkOwner(forkRes?.json);
-  if (!forkOwner) return ghError(forkRes, "fork");
-  if (!(await waitForkReady(client, forkOwner, target.repo, accessToken))) {
-    return { ok: false, error: { code: "fork-timeout", message: "The fork is not ready yet; please retry shortly." } };
-  }
-
-  // 3) Fork default branch head sha.
-  const { defaultBranch: forkDefault, sha: headSha } = await provider.readForkHead(client, {
-    forkOwner,
-    repo: target.repo,
-    branch: target.branch,
-    token: accessToken,
+  const entryId = buildCommunityEntryId();
+  const res = await client.createRecord(target.appToken, target.sharesTableId, token, {
+    [SHARES_FIELDS.entryId]: entryId,
+    [SHARES_FIELDS.setId]: cleanedId,
+    [SHARES_FIELDS.url]: cleanUrl,
   });
-  if (!headSha) return ghError(forkRes, "fork-head");
-
-  // 4) Create the working branch on the fork.
-  const refRes = await provider.createBranch(client, {
-    forkOwner,
-    repo: target.repo,
-    branch: pidBranch,
-    headSha,
-    sourceBranch: forkDefault || target.branch,
-    token: accessToken,
-  });
-  if (!provider.branchOK.has(refRes.status)) return ghError(refRes, "branch");
-
-  // 5) Write the pointer file on the fork branch.
-  const pointer =
-    `${cleanUrl}\n\n` +
-    `# dsh-flash-skin community share\n` +
-    `# ${filePath}\n` +
-    `# The zip lives at the sharer's own URL; the repo only keeps this pointer.\n`;
-  const writeRes = await provider.writeFile(client, {
-    forkOwner,
-    repo: target.repo,
-    branch: pidBranch,
-    path: `${target.path}/${entryId}/${fileName}`,
-    content: pointer,
-    message: `share ${cleanedId}`,
-    token: accessToken,
-  });
-  if (!provider.writeOK.has(writeRes.status)) return ghError(writeRes, "write");
-
-  // 6) Open the PR against the target base branch.
-  const body =
-    `社区分享人物组《${cleanedId}》\n\n` +
-    `压缩包地址：${cleanUrl}\n\n` +
-    `> 该条目为人工审核制（默认），是否即时可见取决于仓库的合入策略。`;
-  const prRes = await provider.openPr(client, {
-    owner: target.owner,
-    repo: target.repo,
-    title: `分享：${cleanedId}`,
-    head: `${forkOwner}:${pidBranch}`,
-    base: target.branch,
-    body,
-    token: accessToken,
-    forkPath: `${forkOwner}/${target.repo}`,
-  });
-  if (!provider.prOK.has(prRes.status)) return ghError(prRes, "pr");
-
-  return {
-    ok: true,
-    entry: { entryId, setId: cleanedId, path: filePath },
-    pr: {
-      number: prRes?.json?.number ?? null,
-      htmlUrl: prRes?.json?.html_url ?? null,
-      state: prRes?.json?.state ?? null,
-    },
-  };
+  if (!client.provider.ok(res && res.json)) return { ok: false, error: apiError(res, "create") };
+  const recordId = res.json && res.json.data && res.json.data.record ? res.json.data.record.record_id : null;
+  return { ok: true, entry: { entryId, setId: cleanedId }, recordId };
 }
 
-/** File (inside the configured root) holding the aggregated like counts. */
-export const COMMUNITY_LIKES_FILE = "likes.json";
-
-/**
- * Anonymous read of the community aggregate like-count file
- * (`<path>/likes.json`). Returns { ok, counts, error } where `counts` is a
- * plain { [groupId]: number } map (any invalid entries silently dropped), or
- * `{ id }`-independent aggregation so multiple hosts can share one counter.
- * Never throws; `counts` is null when the file is absent/unreadable/malformed
- * so callers can fall back to their local ledger.
- */
+/** Read remote like counts (likes table) into a floored group->count map. */
 export async function readCommunityLikes(client, target) {
-  if (!target) return { ok: true, counts: null, error: { code: "not-configured" } };
-  const segments = [enc(target.owner), enc(target.repo), enc(target.branch)];
-  for (const seg of String(target.path).split("/")) {
-    if (seg) segments.push(enc(seg));
-  }
-  segments.push(COMMUNITY_LIKES_FILE);
-  let text = null;
-  try {
-    text = await client.rawText(segments.join("/"));
-  } catch {
-    text = null;
-  }
-  if (text === null) {
-    return { ok: true, counts: null, error: { code: "unavailable", message: "No community like-count file yet." } };
-  }
-  let parsed = null;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return { ok: true, counts: null, error: { code: "bad-json", message: "Community like-count file is malformed." } };
-  }
+  if (!configuredLikes(target)) return { ok: true, counts: null, error: { code: "not-configured" } };
+  const token = await client.tenantToken(target);
+  if (!token) return { ok: true, counts: null, error: { code: "auth" } };
+  const listed = await listAllRecords(client, target, target.likesTableId);
+  if (!listed.ok) return { ok: true, counts: null, error: listed.error };
   const counts = {};
-  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-    for (const [key, value] of Object.entries(parsed)) {
-      // Group ids are slugs; reject any whitespace/control char in the key.
-      if (typeof key !== "string" || key.length === 0 || key.length > 128 || /[\s\u007f]/.test(key)) continue;
-      const n = Number(value);
-      if (Number.isFinite(n) && n > 0) counts[key] = Math.floor(n);
-    }
+  for (const rec of listed.records) {
+    const f = rec.fields || {};
+    const groupId = typeof f[LIKES_FIELDS.groupId] === "string" ? f[LIKES_FIELDS.groupId].trim() : "";
+    if (!groupId || groupId.length > 128 || /[\s\u007f]/.test(groupId)) continue;
+    const n = Number(f[LIKES_FIELDS.count]);
+    if (Number.isFinite(n) && n > 0) counts[groupId] = Math.floor(n);
   }
   return { ok: true, counts, error: null };
 }
 
-/**
- * Persist the aggregated like-count snapshot through a GitHub PR. Reuses the
- * same fork → branch → PUT-pointer → open-PR flow as share submissions (see
- * `submitCommunityShare`), but writes `likes.json` rather than an entry
- * pointer, so it is a single counter the owner can review and merge. Never
- * throws; returns { ok:true, pr } or { ok:false, error }.
- */
-export async function submitCommunityLikes(client, target, { token, counts }) {
-  if (!target) {
-    return { ok: false, error: { code: "not-configured", message: "Community directory is not configured." } };
+/** Upsert aggregated like counts into the likes table (server-side write). */
+export async function submitCommunityLikes(client, target, { counts } = {}) {
+  if (!configuredLikes(target)) {
+    return { ok: false, error: { code: "not-configured", message: "Community likes table is not configured." } };
   }
-  if (typeof token !== "string" || token.trim().length === 0 || token.length > TOKEN_MAX) {
-    return { ok: false, error: { code: "bad-token", message: "A GitHub token is required to sync likes." } };
-  }
+  const token = await client.tenantToken(target);
+  if (!token) return { ok: false, error: { code: "auth", message: "Feishu app credentials invalid or missing." } };
+
   const normalized = {};
   if (counts && typeof counts === "object" && !Array.isArray(counts)) {
     for (const [key, value] of Object.entries(counts)) {
-      const n = Math.floor(Number(value));
-      if (
-        typeof key === "string" && key.length > 0 && key.length <= 128 &&
-        !/[\s\u007f]/.test(key) && Number.isFinite(n) && n > 0
-      ) {
-        normalized[key] = n;
-      }
+      if (typeof key !== "string" || key.length === 0 || key.length > 128 || /[\s\u007f]/.test(key)) continue;
+      const n = Number(value);
+      if (Number.isFinite(n) && n > 0) normalized[key] = Math.floor(n);
     }
   }
-  const accessToken = token.trim();
-  const filePath = `${target.path}/${COMMUNITY_LIKES_FILE}`;
-  const pidBranch = `flash-skin-likes-${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`;
 
-  // 1) Fork the target repo.
-  const provider = providerOf(client);
-  const forkRes = await provider.fork(client, { owner: target.owner, repo: target.repo, token: accessToken });
-  if (!provider.forkOK.has(forkRes.status)) return ghError(forkRes, "fork");
-  const forkOwner = provider.forkOwner(forkRes?.json);
-  if (!forkOwner) return ghError(forkRes, "fork");
-  if (!(await waitForkReady(client, forkOwner, target.repo, accessToken))) {
-    return { ok: false, error: { code: "fork-timeout", message: "The fork is not ready yet; please retry shortly." } };
+  const listed = await listAllRecords(client, target, target.likesTableId);
+  if (!listed.ok) return { ok: false, error: listed.error };
+  const recordByGroup = new Map();
+  for (const rec of listed.records) {
+    const f = rec.fields || {};
+    const g = typeof f[LIKES_FIELDS.groupId] === "string" ? f[LIKES_FIELDS.groupId].trim() : "";
+    if (g) recordByGroup.set(g, rec.recordId);
   }
 
-  // 2) Fork default branch head sha.
-  const { defaultBranch: forkDefault, sha: headSha } = await provider.readForkHead(client, {
-    forkOwner,
-    repo: target.repo,
-    branch: target.branch,
-    token: accessToken,
-  });
-  if (!headSha) return ghError(forkRes, "fork-head");
-
-  // 3) Create the working branch on the fork.
-  const refRes = await provider.createBranch(client, {
-    forkOwner,
-    repo: target.repo,
-    branch: pidBranch,
-    headSha,
-    sourceBranch: forkDefault || target.branch,
-    token: accessToken,
-  });
-  if (!provider.branchOK.has(refRes.status)) return ghError(refRes, "branch");
-
-  // 4) Write the aggregated likes file on the fork branch.
-  const content = JSON.stringify(normalized, null, 2);
-  const writeRes = await provider.writeFile(client, {
-    forkOwner,
-    repo: target.repo,
-    branch: pidBranch,
-    path: filePath,
-    content,
-    message: `sync like counts (${Object.keys(normalized).length} groups)`,
-    token: accessToken,
-  });
-  if (!provider.writeOK.has(writeRes.status)) return ghError(writeRes, "write");
-
-  // 5) Open the PR against the target base branch.
-  const prBody =
-    `社区点赞计数同步\n\n` +
-    `聚合计数文件：${filePath}\n\n` +
-    `> 由插件服务端定时聚合提交，是否即时可见取决于仓库的合入策略。`;
-  const prRes = await provider.openPr(client, {
-    owner: target.owner,
-    repo: target.repo,
-    title: `点赞同步`,
-    head: `${forkOwner}:${pidBranch}`,
-    base: target.branch,
-    body: prBody,
-    token: accessToken,
-    forkPath: `${forkOwner}/${target.repo}`,
-  });
-  if (!provider.prOK.has(prRes.status)) return ghError(prRes, "pr");
-
-  return {
-    ok: true,
-    pr: {
-      number: prRes?.json?.number ?? null,
-      htmlUrl: prRes?.json?.html_url ?? null,
-      state: prRes?.json?.state ?? null,
-    },
-  };
+  let updated = 0;
+  for (const [groupId, count] of Object.entries(normalized)) {
+    const fields = { [LIKES_FIELDS.groupId]: groupId, [LIKES_FIELDS.count]: count };
+    const recordId = recordByGroup.get(groupId);
+    const res = recordId
+      ? await client.updateRecord(target.appToken, target.likesTableId, token, recordId, fields)
+      : await client.createRecord(target.appToken, target.likesTableId, token, fields);
+    if (client.provider.ok(res && res.json)) updated++;
+  }
+  return { ok: true, updated };
 }
 
 /**
- * Register the community routes against the host webServer and wire the config
- * target accessor. Returns disposers; index.js folds them into teardown.
+ * Register the community-directory routes. getTarget resolves the pluggable
+ * backend target at request time; `client` is the C2 backend client (defaults
+ * to the feishu provider client). Returns disposers grouped by route kind.
  */
 export function installCommunityRoutes(ctx, opts = {}) {
-  const client = opts.client || createGitHubClient(globalThis.fetch);
-  const getTarget = opts.getTarget || (() => null);
+  const getTarget = typeof opts.getTarget === "function" ? opts.getTarget : () => null;
+  const client = opts.client || createCommunityClient(COMMUNITY_PROVIDERS.feishu, globalThis.fetch);
 
   const directory = async (req, res) => {
     try {
@@ -727,19 +447,17 @@ export function installCommunityRoutes(ctx, opts = {}) {
         sendJson(res, 405, { ok: false, error: { code: "method", message: "GET only." } });
         return;
       }
-      const result = await fetchCommunityDirectory(client, getTarget());
-      sendJson(res, 200, result);
+      const result = await readCommunityDirectory(client, getTarget());
+      sendJson(res, 200, { ok: true, configured: result.configured, entries: result.entries, error: result.error });
     } catch {
-      res.writeHead(500, { "X-Content-Type-Options": "nosniff", "Content-Type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ ok: false, error: { code: "internal", message: "Unexpected error." } }));
+      sendJson(res, 500, { ok: false, error: { code: "internal", message: "Unexpected error." } });
     }
   };
 
   const submit = async (req, res) => {
     try {
       if ((req.method ?? "GET") !== "POST") {
-        res.writeHead(405, { "Content-Type": "application/json; charset=utf-8", "X-Content-Type-Options": "nosniff" });
-        res.end(JSON.stringify({ ok: false, error: { code: "method", message: "POST only." } }));
+        sendJson(res, 405, { ok: false, error: { code: "method", message: "POST only." } });
         return;
       }
       const body = await readBody(req, MAX_SUBMIT_BODY_BYTES);
@@ -754,17 +472,19 @@ export function installCommunityRoutes(ctx, opts = {}) {
       } catch {
         envelope = null;
       }
-      const token = typeof envelope?.token === "string" ? envelope.token : "";
-      const setId = typeof envelope?.setId === "string" ? envelope.setId : "";
-      const url = typeof envelope?.url === "string" ? envelope.url : "";
-      const result = await submitCommunityShare(client, getTarget(), { token, setId, url });
+      const setId = envelope && typeof envelope.setId === "string" ? envelope.setId : "";
+      const url = envelope && typeof envelope.url === "string" ? envelope.url : "";
+      const result = await submitCommunityShare(client, getTarget(), { setId, url });
       res.writeHead(result.ok ? 200 : 409, {
         "Content-Type": "application/json; charset=utf-8",
         "X-Content-Type-Options": "nosniff",
       });
       res.end(JSON.stringify(result));
     } catch {
-      res.writeHead(500, { "X-Content-Type-Options": "nosniff", "Content-Type": "application/json; charset=utf-8" });
+      res.writeHead(500, {
+        "Content-Type": "application/json; charset=utf-8",
+        "X-Content-Type-Options": "nosniff",
+      });
       res.end(JSON.stringify({ ok: false, error: { code: "internal", message: "Unexpected error." } }));
     }
   };

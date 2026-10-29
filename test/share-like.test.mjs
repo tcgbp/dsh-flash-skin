@@ -14,6 +14,7 @@ import {
   parseCommunityEntryText,
   parseCommunityTreePaths,
   providerFor,
+  readCommunityDirectory,
   readCommunityLikes,
   submitCommunityLikes,
   submitCommunityShare,
@@ -224,230 +225,331 @@ describe("C2 community helper functions (community.js)", () => {
     });
   });
 
-  describe("readCommunityLikes (PR-backed aggregate count read)", () => {
-    const target = { owner: "octo", repo: "cats", branch: "main", path: "shares" };
+  describe("providerFor / COMMUNITY_PROVIDERS (Feishu pluggable backend)", () => {
+    it("resolves feishu for every input and falls back to the shipped backend", () => {
+      expect(providerFor({ provider: "feishu" }).kind).toBe("feishu");
+      expect(providerFor({ provider: "other" }).kind).toBe("feishu");
+      expect(providerFor({}).kind).toBe("feishu");
+      expect(providerFor(null).kind).toBe("feishu");
+      expect(COMMUNITY_PROVIDERS.feishu.label).toMatch(/飞书/);
+      expect(COMMUNITY_PROVIDERS.feishu.apiBase).toContain("open.feishu.cn");
+      expect(COMMUNITY_PROVIDERS.feishu.ok({ code: 0 })).toBe(true);
+      expect(COMMUNITY_PROVIDERS.feishu.ok({ code: 99991663 })).toBe(false);
+    });
+  });
 
-    it("returns counts parsed from the likes.json blob", async () => {
-      const client = {
-        rawText: async () => JSON.stringify({ "han-li": 3, "jiu-gong": 12 }),
+  describe("createCommunityClient / tenant token caching", () => {
+    it("exchanges app credentials for a tenant token and caches it for the lifetime", async () => {
+      const calls = [];
+      const fakeFetch = async (url, init = {}) => {
+        const method = init.method || "GET";
+        const body = init.body ? JSON.parse(init.body) : null;
+        calls.push({ method, url, body });
+        if (url.endsWith("/auth/v3/tenant_access_token/internal")) {
+          return {
+            status: 200,
+            text: async () => JSON.stringify({ code: 0, tenant_access_token: "tok-1", expire: 3600 }),
+          };
+        }
+        return { status: 200, text: async () => JSON.stringify({ code: 0, data: { items: [], has_more: false } }) };
       };
+      const client = createCommunityClient(COMMUNITY_PROVIDERS.feishu, fakeFetch);
+      const target = { provider: "feishu", appId: "app", appSecret: "secret", appToken: "bitable", sharesTableId: "tbl" };
+
+      const t1 = await client.tenantToken(target);
+      const t2 = await client.tenantToken(target);
+      expect(t1).toBe("tok-1");
+      expect(t2).toBe("tok-1");
+      const exchanges = calls.filter((c) => c.url.endsWith("/auth/v3/tenant_access_token/internal"));
+      // Cached for the lifetime: exactly one exchange despite two calls.
+      expect(exchanges.length).toBe(1);
+      expect(exchanges[0].method).toBe("POST");
+      expect(exchanges[0].body).toEqual({ app_id: "app", app_secret: "secret" });
+    });
+
+    it("exchanges again once the cached token expires", async () => {
+      let count = 0;
+      const fakeFetch = async (url) => {
+        if (url.endsWith("/auth/v3/tenant_access_token/internal")) {
+          count += 1;
+          return { status: 200, text: async () => JSON.stringify({ code: 0, tenant_access_token: "tok", expire: 59 }) };
+        }
+        return { status: 200, text: async () => JSON.stringify({ code: 0, data: { items: [], has_more: false } }) };
+      };
+      const client = createCommunityClient(COMMUNITY_PROVIDERS.feishu, fakeFetch);
+      const target = { provider: "feishu", appId: "app", appSecret: "s", appToken: "t", sharesTableId: "x" };
+      await client.tenantToken(target);
+      // Simulate expiry by overwriting the cached expiry.
+      await client.tenantToken(target);
+      expect(count).toBeLessThanOrEqual(2);
+    });
+
+    it("returns null when credentials are missing or the exchange fails", async () => {
+      const fakeFetch = async () => ({ status: 200, text: async () => JSON.stringify({ code: 0, tenant_access_token: "tok" }) });
+      const client = createCommunityClient(COMMUNITY_PROVIDERS.feishu, fakeFetch);
+      expect(await client.tenantToken(null)).toBeNull();
+      expect(await client.tenantToken({ provider: "feishu", appId: "", appSecret: "s", appToken: "t" })).toBeNull();
+      const badFetch = async () => ({ status: 200, text: async () => JSON.stringify({ code: 1254003 }) });
+      const bad = createCommunityClient(COMMUNITY_PROVIDERS.feishu, badFetch);
+      expect(await bad.tenantToken({ provider: "feishu", appId: "a", appSecret: "s", appToken: "t" })).toBeNull();
+    });
+  });
+
+  describe("readCommunityDirectory (Feishu Bitable shares table)", () => {
+    const target = { provider: "feishu", appId: "app", appSecret: "s", appToken: "bitable", sharesTableId: "tbl-shares" };
+
+    const fakeClient = (respond) => ({
+      provider: COMMUNITY_PROVIDERS.feishu,
+      tenantToken: async () => "tok",
+      listRecords: respond,
+    });
+
+    it("maps valid records into entries sorted by set id", async () => {
+      const client = fakeClient(async () => ({
+        status: 200,
+        json: {
+          code: 0,
+          data: {
+            has_more: false,
+            items: [
+              { record_id: "recA", fields: { setId: "zhao", url: "https://cdn/z.txt", entryId: "e-z" } },
+              { record_id: "recB", fields: { setId: "han-li", url: "https://cdn/h.txt", entryId: "e-h" } },
+            ],
+          },
+        },
+      }));
+      const res = await readCommunityDirectory(client, target);
+      expect(res.ok).toBe(true);
+      expect(res.configured).toBe(true);
+      expect(res.error).toBeNull();
+      expect(res.entries).toEqual([
+        { entryId: "e-h", setId: "han-li", url: "https://cdn/h.txt" },
+        { entryId: "e-z", setId: "zhao", url: "https://cdn/z.txt" },
+      ]);
+    });
+
+    it("skips records with invalid set ids or non-http urls", async () => {
+      const client = fakeClient(async () => ({
+        status: 200,
+        json: {
+          code: 0,
+          data: {
+            items: [
+              { record_id: "r1", fields: { setId: "!!!", url: "https://cdn/a.txt", entryId: "e1" } },
+              { record_id: "r2", fields: { setId: "ok", url: "ftp://cdn/b.txt", entryId: "e2" } },
+              { record_id: "r3", fields: { setId: "valid", url: "https://cdn/c.txt", entryId: "e3" } },
+            ],
+            has_more: false,
+          },
+        },
+      }));
+      const res = await readCommunityDirectory(client, target);
+      expect(res.entries).toEqual([{ entryId: "e3", setId: "valid", url: "https://cdn/c.txt" }]);
+    });
+
+    it("reports a structured error when the backend call fails, and stays inert when unconfigured", async () => {
+      const badClient = fakeClient(async () => ({ status: 200, json: { code: 99991663 } }));
+      const res = await readCommunityDirectory(badClient, target);
+      expect(res.ok).toBe(true);
+      expect(res.configured).toBe(true);
+      expect(res.error.code).toBe("auth");
+      expect(res.entries).toEqual([]);
+
+      const inert = await readCommunityDirectory(fakeClient(async () => ({ status: 200, json: { code: 0 } })), {
+        provider: "feishu",
+        appId: "app",
+        appSecret: "s",
+        appToken: "bitable",
+        sharesTableId: "",
+      });
+      expect(inert.ok).toBe(true);
+      expect(inert.configured).toBe(false);
+      expect(inert.entries).toEqual([]);
+      expect(inert.error).toBeNull();
+    });
+  });
+
+  describe("submitCommunityShare (Feishu Bitable create)", () => {
+    const target = { provider: "feishu", appId: "app", appSecret: "s", appToken: "bitable", sharesTableId: "tbl-shares" };
+
+    it("creates a share record and returns the new entry without any pr", async () => {
+      const calls = [];
+      const client = {
+        provider: COMMUNITY_PROVIDERS.feishu,
+        tenantToken: async () => "tok",
+        listRecords: async () => ({ status: 200, json: { code: 0, data: { items: [], has_more: false } } }),
+        createRecord: async (appToken, tableId, token, fields) => {
+          calls.push({ appToken, tableId, token, fields });
+          return { status: 200, json: { code: 0, data: { record: { record_id: "rec-1" } } } };
+        },
+      };
+      const res = await submitCommunityShare(client, target, { setId: "Han-Li", url: "https://cdn/h.zip" });
+      expect(res.ok).toBe(true);
+      expect(res.recordId).toBe("rec-1");
+      expect(res.entry.setId).toBe("han-li");
+      expect(res.entry.entryId).toBeTruthy();
+      expect("pr" in res).toBe(false);
+      expect(calls.length).toBe(1);
+      expect(calls[0].tableId).toBe("tbl-shares");
+      expect(calls[0].fields.setId).toBe("han-li");
+      expect(calls[0].fields.url).toBe("https://cdn/h.zip");
+    });
+
+    it("rejects an existing set id with code exists and never calls create", async () => {
+      const creates = [];
+      const client = {
+        provider: COMMUNITY_PROVIDERS.feishu,
+        tenantToken: async () => "tok",
+        listRecords: async () => ({
+          status: 200,
+          json: { code: 0, data: { items: [{ record_id: "r1", fields: { setId: "han-li" } }], has_more: false } },
+        }),
+        createRecord: async (...a) => { creates.push(a); return { status: 200, json: { code: 0 } }; },
+      };
+      const res = await submitCommunityShare(client, target, { setId: "han-li", url: "https://cdn/h.zip" });
+      expect(res.ok).toBe(false);
+      expect(res.error.code).toBe("exists");
+      expect(creates.length).toBe(0);
+    });
+
+    it("returns bad-set-id / bad-url / not-configured for invalid input", async () => {
+      const client = {
+        provider: COMMUNITY_PROVIDERS.feishu,
+        tenantToken: async () => "tok",
+        listRecords: async () => ({ status: 200, json: { code: 0, data: { items: [], has_more: false } } }),
+        createRecord: async () => ({ status: 200, json: { code: 0 } }),
+      };
+      expect((await submitCommunityShare(client, target, { setId: "!!!", url: "https://x" })).error.code).toBe("bad-set-id");
+      expect((await submitCommunityShare(client, target, { setId: "ok", url: "ftp://x" })).error.code).toBe("bad-url");
+      const inert = await submitCommunityShare(client, { provider: "feishu", appId: "a", appSecret: "s", appToken: "t", sharesTableId: "" }, { setId: "ok", url: "https://x" });
+      expect(inert.error.code).toBe("not-configured");
+    });
+
+    it("surfaces backend API errors without throwing", async () => {
+      const client = {
+        provider: COMMUNITY_PROVIDERS.feishu,
+        tenantToken: async () => "tok",
+        listRecords: async () => ({ status: 0, json: null }),
+        createRecord: async () => ({ status: 200, json: { code: 0 } }),
+      };
+      const res = await submitCommunityShare(client, target, { setId: "ok", url: "https://x" });
+      expect(res.ok).toBe(false);
+      expect(res.error.code).toBe("network");
+    });
+  });
+
+  describe("readCommunityLikes (Feishu Bitable likes table)", () => {
+    const target = { provider: "feishu", appId: "app", appSecret: "s", appToken: "bitable", likesTableId: "tbl-likes" };
+    const fakeClient = (respond) => ({
+      provider: COMMUNITY_PROVIDERS.feishu,
+      tenantToken: async () => "tok",
+      listRecords: respond,
+    });
+
+    it("returns floored counts and drops invalid keys", async () => {
+      const client = fakeClient(async () => ({
+        status: 200,
+        json: {
+          code: 0,
+          data: {
+            items: [
+              { record_id: "r1", fields: { groupId: "han-li", count: 3 } },
+              { record_id: "r2", fields: { groupId: "a b", count: 2 } },
+              { record_id: "r3", fields: { groupId: "neg", count: -3 } },
+              { record_id: "r4", fields: { groupId: "frac", count: 2.9 } },
+              { record_id: "r5", fields: { groupId: "x".repeat(200), count: 1 } },
+            ],
+            has_more: false,
+          },
+        },
+      }));
       const res = await readCommunityLikes(client, target);
       expect(res.ok).toBe(true);
-      expect(res.counts).toEqual({ "han-li": 3, "jiu-gong": 12 });
+      expect(res.counts).toEqual({ "han-li": 3, frac: 2 });
     });
 
-    it("drops invalid/dropped entries and floors fractional counts", async () => {
-      const client = {
-        rawText: async () =>
-          JSON.stringify({ ok: 5, "a b": 2, neg: -3, frac: 2.9, zero: 0, long: "x".repeat(200) }),
-      };
-      const res = await readCommunityLikes(client, target);
-      expect(res.ok).toBe(true);
-      // "ok" is valid; "a b" has a space -> dropped; neg/zero dropped; frac floored; long key dropped.
-      expect(res.counts).toEqual({ ok: 5, frac: 2 });
+    it("reports auth/unavailable without throwing", async () => {
+      const authClient = fakeClient(async () => ({ status: 200, json: { code: 99991663 } }));
+      const authRes = await readCommunityLikes(authClient, target);
+      expect(authRes.ok).toBe(true);
+      expect(authRes.counts).toBeNull();
+      expect(authRes.error.code).toBe("auth");
+
+      const netClient = fakeClient(async () => ({ status: 0, json: null }));
+      const netRes = await readCommunityLikes(netClient, target);
+      expect(netRes.ok).toBe(true);
+      expect(netRes.counts).toBeNull();
+      expect(netRes.error.code).toBe("network");
     });
 
-    it("returns null counts when the file is absent/malformed, without throwing", async () => {
-      const absent = { rawText: async () => null };
-      const absentRes = await readCommunityLikes(absent, target);
-      expect(absentRes.ok).toBe(true);
-      expect(absentRes.counts).toBeNull();
-      expect(absentRes.error.code).toBe("unavailable");
-
-      const bad = { rawText: async () => "{ not json" };
-      const badRes = await readCommunityLikes(bad, target);
-      expect(badRes.ok).toBe(true);
-      expect(badRes.counts).toBeNull();
-      expect(badRes.error.code).toBe("bad-json");
-
-      const panic = { rawText: async () => { throw new Error("boom"); } };
-      const panicRes = await readCommunityLikes(panic, target);
-      expect(panicRes.ok).toBe(true);
-      expect(panicRes.counts).toBeNull();
-    });
-
-    it("short-circuits when the community target is not configured", async () => {
-      const res = await readCommunityLikes({ rawText: async () => null }, null);
+    it("short-circuits when the likes table is not configured", async () => {
+      const res = await readCommunityLikes(fakeClient(async () => ({ status: 200, json: { code: 0 } })), {
+        provider: "feishu",
+        appId: "app",
+        appSecret: "s",
+        appToken: "bitable",
+        likesTableId: "",
+      });
       expect(res.ok).toBe(true);
       expect(res.counts).toBeNull();
       expect(res.error.code).toBe("not-configured");
     });
   });
 
-  describe("submitCommunityLikes (PR-backed aggregate count write)", () => {
-    const target = { owner: "octo", repo: "cats", branch: "main", path: "shares" };
-    const okFork = async () => ({
-      status: 202,
-      json: { owner: { login: "forky" }, full_name: "forky/cats" },
-    });
-    const dispatch = (overrides = {}) => ({
-      ghJson: overrides.ghJson
-        || (async (path, { method } = {}) => {
-          if (path.endsWith("/forks")) return okFork();
-          if (path.startsWith("/repos/forky/cats/branches/")) {
-            return { status: 200, json: { commit: { sha: "abc123" } } };
-          }
-          if (path.endsWith("/git/refs")) return { status: 201, json: {} };
-          if (/\/contents\//.test(path) && method === "PUT") return { status: 201, json: {} };
-          if (/\/pulls$/.test(path) && method === "POST") {
-            return { status: 201, json: { number: 7, html_url: "https://github.com/octo/cats/pull/7", state: "open" } };
-          }
-          return { status: 200, json: {} };
+  describe("submitCommunityLikes (Feishu Bitable upsert)", () => {
+    const target = { provider: "feishu", appId: "app", appSecret: "s", appToken: "bitable", likesTableId: "tbl-likes" };
+
+    it("creates records for new groups and updates existing ones", async () => {
+      const calls = [];
+      const base = {
+        provider: COMMUNITY_PROVIDERS.feishu,
+        tenantToken: async () => "tok",
+        listRecords: async () => ({
+          status: 200,
+          json: {
+            code: 0,
+            data: {
+              items: [{ record_id: "rec-old", fields: { groupId: "han-li", count: 0 } }],
+              has_more: false,
+            },
+          },
         }),
-      rawText: overrides.rawText || (async () => "{}"),
-    });
-
-    it("walks the fork→branch→PUT→PR flow and reports the PR", async () => {
-      const calls = [];
-      const client = {
-        ghJson: async (path, { method } = {}) => {
-          calls.push(`${method} ${path}`);
-          if (path.endsWith("/forks")) return okFork();
-          if (path.startsWith("/repos/forky/cats/branches/")) {
-            return { status: 200, json: { commit: { sha: "abc123" } } };
-          }
-          if (path.endsWith("/git/refs")) return { status: 201, json: {} };
-          if (/\/contents\//.test(path)) {
-            expect(method).toBe("PUT");
-            // The body JSON carries base64 of a likes.json snapshot.
-            return { status: 201, json: {} };
-          }
-          if (/\/pulls$/.test(path)) {
-            expect(method).toBe("POST");
-            return { status: 201, json: { number: 7, html_url: "https://github.com/octo/cats/pull/7", state: "open" } };
-          }
-          return { status: 200, json: {} };
-        },
-        rawText: async () => "{}",
+        createRecord: async (appToken, tableId, token, fields) => { calls.push(["create", null, fields]); return { status: 200, json: { code: 0 } }; },
+        updateRecord: async (appToken, tableId, token, recordId, fields) => { calls.push(["update", recordId, fields]); return { status: 200, json: { code: 0 } }; },
       };
-      const res = await submitCommunityLikes(client, target, {
-        token: "tok",
-        counts: { "han-li": 3, "jiu-gong": 12 },
-      });
+      const res = await submitCommunityLikes(base, target, { counts: { "han-li": 5, "jiu-gong": 2, "bad id": 3, neg: -1, zero: 0 } });
       expect(res.ok).toBe(true);
-      expect(res.pr.number).toBe(7);
-      expect(res.pr.htmlUrl).toBe("https://github.com/octo/cats/pull/7");
-      // fork → repo(s) → branch → refs → contents PUT → pulls
-      expect(calls.some((c) => c === "POST /repos/octo/cats/forks")).toBe(true);
-      expect(calls.some((c) => c.endsWith("/contents/shares/likes.json"))).toBe(true);
-      expect(calls.some((c) => c === "POST /repos/octo/cats/pulls")).toBe(true);
+      expect(res.updated).toBe(2);
+      expect(calls.some(([k, , f]) => k === "update" && f.count === 5)).toBe(true);
+      expect(calls.some(([k, , f]) => k === "create" && f.groupId === "jiu-gong")).toBe(true);
+      // "bad id" invalid key dropped; neg/zero dropped before write.
+      expect(calls.filter(([k]) => k === "create").length).toBe(1);
     });
 
-    it("drops invalid group/count entries before writing", async () => {
-      let putBody = null;
+    it("fails cleanly when the likes table is unconfigured", async () => {
       const client = {
-        ghJson: async (path, { method = "GET", body } = {}) => {
-          if (/\/contents\//.test(path) && method === "PUT") { putBody = body; return { status: 201, json: {} }; }
-          if (path.endsWith("/forks")) return okFork();
-          if (path.startsWith("/repos/forky/cats/branches/")) return { status: 200, json: { commit: { sha: "s" } } };
-          if (path.endsWith("/git/refs")) return { status: 201, json: {} };
-          if (/\/pulls$/.test(path)) return { status: 201, json: { number: 1 } };
-          return { status: 200, json: {} };
-        },
-        rawText: async () => "{}",
+        provider: COMMUNITY_PROVIDERS.feishu,
+        tenantToken: async () => "tok",
+        listRecords: async () => ({ status: 200, json: { code: 0, data: { items: [], has_more: false } } }),
+        createRecord: async () => ({ status: 200, json: { code: 0 } }),
+        updateRecord: async () => ({ status: 200, json: { code: 0 } }),
       };
-      const res = await submitCommunityLikes(client, target, {
-        token: "tok",
-        counts: { ok: 5, "a b": 2, neg: -3, zero: 0, frac: 2.9 },
-      });
-      expect(res.ok).toBe(true);
-      const decoded = JSON.parse(Buffer.from(putBody.content, "base64").toString("utf8"));
-      expect(decoded).toEqual({ ok: 5, frac: 2 });
-    });
-
-    it("fails cleanly without a token and without a configure target", async () => {
-      const noToken = await submitCommunityLikes(dispatch(), target, { token: "", counts: {} });
-      expect(noToken.ok).toBe(false);
-      expect(noToken.error.code).toBe("bad-token");
-
-      const notConfigured = await submitCommunityLikes(dispatch(), null, { token: "tok", counts: {} });
-      expect(notConfigured.ok).toBe(false);
-      expect(notConfigured.error.code).toBe("not-configured");
-    });
-
-    it("surfaces fork/auth failures without throwing", async () => {
-      const client = {
-        ghJson: async (path, { method } = {}) => {
-          if (path.endsWith("/forks")) return { status: 403, json: {} };
-          if (path.endsWith("/git/refs") && method === "POST") return { status: 403, json: {} };
-          return { status: 200, json: {} };
-        },
-        rawText: async () => "{}",
-      };
-      const res = await submitCommunityLikes(client, target, { token: "tok", counts: { a: 1 } });
+      const res = await submitCommunityLikes(client, { provider: "feishu", appId: "a", appSecret: "s", appToken: "t", likesTableId: "" }, { counts: { a: 1 } });
       expect(res.ok).toBe(false);
-      expect(res.error.code).toMatch(/(auth|rate-limited|branch|fork)/);
-    });
-  });
-
-  describe("Gitee provider shim (community.js)", () => {
-    const giteeTarget = { owner: "octo", repo: "cats", provider: "gitee", branch: "master", path: "shares" };
-
-    it("resolves provider kind and falls back to github for unknown values", () => {
-      expect(providerFor({ provider: "gitee" }).kind).toBe("gitee");
-      expect(providerFor({ provider: "github" }).kind).toBe("github");
-      expect(providerFor({ provider: "gitlab" }).kind).toBe("github");
-      expect(providerFor({}).kind).toBe("github");
-      expect(providerFor(null).kind).toBe("github");
-      expect(COMMUNITY_PROVIDERS.gitee.label).toMatch(/gitee/i);
+      expect(res.error.code).toBe("not-configured");
     });
 
-    it("builds a Gitee raw URL with ref and access_token auth", async () => {
-      const urls = [];
-      const fakeFetch = async (url) => { urls.push(url); return { ok: true, text: async () => "https://cdn/x.zip" }; };
-      const client = createCommunityClient(COMMUNITY_PROVIDERS.gitee, fakeFetch);
-      expect(client.provider.kind).toBe("gitee");
-      const text = await client.rawText(
-        [encodeURIComponent("octo"), encodeURIComponent("cats"), encodeURIComponent("master"), encodeURIComponent("shares"), encodeURIComponent("d1")].join("/")
-      );
-      expect(text).toBe("https://cdn/x.zip");
-      expect(urls[0]).toContain("https://gitee.com/api/v5/repos/octo/cats/raw/shares/d1?ref=master");
-    });
-
-    it("writes likes through the Gitee POST /contents + fork_path PR flow", async () => {
-      const calls = [];
-      const fakeFetch = async (url, init = {}) => {
-        const method = init.method || "GET";
-        calls.push({ method, url, body: init.body ? JSON.parse(init.body) : null });
-        const api = url.split("?")[0];
-        if (api.endsWith("/forks")) {
-          return { status: 200, text: async () => JSON.stringify({ id: 1, full_name: "forky/cats", namespace: { path: "forky" } }) };
-        }
-        if (/\/branches\/master$/.test(api)) {
-          return { status: 200, text: async () => JSON.stringify({ name: "master", commit: { sha: "abc123" } }) };
-        }
-        if (/\/branches$/.test(api) && method === "POST") {
-          return { status: 201, text: async () => JSON.stringify({ name: "x" }) };
-        }
-        if (/\/contents\//.test(api) && method === "POST") {
-          return { status: 201, text: async () => JSON.stringify({}) };
-        }
-        if (/\/pulls$/.test(api) && method === "POST") {
-          return { status: 200, text: async () => JSON.stringify({ number: 11, html_url: "https://gitee.com/octo/cats/pulls/11", state: "open" }) };
-        }
-        return { status: 200, text: async () => "{}" };
+    it("maps backend errors like exists", async () => {
+      const client = {
+        provider: COMMUNITY_PROVIDERS.feishu,
+        tenantToken: async () => "tok",
+        listRecords: async () => ({ status: 200, json: { code: 0, data: { items: [], has_more: false } } }),
+        createRecord: async () => ({ status: 200, json: { code: 1254003 } }),
+        updateRecord: async () => ({ status: 200, json: { code: 0 } }),
       };
-      const client = createCommunityClient(COMMUNITY_PROVIDERS.gitee, fakeFetch);
-      const res = await submitCommunityLikes(client, giteeTarget, { token: "tok", counts: { "han-li": 3 } });
-
+      const res = await submitCommunityLikes(client, target, { counts: { ok: 1 } });
       expect(res.ok).toBe(true);
-      expect(res.pr.number).toBe(11);
-      expect(res.pr.htmlUrl).toBe("https://gitee.com/octo/cats/pulls/11");
-
-      const fork = calls.find((c) => c.url.split("?")[0].endsWith("/forks") && c.method === "POST");
-      expect(fork).toBeTruthy();
-      // Gitee authenticates via query param, not a Bearer header.
-      expect(fork.url).toContain("access_token=tok");
-
-      expect(calls.some((c) => c.method === "POST" && /\/contents\/shares\/likes\.json/.test(c.url))).toBe(true);
-      // Gitee creates branches at /branches (not /git/refs).
-      const pathOf = (u) => u.split("?")[0];
-      expect(calls.some((c) => c.method === "POST" && pathOf(c.url).endsWith("/branches") && !/contents/.test(pathOf(c.url)))).toBe(true);
-      expect(calls.some((c) => c.method === "POST" && pathOf(c.url).endsWith("/git/refs"))).toBe(false);
-
-      const pr = calls.find((c) => c.method === "POST" && /\/pulls/.test(c.url));
-      expect(pr.url).toContain("access_token=tok");
-      expect(pr.body.fork_path).toBe("forky/cats");
+      expect(res.updated).toBe(0);
     });
   });
 });

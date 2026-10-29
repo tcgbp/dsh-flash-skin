@@ -63,6 +63,24 @@ const SET_KEY = "dsh-flash-skin.set";
 const DRIVER_KEY = "dsh-flash-skin.driver";
 const LAYOUT_KEY = "dsh-flash-skin.layout-left";
 const WEIGHTS_KEY = "dsh-flash-skin.weights";
+
+// Desktop-host detection: the DSH desktop shell (Electron) stamps <body> with
+// `data-dsh-desktop-mode` = "compatibility" | "extended" so it owns the top
+// frame (caption/controls); the in-browser web GUI never sets it. This is a
+// host-owned attribute — independent of any single build's CSS-module hashes —
+// and requires nothing from dsh-flash, so it's safe to gate on. Read at call
+// time so late-stamped bodies (host sets it during startup) are still caught.
+const desktopMode = () => {
+  try {
+    return (
+      typeof document !== "undefined" &&
+      document.body.getAttribute("data-dsh-desktop-mode")
+    ) || "";
+  } catch {
+    return "";
+  }
+};
+
 // Host attachments route (exact path for POST upload, prefix for GET serve).
 const ATTACHMENT_PATH = `/plugins/${PACKAGE_ID}/attachment`;
 // Network-import routes: bundled example archives (served by the plugin over
@@ -531,9 +549,11 @@ class SkinPresenter {
 
   // Mirror the skin on/off body-attribute pattern: `data-flash-layout="left"`
   // activates the gated left-align rules; removing it returns to native.
+  // Desktop (Electron) doesn't support left-align, so never stamp the gate there.
   private applyLayout() {
     if (this.disposed) return;
-    if (this.enabled && this.layout) document.body.dataset.flashLayout = "left";
+    if (this.enabled && this.layout && !desktopMode())
+      document.body.dataset.flashLayout = "left";
     else document.body.removeAttribute("data-flash-layout");
   }
 
@@ -1639,7 +1659,6 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "shareTooBig": "本组打包后过大，无法生成分享文本",
     "shareFailed": "分享失败：部分图片无法下载",
     "communityTitle": "社区分享",
-    "communityAutoMergeTitle": "GitHub 自动合入为可选增强：需由仓库管理员在目标仓库放置 auto-merge workflow",
     "communityBrowse": "社区目录",
     "communityBrowseTitle": "浏览社区分享的肖像组并直接导入（压缩包由分享者自行托管）",
     "communityRefresh": "刷新",
@@ -1651,15 +1670,12 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "communityImportTitle": "从该链接导入为一个新组",
     "communityJoin": "分享到社区",
     "communitySubmitTitle": "把本组的文本指针提交进社区目录，供所有人浏览导入",
-    "communityFormTokenLabel": "GitHub 访问令牌",
-    "communityFormTokenHint": "建议使用仅具 repo 权限的 Personal Access Token：插件会代你 fork 目标仓库、提交文本指针并创建 Pull Request。",
     "communityFormUrlLabel": "压缩包 URL",
-    "communityFormUrlHint": "该压缩包由你自己托管（任意公开 URL）；社区仓库只存这一行文本指针。",
+    "communityFormUrlHint": "该压缩包由你自己托管（任意公开 URL）；社区只存这一行文本指针。",
     "communitySubmit": "提交分享",
-    "communitySubmitting": "正在提交 PR…",
-    "communitySubmitDone": "已提交 PR：{url}（默认人工审核，是否即时上架取决于仓库合入策略）",
+    "communitySubmitting": "正在提交…",
+    "communitySubmitDone": "已提交「{set}」到社区目录",
     "communitySubmitFailed": "提交失败：{message}",
-    "communityTokenMissing": "请输入 GitHub 访问令牌",
     "communityUrlMissing": "请输入压缩包 URL",
   },
   en: {
@@ -1742,7 +1758,6 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "shareTooBig": "This group is too large to share as text",
     "shareFailed": "Share failed: some images could not be downloaded",
     "communityTitle": "Community shares",
-    "communityAutoMergeTitle": "GitHub auto-merge is an optional enhancement: the repo admin drops an auto-merge workflow into the target repository",
     "communityBrowse": "Community directory",
     "communityBrowseTitle": "Browse portrait groups shared by the community and import directly (archives are hosted by the sharers themselves)",
     "communityRefresh": "Refresh",
@@ -1754,15 +1769,12 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "communityImportTitle": "Import from this link as a new group",
     "communityJoin": "Share to community",
     "communitySubmitTitle": "Submit this group's text pointer into the community directory for everyone to browse and import",
-    "communityFormTokenLabel": "GitHub access token",
-    "communityFormTokenHint": "A Personal Access Token with repo scope is recommended: the plugin forks the target repo, commits the text pointer and opens a pull request for you.",
     "communityFormUrlLabel": "Archive URL",
-    "communityFormUrlHint": "Host this zip yourself (any public URL); the community repo only stores this one-line text pointer.",
+    "communityFormUrlHint": "Host this zip yourself (any public URL); the community only stores this one-line text pointer.",
     "communitySubmit": "Submit share",
-    "communitySubmitting": "Submitting PR…",
-    "communitySubmitDone": "PR submitted: {url} (manual review by default; visibility depends on the repo's merge policy)",
+    "communitySubmitting": "Submitting…",
+    "communitySubmitDone": "Submitted “{set}” to the community directory",
     "communitySubmitFailed": "Submit failed: {message}",
-    "communityTokenMissing": "Please enter a GitHub access token",
     "communityUrlMissing": "Please enter an archive URL",
     "exportGroup": "Export archive",
     "exportGroupTitle": "Pack all frames plus this group's metadata (id, Chinese/English names, light/dark threshold) into a downloadable .zip that imports straight back",
@@ -2351,7 +2363,6 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
   const [communityEntries, setCommunityEntries] = useState<CommunityEntry[]>([]);
   const [communityError, setCommunityError] = useState<string | null>(null);
   const [communityNotConfigured, setCommunityNotConfigured] = useState(false);
-  const [submitToken, setSubmitToken] = useState("");
   const [submitUrl, setSubmitUrl] = useState("");
   const [submitPhase, setSubmitPhase] = useState<"idle" | "submitting" | "done" | "error">("idle");
   const [submitMessage, setSubmitMessage] = useState<string | null>(null);
@@ -2400,14 +2411,8 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
 
   const submitCommunityShare = async (groupIndex: number) => {
     const group = groups[groupIndex];
-    const token = submitToken.trim();
     const url = submitUrl.trim();
     if (!group) return;
-    if (!token) {
-      setSubmitPhase("error");
-      setSubmitMessage(t("communityTokenMissing"));
-      return;
-    }
     if (!url) {
       setSubmitPhase("error");
       setSubmitMessage(t("communityUrlMissing"));
@@ -2419,14 +2424,15 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
       const response = await fetch(COMMUNITY_SUBMIT_PATH, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, setId: group.id, url }),
+        body: JSON.stringify({ setId: group.id, url }),
       });
       const payload = (await response.json().catch(() => null)) as
-        | { ok?: unknown; pr?: { htmlUrl?: unknown }; error?: { code?: string } }
+        | { ok?: unknown; entry?: { setId?: unknown }; error?: { code?: string } }
         | null;
-      if (payload && payload.ok && payload.pr && typeof payload.pr.htmlUrl === "string") {
+      if (payload && payload.ok) {
+        const setId = payload.entry && typeof payload.entry.setId === "string" ? payload.entry.setId : group.id;
         setSubmitPhase("done");
-        setSubmitMessage(t("communitySubmitDone").replace("{url}", payload.pr.htmlUrl));
+        setSubmitMessage(t("communitySubmitDone").replace("{set}", setId));
       } else {
         const code = payload?.error?.code;
         setSubmitPhase("error");
@@ -3416,14 +3422,6 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
         <section className="flash-community" data-plugin={PACKAGE_ID}>
           <header className="flash-community__head">
             <h3 className="flash-community__title">{t("communityTitle")}</h3>
-            <a
-              className="flash-community__learn"
-              href="https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/incorporating-changes-from-a-pull-request/automatically-merging-a-pull-request"
-              target="_blank"
-              rel="noreferrer"
-            >
-              {t("communityAutoMergeTitle")}
-            </a>
             <button
               type="button"
               className="flash-community__refresh"
@@ -3706,20 +3704,6 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
               <h4 className="flash-share__community-title">{t("communityJoin")}</h4>
               <p className="flash-portrait-groups__hint">{t("communitySubmitTitle")}</p>
               <label className="flash-community__field">
-                <span className="flash-community__field-label">{t("communityFormTokenLabel")}</span>
-                <input
-                  type="password"
-                  className="flash-weights__input"
-                  autoComplete="off"
-                  autoCorrect="off"
-                  spellCheck={false}
-                  value={submitToken}
-                  onChange={(event) => setSubmitToken(event.currentTarget.value)}
-                  placeholder="ghp_…"
-                />
-                <em className="flash-community__field-hint">{t("communityFormTokenHint")}</em>
-              </label>
-              <label className="flash-community__field">
                 <span className="flash-community__field-label">{t("communityFormUrlLabel")}</span>
                 <input
                   type="text"
@@ -3737,7 +3721,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
                 <button
                   type="button"
                   className="flash-community__submit"
-                  disabled={submitPhase === "submitting" || submitToken.trim() === "" || submitUrl.trim() === ""}
+                  disabled={submitPhase === "submitting" || submitUrl.trim() === ""}
                   onClick={() => void submitCommunityShare(shareFor.index)}
                 >
                   {submitPhase === "submitting" ? t("communitySubmitting") : t("communitySubmit")}
@@ -3765,6 +3749,14 @@ export function apply(ctx: ClientContext) {
   style.textContent = styles;
   document.head.append(style);
   ctx.effect(() => () => style.remove(), "flash-skin: scoped styles");
+
+  // 环境检测：宿主桌面版（Electron）会在 <body> 上盖 data-dsh-desktop-mode
+  // （值 "compatibility" | "extended"）以占用顶部窗口框；浏览器里的 web 版从不
+  // 设置它。这是宿主自带、与具体构建无关的标志位——skin.css 的顶部框偏移也用它
+  // ——并且完全不依赖 dsh-flash。这里仅在启动时读取一次并打日志，供确认运行形态。
+  const desktopStamp = desktopMode();
+  if (desktopStamp) console.info(`[flash-skin] DSH desktop mode: ${desktopStamp}`);
+  else console.info("[flash-skin] DSH web GUI (no desktop stamp)");
 
   const theme = ctx.get("theme") as ThemeService;
   const scope = createPreferenceStore(restoreInitialSet());
@@ -4133,7 +4125,9 @@ export function apply(ctx: ClientContext) {
           presenter.setLayout(Boolean(value));
           quickControl?.notifyChange?.(LAYOUT_SWITCH_ID);
         },
-        visible: () => presenter.isEnabled(),
+        // 桌面版不提供居左对齐（宿主自带兼容/扩展两种桌面形态，layout 覆盖在
+        // Electron 外壳下不适用），直接在皮肤里隐藏该项。
+        visible: () => presenter.isEnabled() && !desktopMode(),
       });
       // the select at 26 and the open-details action at 27): it switches the
       // ACTIVE person's level and gives one stop per frame of that group, so

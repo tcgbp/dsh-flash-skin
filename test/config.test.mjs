@@ -8,10 +8,10 @@ import { Config } from "../src/index.js";
 // throw), covering the two regressions actually seen in the field:
 //   1. `z.object(...).optional is not a function`
 //   2. `$.communityDirectory.owner missing required value`
-// Both `owner`/`repo` and the structural fields carry defaults (tcgbp /
-// dsh-flash-skin / master / shares), so an absent `communityDirectory` still
-// yields a browsable target; explicit values are always honoured. Activation is
-// never blocked by a missing or partial directory.
+// The community directory always defaults to the shipped Feishu backend
+// (`provider: "feishu"`), so an absent `communityDirectory` still yields an
+// inert-but-valid target; explicit app credentials are always honoured.
+// Activation is never blocked by a missing or partial directory.
 describe("Config schema (plugin activation contract)", () => {
   it("validates a minimal profile with no communityDirectory", () => {
     expect(() => Config({})).not.toThrow();
@@ -22,39 +22,46 @@ describe("Config schema (plugin activation contract)", () => {
     expect(() => Config(raw)).not.toThrow();
   });
 
-  it("validates a configured communityDirectory with owner/repo as given and branch/path defaults filled", () => {
-    const out = Config({ communityDirectory: { owner: "octo", repo: "cats" } });
+  it("validates a configured communityDirectory and fills the provider default", () => {
+    const out = Config({
+      communityDirectory: { appId: "cli_a", appSecret: "sec", appToken: "bitable", sharesTableId: "tbl-shares" },
+    });
     expect(out.communityDirectory).toMatchObject({
-      owner: "octo",
-      repo: "cats",
-      branch: "master",
-      path: "shares",
+      provider: "feishu",
+      appId: "cli_a",
+      appSecret: "sec",
+      appToken: "bitable",
+      sharesTableId: "tbl-shares",
     });
   });
 
-  it("fills owner/repo defaults when communityDirectory is absent or partial", () => {
-    // Missing/partial owner+repo must not fail activation; defaults point at
-    // the plugin-owner shared directory so the channel stays browsable.
-    expect(() => Config({ communityDirectory: { repo: "cats" } })).not.toThrow();
+  it("fills the feishu provider default when communityDirectory is absent or partial", () => {
+    // Missing/partial app credentials must not fail activation; the provider
+    // default points at the shipped feishu backend so the channel stays inert
+    // but never blocks activation.
+    expect(() => Config({ communityDirectory: { appId: "a" } })).not.toThrow();
     expect(() => Config({ communityDirectory: {} })).not.toThrow();
     const absent = Config({});
     expect(absent.communityDirectory).toMatchObject({
-      owner: "tcgbp",
-      repo: "dsh-flash-skin",
-      branch: "master",
-      path: "shares",
+      provider: "feishu",
     });
   });
 
-  it("honours explicit branch/path overrides", () => {
+  it("honours an explicit provider and likes table override", () => {
     const out = Config({
-      communityDirectory: { owner: "o", repo: "r", branch: "dev", path: "lib/shares" },
+      communityDirectory: {
+        provider: "feishu",
+        appId: "cli_a",
+        appSecret: "sec",
+        appToken: "bitable",
+        sharesTableId: "sh",
+        likesTableId: "li",
+      },
     });
     expect(out.communityDirectory).toMatchObject({
-      owner: "o",
-      repo: "r",
-      branch: "dev",
-      path: "lib/shares",
+      provider: "feishu",
+      sharesTableId: "sh",
+      likesTableId: "li",
     });
   });
 

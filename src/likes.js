@@ -305,21 +305,23 @@ export function installLikeRoutes(ctx, opts = {}) {
     /* swallow for standalone behavior */
   }
 
-  // ── Optional PR-backed community sync (aggregated like counts) ─────────────
-  // When `opts.community` is present and a token is configured, the like route
-  // batches incremental local likes into a snapshot and eventually persists it
-  // through the `<path>/likes.json` PR channel. When disabled/absent the like
-  // channels stay purely local (T1 + optional T3 mirror) — standalone-safe.
+  // ── Optional Feishu Bitable community sync (aggregated like counts) ────────
+  // When `opts.community` is present and a likes table is configured, the like
+  // route batches incremental local likes into a snapshot and eventually
+  // persists it through the Bitable likes-table upsert channel. When
+  // disabled/absent the like channels stay purely local (T1 + optional T3
+  // mirror) — standalone-safe.
   //
   // Design:
-  //   - Community token/target are *config-supplied* (server deployment admin),
-  //     never per-visitor: likes are triggered by anonymous visitors and carry
-  //     no user credential.
-  //   - On install we opportunistically read the remote likes.json and seed the
+  //   - Community config is *server-supplied* (deployment admin): the server
+  //     holds the Feishu app credentials (appId/appSecret) and proxies every
+  //     Bitable call with its own tenant_access_token. Likes are triggered by
+  //     anonymous visitors and carry no user credential.
+  //   - On install we opportunistically read the remote likes table and seed the
   //     ledger, so local tallies already include other hosts' known counts.
-  //   - Toggles schedule a debounced, coalesced flush (one PR per window) rather
-  //     than one PR per like. Any failure just disables the PR channel and the
-  //     ledger stays authoritative.
+  //   - Toggles schedule a debounced, coalesced flush (one upsert window) rather
+  //     than one write per like. Any failure just disables the channel and the
+  //     local ledger stays authoritative.
   const community = opts.community || null;
   let communityTimer = null;
   let communityPending = false;
@@ -330,15 +332,16 @@ export function installLikeRoutes(ctx, opts = {}) {
     !!community &&
     typeof community.getClient === "function" &&
     typeof community.getTarget === "function" &&
-    typeof community.getLikesToken === "function" &&
+    typeof community.getLikesEnabled === "function" &&
     typeof community.readCommunityLikes === "function" &&
     typeof community.submitCommunityLikes === "function";
 
-  const communityToken = () => {
+  /** The C2 like channel is enabled when the Feishu backend + likes table are configured. */
+  const communityLikesOn = () => {
     try {
-      return community ? community.getLikesToken() || null : null;
+      return community ? !!community.getLikesEnabled() : false;
     } catch {
-      return null;
+      return false;
     }
   };
 
@@ -347,8 +350,7 @@ export function installLikeRoutes(ctx, opts = {}) {
     if (!communityEnabled()) return;
     const target = community.getTarget();
     if (!target) return;
-    const token = communityToken();
-    if (!token) return;
+    if (!communityLikesOn()) return;
     const client = community.getClient();
     if (!client) return;
     try {
@@ -367,19 +369,18 @@ export function installLikeRoutes(ctx, opts = {}) {
     }
   };
 
-  /** Flush the merged counts through the PR channel (single in-flight). */
+  /** Flush the merged counts through the server-proxied Bitable upsert (single in-flight). */
   const flushCommunityLikes = async () => {
     if (!communityEnabled() || communityFailed || communityInFlight) return;
     const target = community.getTarget();
     if (!target) return;
-    const token = communityToken();
-    if (!token) return;
+    if (!communityLikesOn()) return;
     const client = community.getClient();
     if (!client) return;
     communityInFlight = true;
     try {
       const merged = { ...ledger.counts() };
-      const res = await community.submitCommunityLikes(client, target, { token, counts: merged });
+      const res = await community.submitCommunityLikes(client, target, { counts: merged });
       if (res && res.ok === false) {
         // Never retry into an unconfigurable state this process lifetime.
         if (res.error && res.error.code === "not-configured") communityFailed = true;
@@ -445,7 +446,7 @@ export function installLikeRoutes(ctx, opts = {}) {
       // Durable mirror is fire-and-forget; never delays or fails the response.
       if (result.deleted) void mirror.remove(result.groupId).catch(() => {});
       else void mirror.write(result.groupId, result.count, result.peers).catch(() => {});
-      // Schedule a debounced community PR flush (aggregated likes).
+      // Schedule a debounced community Bitable flush (aggregated likes).
       scheduleCommunityFlush();
       sendJson(res, 200, {
         ok: true,

@@ -290,48 +290,40 @@ export const Config = z.object({
     .default([])
     .volatile(),
   // Optional community-directory target for the C2 share channel. Points at a
-  // public GitHub repo whose tree holds `<path>/<entryId>/<setId>.txt` pointer
-  // files; sharers keep custody of their zip URL (the repo only ever stores the
-  // text pointer — never archive bytes). When absent the community routing is
-  // inert and the C1 text-share channel still works standalone.
+  // Feishu Bitable base whose shares table holds `<setId>` -> url pointer
+  // records; sharers keep custody of their zip URL (the table only ever stores
+  // the text pointer — never archive bytes). When absent the community routing
+  // is inert and the C1 text-share channel still works standalone.
   // Keep non-volatile: this is deliberate admin metadata, not per-user runtime
   // state, so it persists in the profile patch like any other exposed config.
   communityDirectory: z.object({
       /**
-       * GitHub user or organization owning the target repo. Defaults to the
-       * plugin owner's shared directory repo (`tcgbp`), so an unconfigured
-       * install is still able to browse out of the box; a site admin may
-       * override it to point at their own directory. Object sub-fields stay
-       * optional so an absent object validates as `{}` without failing
-       * activation — getCommunityTarget then falls back to these defaults at
-       * request time.
+       * Community backend for the directory channel: `feishu` (the shipped,
+       * pluggable backend, default). Selects the provider used for every read
+       * (list records) and write (create/update record) call. Unknown values
+       * fall back to feishu to keep the config forward compatible.
        */
-      owner: z.string().min(1).default("tcgbp"),
-      /** Repo name holding the community directory tree. Default: dsh-flash-skin. */
-      repo: z.string().min(1).default("dsh-flash-skin"),
+      provider: z.string().default("feishu"),
       /**
-       * Community platform for the directory channel: `github` (default) or
-       * `gitee`. Selects the provider shim used for every read (tree/raw) and
-       * write (fork→branch→contents→PR) call. Unknown values fall back to
-       * github to keep the config backward compatible.
+       * Feishu app id. Together with appSecret these are exchanged server-side
+       * for a short-lived tenant_access_token that authorizes every Bitable
+       * call. Credentials never reach the client bundle (standalone-safe).
        */
-      provider: z.string().default("github"),
-      /** Default: master. */
-      branch: z.string().default("master"),
-      /** Tree root; default: shares. */
-      path: z.string().default("shares"),
+      appId: z.string().min(1),
+      /** Feishu app secret (paired with appId). Server-side only. */
+      appSecret: z.string().min(1),
+      /** Feishu Bitable base app token (bitable_token) holding both tables. */
+      appToken: z.string().min(1),
+      /** Table id of the shares table (one record per shared set). */
+      sharesTableId: z.string().min(1),
       /**
-       * Optional GitHub PAT (contents: write) used by the *server* to persist
-       * aggregated like counts into the community directory via PR
-       * (`<path>/likes.json`). When present, the like route batches incremental
-       * local likes into a folder and periodically pushes them through the same
-       * fork→branch→PUT→PR flow as share submissions. When absent (or the whole
-       * communityDirectory is unset) likes gracefully fall back to the local
-       * T1/T3 ledger only — standalone-safe, no credentials required.
-       * Deliberately a config-supplied token, not user-supplied: likes are
-       * triggered by anonymous visitors, so there is no per-user credential.
+       * Optional table id of the likes table (one record per group: groupId ->
+       * count). When present, the like route batches incremental local likes
+       * and periodically upserts them into this table. When absent (or the
+       * whole communityDirectory is unset) likes gracefully fall back to the
+       * local T1/T3 ledger only — standalone-safe, no credentials required.
        */
-      likesToken: z.string().min(1),
+      likesTableId: z.string().min(1),
     })
     // Object fields are optional unless `.required()`, so an absent top-level
     // `communityDirectory` validates as `{}` instead of failing activation;
@@ -605,12 +597,12 @@ export function apply(ctx, config) {
     const exampleRoute = ctx.webServer.register({ kind: "prefixes", path: EXAMPLES_PATH, handler: example });
     const remoteRoute = ctx.webServer.register({ kind: "exact", path: REMOTE_ARCHIVE_PATH, handler: remote });
     // Community share + like channels. Likes stay T1-in-memory (+ optional T3
-    // durable mirror when a storage backend is present and an optional PR-backed
-    // community sync when a likesToken is configured); the community-directory
-    // target resolves at request time from the configured repo, else inert.
-    // Built lazily so the provider (github|gitee) always matches the current
+    // durable mirror when a storage backend is present and an optional Feishu
+    // Bitable sync when a likes table is configured); the community-directory
+    // target resolves at request time from the configured Feishu app, else
+    // inert. Built lazily so the provider (feishu) always matches the current
     // config value; every operation resolves its own fresh client. Falls back
-    // to the GitHub shim when the provider field is absent or unknown.
+    // to the shipped Feishu shim when the provider field is absent or unknown.
     // Read the resolved communityDirectory config, tolerating both a
     // schemastery wrapper exposing `.get()` and a plain (already-resolved)
     // object — the latter is what an unconfigured/configured Config() yields,
@@ -627,42 +619,45 @@ export function apply(ctx, config) {
     };
     const clientForConfig = () => {
       const dir = readCommunityDirectory();
-      const kind = dir && typeof dir.provider === "string" && dir.provider ? dir.provider : "github";
-      return createCommunityClient(COMMUNITY_PROVIDERS[kind] || COMMUNITY_PROVIDERS.github, globalThis.fetch);
+      const kind = dir && typeof dir.provider === "string" && dir.provider ? dir.provider : "feishu";
+      return createCommunityClient(COMMUNITY_PROVIDERS[kind] || COMMUNITY_PROVIDERS.feishu, globalThis.fetch);
     };
     const getCommunityClient = () => clientForConfig();
     const communityRoutesClient = {
       get provider() { return clientForConfig().provider; },
-      ghJson: (path, opts) => clientForConfig().ghJson(path, opts),
-      rawText: (rel, opts) => clientForConfig().rawText(rel, opts),
+      tenantToken: (t) => clientForConfig().tenantToken(t),
+      listRecords: (app, tab, tok, page) => clientForConfig().listRecords(app, tab, tok, page),
+      createRecord: (app, tab, tok, fields) => clientForConfig().createRecord(app, tab, tok, fields),
+      updateRecord: (app, tab, tok, recordId, fields) => clientForConfig().updateRecord(app, tab, tok, recordId, fields),
     };
     const getCommunityTarget = () => {
       const dir = readCommunityDirectory();
-      const owner = typeof dir.owner === "string" && dir.owner ? dir.owner : "tcgbp";
-      const repo = typeof dir.repo === "string" && dir.repo ? dir.repo : "dsh-flash-skin";
-      const kind = typeof dir.provider === "string" && dir.provider ? dir.provider : "github";
+      const kind = typeof dir.provider === "string" && dir.provider ? dir.provider : "feishu";
       return {
-        owner,
-        repo,
-        provider: COMMUNITY_PROVIDERS[kind] ? kind : "github",
-        branch: typeof dir.branch === "string" && dir.branch ? dir.branch : "master",
-        path: typeof dir.path === "string" && dir.path ? dir.path : "shares",
+        provider: COMMUNITY_PROVIDERS[kind] ? kind : "feishu",
+        appId: typeof dir.appId === "string" && dir.appId ? dir.appId : "",
+        appSecret: typeof dir.appSecret === "string" && dir.appSecret ? dir.appSecret : "",
+        appToken: typeof dir.appToken === "string" && dir.appToken ? dir.appToken : "",
+        sharesTableId: typeof dir.sharesTableId === "string" && dir.sharesTableId ? dir.sharesTableId : "",
+        likesTableId: typeof dir.likesTableId === "string" && dir.likesTableId ? dir.likesTableId : "",
       };
     };
-    const getLikesToken = () => {
-      const dir = readCommunityDirectory();
-      return dir && typeof dir.likesToken === "string" && dir.likesToken ? dir.likesToken : null;
+    // The C2 like channel needs the server-held Feishu app credentials plus a
+    // configured likes table to proxy reads/writes. Nothing user-supplied.
+    const getLikesEnabled = () => {
+      const target = getCommunityTarget();
+      return !!(target && target.appId && target.appSecret && target.appToken && target.likesTableId);
     };
     const {
       likeRoute, likesRoute, flushCommunityLikes, communityDispose,
     } = installLikeRoutes(ctx, {
-      // PR-backed like aggregation: reads the remote <path>/likes.json once to
+      // Server-proxied Bitable like aggregation: reads the likes table once to
       // seed the ledger, then debounced-flushes the merged snapshot through a
-      // single PR channel. Absent/disabled → pure local T1 (+optional T3).
+      // single upsert channel. Absent/disabled → pure local T1 (+optional T3).
       community: {
         getClient: getCommunityClient,
         getTarget: getCommunityTarget,
-        getLikesToken,
+        getLikesEnabled,
         readCommunityLikes,
         submitCommunityLikes,
         debounceMs: 30_000,

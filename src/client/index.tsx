@@ -733,8 +733,12 @@ function FlashLevelControl({
 
   if (!enabled) return null;
 
-  const progressRatio = level / MAX_LEVEL;
+  const progressRatio = Math.min(1, level / MAX_LEVEL);
   const readOnly = driver === "composite";
+  // The grip spans the active group's staged frame count plus one (N+1 stops)
+  // so every frame stays reachable; a set with no frames keeps the fixed
+  // 0..MAX_LEVEL baseline instead of collapsing the slider.
+  const sliderMax = Math.max(MAX_LEVEL, presenter.getPortraitCount());
 
   // Composite driver: hand the render off to a dedicated component that owns
   // the projection hooks — a separate component means the useProjection calls
@@ -761,7 +765,7 @@ function FlashLevelControl({
           className="flash-level-control__range"
           type="range"
           min={0}
-          max={MAX_LEVEL}
+          max={sliderMax}
           step={1}
           value={0}
           disabled
@@ -797,7 +801,7 @@ function FlashLevelControl({
         className="flash-level-control__range"
         type="range"
         min={0}
-        max={MAX_LEVEL}
+        max={sliderMax}
         step={1}
         value={level}
         disabled={state.status === "selecting"}

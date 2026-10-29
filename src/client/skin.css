@@ -406,6 +406,16 @@ body[data-flash-skin="on"] textarea {
   line-height: 18px;
 }
 
+/* 图片不足提示：在普通 hint 之上叠加预警色，提醒还需补图才能分享/导出。 */
+.flash-portrait-group__too-few {
+  color: var(--dsw-static-severity-warning-default, #d97706);
+  border: 1px solid
+    color-mix(in srgb, var(--dsw-static-severity-warning-default, #d97706) 45%, transparent);
+  border-radius: 8px;
+  padding: 6px 10px;
+  background: color-mix(in srgb, var(--dsw-static-severity-warning-default, #d97706) 8%, transparent);
+}
+
 .flash-portrait-groups__empty {
   display: flex;
   flex-direction: column;

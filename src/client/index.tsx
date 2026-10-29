@@ -64,18 +64,26 @@ const DRIVER_KEY = "dsh-flash-skin.driver";
 const LAYOUT_KEY = "dsh-flash-skin.layout-left";
 const WEIGHTS_KEY = "dsh-flash-skin.weights";
 
-// Desktop-host detection: the DSH desktop shell (Electron) stamps <body> with
-// `data-dsh-desktop-mode` = "compatibility" | "extended" so it owns the top
-// frame (caption/controls); the in-browser web GUI never sets it. This is a
-// host-owned attribute — independent of any single build's CSS-module hashes —
-// and requires nothing from dsh-flash, so it's safe to gate on. Read at call
-// time so late-stamped bodies (host sets it during startup) are still caught.
+// Desktop-host detection. The desktop version is a real Electron app (its
+// resources ship as app.asar + Electron PE/runtime DLLs), while the web GUI
+// runs in a normal browser. Signals, most reliable first:
+//   1) a host-owned desktop stamp on <body>/<html> if that build provides one
+//      (data-dsh-desktop-mode = "compatibility" | "extended");
+//   2) navigator.userAgent claiming Electron — universal, needs no host
+//      internals and nothing from dsh-flash.
+// Read at call time so late-stamped bodies (host sets it during startup) are
+// still caught.
 const desktopMode = () => {
   try {
-    return (
-      typeof document !== "undefined" &&
-      document.body.getAttribute("data-dsh-desktop-mode")
-    ) || "";
+    if (typeof document !== "undefined") {
+      const stamp =
+        document.body?.getAttribute("data-dsh-desktop-mode") ||
+        document.documentElement?.getAttribute("data-dsh-desktop-mode") ||
+        "";
+      if (stamp) return stamp;
+    }
+    const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
+    return /Electron/i.test(ua) ? "electron" : "";
   } catch {
     return "";
   }
@@ -3750,13 +3758,16 @@ export function apply(ctx: ClientContext) {
   document.head.append(style);
   ctx.effect(() => () => style.remove(), "flash-skin: scoped styles");
 
-  // 环境检测：宿主桌面版（Electron）会在 <body> 上盖 data-dsh-desktop-mode
-  // （值 "compatibility" | "extended"）以占用顶部窗口框；浏览器里的 web 版从不
-  // 设置它。这是宿主自带、与具体构建无关的标志位——skin.css 的顶部框偏移也用它
-  // ——并且完全不依赖 dsh-flash。这里仅在启动时读取一次并打日志，供确认运行形态。
+  // 环境检测：桌面版是真正的 Electron 应用（app.asar + Electron 运行时），web 版
+  // 跑在普通浏览器里。可靠信号：宿主自带 data-dsh-desktop-mode 属性（若该构建提供）
+  // 或 navigator.userAgent 声称 Electron。---都不依赖 dsh-flash。启动打一条诊断，
+  // 便于确认运行形态与后续桌面专用分支的依据。
   const desktopStamp = desktopMode();
-  if (desktopStamp) console.info(`[flash-skin] DSH desktop mode: ${desktopStamp}`);
-  else console.info("[flash-skin] DSH web GUI (no desktop stamp)");
+  const uaProbe = (typeof navigator !== "undefined" && navigator.userAgent) || "";
+  console.info(
+    `[flash-skin] desktop detection: stamp=${JSON.stringify(desktopStamp)} ua=${uaProbe}`
+  );
+
 
   const theme = ctx.get("theme") as ThemeService;
   const scope = createPreferenceStore(restoreInitialSet());

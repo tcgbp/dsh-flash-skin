@@ -992,13 +992,15 @@ body[data-flash-skin="on"][data-flash-layout="left"] [class*="_widthHandle"][dat
  *       => margin = （侧余量+16px + 槽宽）- 侧余量 = 16px + 槽宽
  *    与皮肤变量/主题耦合低，改槽宽时输入卡与内容列同步移动。同宽 + 同左缘
  *    => 输入卡右缘 = 内容列右缘，滚动到最下按钮(第 7 段)即钉在其上方。
- *    注：这里输入卡根用精确类名 .uV2eYG_root（.lXshSW_root 等其它 * _root
- *    节点同名后缀，无法用 [class*="_root"] 区分，故保留哈希精确定位）。
+ *    注：输入卡根用 [class*="_root"]:has(> [class*="_card"]) 跨构建定位 ——
+ *    输入卡根(.uV2eYG_root)是“直接子节点含卡片”的 * _root；todo 根
+ *    (.lXshSW_root)等其它同名 *_root 没有直接 card 子节点，故用 :has()
+ *    区分，不再依赖单次编译的哈希前缀。
  */
-body[data-flash-skin="on"][data-flash-layout="left"] .uV2eYG_root {
+body[data-flash-skin="on"][data-flash-layout="left"] [class*="_root"]:has(> [class*="_card"]) {
   align-items: flex-start !important;
 }
-body[data-flash-skin="on"][data-flash-layout="left"] .uV2eYG_root > .uV2eYG_card {
+body[data-flash-skin="on"][data-flash-layout="left"] [class*="_root"] > [class*="_card"] {
   margin-left: calc(16px + var(--dsh-flash-timeline-gutter, 50px)) !important;
 }
 body[data-flash-skin="on"][data-flash-layout="left"] [class*="_composerHero"] {

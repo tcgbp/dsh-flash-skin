@@ -372,11 +372,17 @@ describe("C2 community helper functions (community.js)", () => {
   describe("submitCommunityShare (Feishu Bitable create)", () => {
     const target = { provider: "feishu", appId: "app", appSecret: "s", appToken: "bitable", sharesTableId: "tbl-shares" };
 
-    it("creates a share record and returns the new entry without any pr", async () => {
+    it("creates a share record and returns the new entry", async () => {
       const calls = [];
       const client = {
         provider: COMMUNITY_PROVIDERS.feishu,
         tenantToken: async () => "tok",
+        // Server fingerprints the archive behind the url; the test injects a
+        // fetch returning a known body ("hello world") -> fixed MD5 below.
+        fetchImpl: async () => ({
+          ok: true,
+          arrayBuffer: async () => new TextEncoder().encode("hello world").buffer,
+        }),
         listRecords: async () => ({ status: 200, json: { code: 0, data: { items: [], has_more: false } } }),
         createRecord: async (appToken, tableId, token, fields) => {
           calls.push({ appToken, tableId, token, fields });
@@ -387,12 +393,14 @@ describe("C2 community helper functions (community.js)", () => {
       expect(res.ok).toBe(true);
       expect(res.recordId).toBe("rec-1");
       expect(res.entry.setId).toBe("han-li");
+      expect(res.entry.md5).toBe("5eb63bbbe01eeed093cb22bb8f5acdc3");
       expect(res.entry.entryId).toBeTruthy();
       expect("pr" in res).toBe(false);
       expect(calls.length).toBe(1);
       expect(calls[0].tableId).toBe("tbl-shares");
       expect(calls[0].fields.setId).toBe("han-li");
       expect(calls[0].fields.url).toBe("https://cdn/h.zip");
+      expect(calls[0].fields.md5).toBe("5eb63bbbe01eeed093cb22bb8f5acdc3");
     });
 
     it("rejects an existing set id with code exists and never calls create", async () => {

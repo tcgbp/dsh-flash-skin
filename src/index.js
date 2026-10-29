@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createReadStream, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -253,6 +254,7 @@ function createNetworkHandlers(activeStreams) {
       "Content-Length": String(body.byteLength),
       "Cache-Control": "private, max-age=3600, must-revalidate",
       "X-Content-Type-Options": "nosniff",
+      "X-Archive-Md5": createHash("md5").update(body).digest("hex"),
     });
     res.end(body);
   };

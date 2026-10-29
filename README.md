@@ -54,12 +54,15 @@ dsh --profile web --dump-config | grep -B1 -A2 flash-skin
 
 每个肖像组可以打包成**一段自包含文本**：第一行是 manifest 头部 JSON，随后是整组图片字节的 base64url（经 zip 压缩）。接收方把文本粘贴进导入框即可重建整组（ID、中英文名、深浅切换点全在头部里）。实现见 `src/client/logic.ts` 的 `buildShareText` / `parseShareText`。文本可任意大（上限 8 MiB），存入剪贴板发送给朋友即可，不依赖任何后端。
 
-### C2：社区目录（GitHub / Gitee PR 指针仓库）
+### C2：社区目录（可插拔后端 — 飞书多维表格）
 
-- **读**：匿名请求目标仓库的 git tree，遍历 `shares/**/<setId>.txt` 指针文件（内容是分享者自持的 zip 公开 URL），合并成社区目录供一键导入。读取途径是 `git/trees/{branch}?recursive=1` + raw 回落，匿名即可。
-- **写**：aps 分享者在弹窗里填平台令牌与 zip URL，插件代做 `fork → 写入指针文件 → 提交 PR` 三步（先扫描目录防止同名 setId 冲突，返回 409）。**zip 不入任何仓库**，由分享者自己负责托管 URL。
-- 目录目标：`communityDirectory = { owner, repo, provider?, branch?, path?, likesToken? }`（插件设置）。`provider` 选社区平台：`github`（默认）或 `gitee`，未知值回退 github。Gitee 的令牌为**用户授权码（access_token）**，作为查询参数注入；GitHub 则用 fine-grained PAT（`contents: write`）。读写两端（目录快照 + `likes.json` 点赞同步）都按 `provider` 走对应 shim，逻辑复用。
-- `likesToken`：服务端部署者提供、用来把聚合点赞计数通过 PR 渠道持久化/同步到 `<path>/likes.json`（非用户手填——点赞匿名触发，无每用户凭据）。
+- **可插拔后端**：目录/点赞通道经 `COMMUNITY_PROVIDERS` + `createCommunityClient(provider, fetch)` 这一 provider seam 抽象；当前唯一随附后端为 **飞书 Bitable**（`provider: "feishu"`，未知值一律回退 feishu）。换后端只需 plug 一个满足同一读写面的 provider。
+- **读**：匿名请求 Bitable 分享表（`shares`，列 `entryId/setId/url/md5`），分页列出全部记录，合并成社区目录供一键导入。
+- **写**：分享者只需在弹窗填 **zip 的公开 URL**（无需任何令牌）；插件先扫描目录防同名 `setId` 冲突（返回 409），再经服务端代理创建一条分享记录。**zip 不入任何表**，由分享者自己托管 URL。
+- **忠实指纹（防篡改）**：分享提交时，服务端**下载该 url 当前指向的压缩包并计算 MD5**（`computeUrlMd5`，失败即拒绝本次分享），随记录写入 `md5` 列；`readCommunityDirectory` 把该指纹带进目录条目。分享者之后若改挂 url 指向另一份 zip，导入者拿到的文件指纹会与表内不一致。
+- **导入核对**：从社区面板导入某条分享时，前端把该条目的 `md5` 作为期望指纹传给 `/archive` 代理；服务端下载后在 `X-Archive-Md5` 响应头回传实际指纹，前端比对——**不一致则拒绝导入并提示「内容可能被改动」**。地址栏直接粘贴 url（无期望指纹可核）则跳过该校验。
+- 服务端持有飞书应用凭据，换取并缓存短时效的 `tenant_access_token`（提前 60s 刷新）用于每次 Bitable 调用——**凭据绝不下发到客户端 bundle**，匿名访问者零凭据、zero-dependency（standalone 安全）。
+- 目录目标配置（插件设置的 `communityDirectory`）：`{ provider?, appId, appSecret, appToken, sharesTableId, likesTableId? }`。`appToken` 是 Bitable base 的 (bitable_token)；`sharesTableId`/`likesTableId` 分别是对应表的 table_id。
 
 ### 点赞记账（三档渐进）
 
@@ -69,7 +72,7 @@ dsh --profile web --dump-config | grep -B1 -A2 flash-skin
 
 ### 可选：GitHub Actions 自动合入
 
-默认社区目录走**人工审核**（owner 决定是否 merge 每个 PR）。若希望提交后自动上架，由**目标仓库管理员**放置 `.github/workflows/auto-merge.yml`（非插件内置代码，见 `docs/auto-merge.workflow.yml` 模板）：workflow 第一步做 diff 校验闸门（文件仅限 `shares/**`、文件名匹配、内容仅 http(s) URL 白名单、拒绝 `.github/**` 与其他改动），通过后用 `contents: write` 令牌调用 `POST /repos/{o}/{r}/pulls/{n}/merge`，不通过则关闭 PR 并评论。插件既不内置、也不代管、也不绕过该 workflow 与分支保护。
+> 已随 GitHub/Gitee 后端一并移除，本节不再适用。
 
 ## 更多
 

@@ -1685,6 +1685,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "communitySubmitDone": "已提交「{set}」到社区目录",
     "communitySubmitFailed": "提交失败：{message}",
     "communityUrlMissing": "请输入压缩包 URL",
+    "communityTampered": "导入已拒绝：该链接指向的压缩包内容与分享时不一致，可能已被改动。",
   },
   en: {
     "loading": "Loading…",
@@ -1784,6 +1785,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "communitySubmitDone": "Submitted “{set}” to the community directory",
     "communitySubmitFailed": "Submit failed: {message}",
     "communityUrlMissing": "Please enter an archive URL",
+    "communityTampered": "Import refused: the archive behind this link differs from what was shared and may have been altered.",
     "exportGroup": "Export archive",
     "exportGroupTitle": "Pack all frames plus this group's metadata (id, Chinese/English names, light/dark threshold) into a downloadable .zip that imports straight back",
     "exportNoImages": "This group has no images — nothing to export",
@@ -2413,8 +2415,8 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [communityOpen, communityPhase]);
 
-  const importCommunityEntry = (url: string) => {
-    void importFromUrl(url);
+  const importCommunityEntry = (entry: CommunityEntry) => {
+    void importFromUrl(entry.url, (entry.md5 ?? "").trim() || undefined);
   };
 
   const submitCommunityShare = async (groupIndex: number) => {
@@ -2886,7 +2888,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
   // hosting site's CORS policy never blocks the request; both paths sink into
   // the same engine as a local pick. Read-only, so imports work even when the
   // document is not writable — the group is staged for a later save.
-  const importFromUrl = async (rawUrl: string) => {
+  const importFromUrl = async (rawUrl: string, expectedMd5?: string) => {
     if (!writable || busy) return;
     const trimmed = rawUrl.trim();
     if (!trimmed) {
@@ -2935,6 +2937,18 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
     try {
       const response = await fetch(`${REMOTE_ARCHIVE_PATH}?url=${encodeURIComponent(trimmed)}`);
       if (!response.ok) throw new Error(`archive fetch ${response.status}`);
+      // Integrity check (community-panel import only): the server fingerprints
+      // the downloaded bytes; a mismatch means the url now points at different
+      // content than when it was shared — refuse to import rather than ingest a
+      // possibly-tampered archive. Raw pasted links (no expected fingerprint)
+      // skip this guard.
+      if (expectedMd5) {
+        const actual = response.headers.get("X-Archive-Md5") ?? "";
+        if (actual !== expectedMd5) {
+          setFileError(t("communityTampered"));
+          return;
+        }
+      }
       const buffer = await response.arrayBuffer();
       await runArchiveImport(name, buffer);
     } catch {
@@ -3466,7 +3480,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
                     type="button"
                     className="flash-community__import"
                     disabled={!writable || busy}
-                    onClick={() => void importCommunityEntry(entry.url)}
+                    onClick={() => void importCommunityEntry(entry)}
                     title={t("communityImportTitle")}
                   >
                     {t("communityImport")}

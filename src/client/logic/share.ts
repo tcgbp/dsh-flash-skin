@@ -92,6 +92,8 @@ export interface CommunityEntry {
   entryId: string;
   setId: string;
   url: string;
+  /** MD5 fingerprint of the archive the url pointed at at share time ("" for legacy entries). */
+  md5?: string;
 }
 
 /** Inverse of buildShareText; null when the text is not a valid share. */

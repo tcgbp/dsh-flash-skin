@@ -26,6 +26,7 @@
 // { ok:false, error:{ code, status?, step?, message? } } so the client can render
 // structured Chinese notices and fall back to empty/zero values.
 
+import { createHash } from "node:crypto";
 import { readBody, sendJson } from "./likes.js";
 
 /** Exact-match route for GET community-directory snapshots. */
@@ -48,7 +49,7 @@ export const COMMUNITY_URL_MAX = 2048;
 /** Submit body budget: url + id metadata. */
 export const MAX_SUBMIT_BODY_BYTES = 256 * 1024;
 /** Field-name mapping for the Feishu Bitable shares/likes tables. */
-export const SHARES_FIELDS = { entryId: "entryId", setId: "setId", url: "url" };
+export const SHARES_FIELDS = { entryId: "entryId", setId: "setId", url: "url", md5: "md5" };
 export const LIKES_FIELDS = { groupId: "groupId", count: "count" };
 
 const SET_ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
@@ -168,6 +169,35 @@ const buildCommunityEntryId = () => {
   const rand = Math.random().toString(36).slice(2, 8);
   return `d${Date.now().toString(36)}${rand}`;
 };
+
+/**
+ * Download a remote archive URL server-side and return its MD5 fingerprint.
+ * Returns null when the fetch fails/times out or no body is readable — the
+ * caller treats an uncomputable fingerprint as a hard sharing failure so a
+ * shared entry can never skip integrity verification by pointing at content
+ * the server cannot inspect.
+ */
+export async function computeUrlMd5(url, { fetchImpl = globalThis.fetch, timeout = 20_000, maxBytes = 64 * 1024 * 1024 } = {}) {
+  const fetchFn = typeof fetchImpl === "function" ? fetchImpl : globalThis.fetch;
+  if (typeof fetchFn !== "function") return null;
+  let controller = null;
+  let timer = null;
+  if (typeof AbortController === "function") {
+    controller = new AbortController();
+    timer = setTimeout(() => controller.abort(), timeout);
+  }
+  try {
+    const response = await fetchFn(url, { redirect: "follow", signal: controller ? controller.signal : undefined });
+    if (!response.ok) return null;
+    const body = Buffer.from(await response.arrayBuffer());
+    if (body.length === 0 || body.length > maxBytes) return null;
+    return createHash("md5").update(body).digest("hex");
+  } catch {
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 function controllerTimeout(timeout) {
   const controller = typeof AbortController === "function" ? new AbortController() : null;
@@ -330,10 +360,15 @@ export async function readCommunityDirectory(client, target) {
     const url = typeof f[SHARES_FIELDS.url] === "string" ? f[SHARES_FIELDS.url].trim() : "";
     const entryIdRaw = typeof f[SHARES_FIELDS.entryId] === "string" ? f[SHARES_FIELDS.entryId].trim() : "";
     const entryId = entryIdRaw || rec.recordId;
+    const md5 = typeof f[SHARES_FIELDS.md5] === "string" ? f[SHARES_FIELDS.md5].trim() : "";
     const cleanSetId = normalizeCommunitySetId(setId);
     const cleanUrl = parseCommunityEntryText(url);
     if (!cleanSetId || !cleanUrl || !entryId) continue;
-    entries.push({ entryId, setId: cleanSetId, url: cleanUrl });
+    // Carry the stored MD5 fingerprint only when present; legacy records (and
+    // non-fingerprinted backends) omit it so the directory shape stays clean:
+    // the absence of a fingerprint is exactly the "cannot verify" signal.
+    if (md5) entries.push({ entryId, setId: cleanSetId, url: cleanUrl, md5 });
+    else entries.push({ entryId, setId: cleanSetId, url: cleanUrl });
   }
   entries.sort((a, b) => (a.setId < b.setId ? -1 : a.setId > b.setId ? 1 : 0));
   return { ok: true, configured: true, entries: entries.slice(0, COMMUNITY_MAX_ENTRIES), error: null };
@@ -366,14 +401,22 @@ export async function submitCommunityShare(client, target, { setId, url } = {}) 
   }
 
   const entryId = buildCommunityEntryId();
+  // Compute the fingerprint of the archive the url currently points at. A share
+  // with no readable fingerprint is refused outright: without it the entry can
+  // never be integrity-checked on import, defeating the anti-tamper guarantee.
+  const md5 = await computeUrlMd5(cleanUrl, { fetchImpl: client.fetchImpl });
+  if (!md5) {
+    return { ok: false, error: { code: "bad-url", message: "Could not fingerprint the archive at this URL." } };
+  }
   const res = await client.createRecord(target.appToken, target.sharesTableId, token, {
     [SHARES_FIELDS.entryId]: entryId,
     [SHARES_FIELDS.setId]: cleanedId,
     [SHARES_FIELDS.url]: cleanUrl,
+    [SHARES_FIELDS.md5]: md5,
   });
   if (!client.provider.ok(res && res.json)) return { ok: false, error: apiError(res, "create") };
   const recordId = res.json && res.json.data && res.json.data.record ? res.json.data.record.record_id : null;
-  return { ok: true, entry: { entryId, setId: cleanedId }, recordId };
+  return { ok: true, entry: { entryId, setId: cleanedId, md5 }, recordId };
 }
 
 /** Read remote like counts (likes table) into a floored group->count map. */

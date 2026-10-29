@@ -1172,16 +1172,6 @@ body[data-flash-skin="on"][data-flash-layout="left"] [class*="_toBottomSlot"] {
   font-weight: 800;
 }
 
-/* 「落帧」一步:0..1 最终得分 × 帧数映射到组内第几帧,与 frameIndexForScore 同路径。 */
-.flash-level-control__frame-step {
-  color: var(--flash-accent, #4176e6);
-  font-weight: 800;
-}
-
-.flash-level-control__frame-step .flash-level-control__mul {
-  color: var(--flash-accent, #4176e6);
-}
-
 .flash-level-control__arrow {
   margin: 0 4px;
   color: var(--flash-secondary, #5b6470);
@@ -1204,13 +1194,6 @@ body[data-flash-skin="on"][data-flash-layout="left"] [class*="_toBottomSlot"] {
 .flash-level-control__bonus {
   color: var(--flash-accent, #4176e6);
   font-weight: 800;
-}
-
-.flash-level-control__mul {
-  color: var(--flash-accent, #4176e6);
-  font-weight: 800;
-  font-size: 12px;
-  padding: 0 1px;
 }
 
 .flash-level-control__plus {

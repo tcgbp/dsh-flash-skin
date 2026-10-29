@@ -1141,12 +1141,8 @@ function CompositeLevelControl({
               <span className="flash-level-control__sum" title={`最终得分 = 加权 ${fmt(wBase)} + 压缩 ${fmt(compBonus)} = ${fmt(combined)} (0..1)`}>{fmt(combined)}</span>
             </Fragment>
           )}
-          {/* 落帧 + 得分,同一行:0..1 总得分 × 帧数映射到组内第几帧,
-           * 与 frameIndexForScore(score, count) 同一条取帧路径。 */}
+          {/* 落帧映射的最终结果:只显示当前帧位,不再展示「加权得分 × 帧数」的中间算式。 */}
           <i className="flash-level-control__arrow">→</i>
-          <span className="flash-level-control__frame-step" title={`落帧:总得分 ${fmt(combined)} × ${displayScale} 帧 = ${fmt(combined * displayScale)} → frameIndexForScore 映射到第 ${frame + 1} 帧`}>
-            {fmt(combined)}<b className="flash-level-control__mul">·</b>{displayScale}{label("weights.frame", "帧")}=
-          </span>
           <span className="flash-level-control__score" title={`得分 ${fmt(combined * displayScale)} · 帧 ${count > 0 ? `${frame + 1}/${count}` : "—"} (由 ${fmt(combined)} × ${displayScale} 帧映射)`}>
             {label("weights.score", "得分")} {fmt(combined * displayScale)}· {label("weights.frame", "帧")} {count > 0 ? `${frame + 1}/${count}` : "—"}
           </span>

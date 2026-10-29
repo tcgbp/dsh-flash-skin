@@ -2,6 +2,7 @@ import { createReadStream, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import z from "@deepseek-ai/schemastery";
+import { z as zod } from "zod";
 import { parseSingleRange } from "./range.js";
 import { installLikeRoutes } from "./likes.js";
 import { COMMUNITY_PROVIDERS, createCommunityClient, installCommunityRoutes, readCommunityLikes, submitCommunityLikes } from "./community.js";
@@ -90,10 +91,10 @@ function compactionProjectionApply(state, event) {
 // consumes the raw plain-JSON snapshot (seq/atWallMs/model), so `view` is the
 // identity map and `viewSchema` mirrors the state shape for downstream checks.
 const compactionProjectionWire = {
-  viewSchema: z.object({
-    seq: z.number(),
-    atWallMs: z.number(),
-    model: z.string(),
+  viewSchema: zod.object({
+    seq: zod.number(),
+    atWallMs: zod.number(),
+    model: zod.string(),
   }),
   view: (state) => state,
 };
@@ -101,10 +102,10 @@ const compactionProjectionWire = {
 const compactionProjectionDefinition = {
   key: COMPACTION_PROJECTION_KEY,
   stateVersion: COMPACTION_PROJECTION_STATE_VERSION,
-  stateSchema: z.object({
-    seq: z.number(),
-    atWallMs: z.number(),
-    model: z.string(),
+  stateSchema: zod.object({
+    seq: zod.number(),
+    atWallMs: zod.number(),
+    model: zod.string(),
   }),
   init: compactionProjectionInit,
   apply: compactionProjectionApply,

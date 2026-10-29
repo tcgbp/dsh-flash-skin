@@ -609,8 +609,22 @@ export function apply(ctx, config) {
     // Built lazily so the provider (github|gitee) always matches the current
     // config value; every operation resolves its own fresh client. Falls back
     // to the GitHub shim when the provider field is absent or unknown.
+    // Read the resolved communityDirectory config, tolerating both a
+    // schemastery wrapper exposing `.get()` and a plain (already-resolved)
+    // object — the latter is what an unconfigured/configured Config() yields,
+    // so we must not call `.get()` blind or an absent field throws inside the
+    // community handler (which rejects outward, turning a reader bug into an
+    // opaque 500). Falls back to {} so the C2 channel stays inert when unset.
+    const readCommunityDirectory = () => {
+      const raw = config?.communityDirectory;
+      if (!raw) return {};
+      if (typeof raw.get === "function") {
+        try { return raw.get() ?? {}; } catch { return {}; }
+      }
+      return raw && typeof raw === "object" ? raw : {};
+    };
     const clientForConfig = () => {
-      const dir = config?.communityDirectory?.get();
+      const dir = readCommunityDirectory();
       const kind = dir && typeof dir.provider === "string" && dir.provider ? dir.provider : "github";
       return createCommunityClient(COMMUNITY_PROVIDERS[kind] || COMMUNITY_PROVIDERS.github, globalThis.fetch);
     };
@@ -621,7 +635,7 @@ export function apply(ctx, config) {
       rawText: (rel, opts) => clientForConfig().rawText(rel, opts),
     };
     const getCommunityTarget = () => {
-      const dir = config?.communityDirectory?.get() ?? {};
+      const dir = readCommunityDirectory();
       const owner = typeof dir.owner === "string" && dir.owner ? dir.owner : "tcgbp";
       const repo = typeof dir.repo === "string" && dir.repo ? dir.repo : "dsh-flash-skin";
       const kind = typeof dir.provider === "string" && dir.provider ? dir.provider : "github";
@@ -634,7 +648,7 @@ export function apply(ctx, config) {
       };
     };
     const getLikesToken = () => {
-      const dir = config?.communityDirectory?.get();
+      const dir = readCommunityDirectory();
       return dir && typeof dir.likesToken === "string" && dir.likesToken ? dir.likesToken : null;
     };
     const {

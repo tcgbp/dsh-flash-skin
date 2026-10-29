@@ -38,6 +38,21 @@ export function dividerStepFor(count: number): number {
   return total - 1 > MAX_LEVEL ? MAX_LEVEL / total : 1;
 }
 
+/**
+ * Level the light/dark divider moves to after one arrow press. Steps from the
+ * current (possibly continuous) `darkLevel` by the group's per-image gap when
+ * the frame count exceeds the slider stops (see `dividerStepFor`), and clamps
+ * onto the 0..MAX_LEVEL slider. Because the divider position is
+ * round(level / MAX_LEVEL * count), a one-image-gap step guarantees the
+ * boundary advances exactly one cell on >7-frame groups — never two — while
+ * small groups (N ≤ MAX_LEVEL + 1) keep the historical one-stop step.
+ */
+export function nextDividerLevel(current: number, delta: -1 | 1, count: number): number {
+  const next = clampLevelContinuous(current + delta * dividerStepFor(count));
+  // Avoid a redundant no-op write when the divider is already at a slider end.
+  return next === current ? current : next;
+}
+
 export function levelForEffort(index: number, count: number): number {
   if (count <= 1 || !Number.isFinite(index)) return 0;
   const safe = Math.min(count - 1, Math.max(0, Math.round(index)));

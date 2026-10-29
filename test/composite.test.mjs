@@ -20,6 +20,7 @@ import {
   frameIndexForContinuousLevel,
   frameIndexForScore,
   dividerStepFor,
+  nextDividerLevel,
 } from "../src/client/logic.ts";
 
 describe("normalizeWeights", () => {
@@ -527,5 +528,29 @@ describe("light/dark divider reachability (dividerStepFor)", () => {
       covered.add(boundaryForDarkLevel(8, level));
     }
     for (let gap = 0; gap <= 8; gap += 1) expect(covered.has(gap)).toBe(true);
+  });
+
+  it("UI arrow stepping (nextDividerLevel) never jumps two cells on >7-frame groups", () => {
+    // Regression for the reported "divider jumps two cells when moved": the
+    // config card arrow steps darkLevel via nextDividerLevel, which for groups
+    // exceeding the slider stops advances by a single image gap. Walking the
+    // arrow from one end must land on every boundary one cell at a time.
+    for (const count of [8, 9, 12, 16]) {
+      const levelFor = (k) => {
+        let level = 0;
+        for (let i = 0; i < k; i += 1) level = nextDividerLevel(level, 1, count);
+        return level;
+      };
+      const boundaries = [0];
+      for (let k = 1; k <= count; k += 1) boundaries.push(boundaryForDarkLevel(count, levelFor(k)));
+      // Clamped at the far edge and every step advances exactly one cell.
+      expect(levelFor(count)).toBeCloseTo(MAX_LEVEL);
+      for (let i = 1; i < boundaries.length; i += 1) {
+        expect(boundaries[i] - boundaries[i - 1]).toBe(1);
+      }
+      expect(boundaries[boundaries.length - 1]).toBe(count);
+      // Plus the reverse direction steps back by a single image gap.
+      expect(nextDividerLevel(levelFor(count), -1, count)).toBeCloseTo(MAX_LEVEL - dividerStepFor(count));
+    }
   });
 });

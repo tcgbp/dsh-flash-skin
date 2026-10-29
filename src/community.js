@@ -172,10 +172,10 @@ const buildCommunityEntryId = () => {
 
 /**
  * Download a remote archive URL server-side and return its MD5 fingerprint.
- * Returns null when the fetch fails/times out or no body is readable — the
- * caller treats an uncomputable fingerprint as a hard sharing failure so a
- * shared entry can never skip integrity verification by pointing at content
- * the server cannot inspect.
+ * Returns null (with a diagnostic reason) when the fetch fails/times out or no
+ * body is readable — the caller treats an uncomputable fingerprint as a hard
+ * sharing failure so a shared entry can never skip integrity verification by
+ * pointing at content the server cannot inspect.
  */
 export async function computeUrlMd5(url, { fetchImpl = globalThis.fetch, timeout = 20_000, maxBytes = 64 * 1024 * 1024 } = {}) {
   const fetchFn = typeof fetchImpl === "function" ? fetchImpl : globalThis.fetch;
@@ -186,14 +186,19 @@ export async function computeUrlMd5(url, { fetchImpl = globalThis.fetch, timeout
     controller = new AbortController();
     timer = setTimeout(() => controller.abort(), timeout);
   }
+  const fail = (reason, extra) => {
+    console.error(`[dsh-flash-skin] computeUrlMd5 failed for ${url}: ${reason}`, extra ?? "");
+    return null;
+  };
   try {
     const response = await fetchFn(url, { redirect: "follow", signal: controller ? controller.signal : undefined });
-    if (!response.ok) return null;
+    if (!response.ok) return fail(`HTTP ${response.status}`);
     const body = Buffer.from(await response.arrayBuffer());
-    if (body.length === 0 || body.length > maxBytes) return null;
+    if (body.length === 0) return fail("empty body");
+    if (body.length > maxBytes) return fail(`too large ${body.length}B > ${maxBytes}B`);
     return createHash("md5").update(body).digest("hex");
-  } catch {
-    return null;
+  } catch (error) {
+    return fail("fetch threw", error instanceof Error ? error.message : String(error));
   } finally {
     if (timer) clearTimeout(timer);
   }

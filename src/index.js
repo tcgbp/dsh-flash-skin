@@ -627,6 +627,7 @@ export function apply(ctx, config) {
     const getCommunityClient = () => clientForConfig();
     const communityRoutesClient = {
       get provider() { return clientForConfig().provider; },
+      get fetchImpl() { return clientForConfig().fetchImpl; },
       tenantToken: (t) => clientForConfig().tenantToken(t),
       listRecords: (app, tab, tok, page) => clientForConfig().listRecords(app, tab, tok, page),
       createRecord: (app, tab, tok, fields) => clientForConfig().createRecord(app, tab, tok, fields),

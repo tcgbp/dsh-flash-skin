@@ -2437,7 +2437,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
         body: JSON.stringify({ setId: group.id, url }),
       });
       const payload = (await response.json().catch(() => null)) as
-        | { ok?: unknown; entry?: { setId?: unknown }; error?: { code?: string } }
+        | { ok?: unknown; entry?: { setId?: unknown }; error?: { code?: string; message?: string } }
         | null;
       if (payload && payload.ok) {
         const setId = payload.entry && typeof payload.entry.setId === "string" ? payload.entry.setId : group.id;
@@ -2445,8 +2445,10 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
         setSubmitMessage(t("communitySubmitDone").replace("{set}", setId));
       } else {
         const code = payload?.error?.code;
+        const message = payload?.error?.message;
         setSubmitPhase("error");
-        setSubmitMessage(t("communitySubmitFailed").replace("{message}", code && code !== "internal" ? code : t("communityError")));
+        // Prefer a server-provided detail message, else fall back to the code.
+        setSubmitMessage(t("communitySubmitFailed").replace("{message}", message || (code && code !== "internal" ? code : t("communityError"))));
       }
     } catch {
       setSubmitPhase("error");

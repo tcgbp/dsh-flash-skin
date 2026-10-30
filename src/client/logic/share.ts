@@ -73,13 +73,27 @@ export function base64UrlToBytes(b64url: string): Uint8Array | null {
 const textEncoder = () => new TextEncoder();
 const textDecoder = () => new TextDecoder();
 
+// FNV-1a 32-bit checksum over the archive bytes, carried in the header as `c`
+// so a receiver can detect a corrupted or edited share before trusting it.
+// Dependency-free (no zlib/crc32 exposed by fflate) and node + browser safe.
+export function fnv1a32(bytes: Uint8Array): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < bytes.length; i += 1) {
+    hash ^= bytes[i];
+    hash = (hash * 0x01000193) >>> 0;
+  }
+  return hash >>> 0;
+}
+
 /**
  * Pack a portrait group archive into the C1 share text. `zip` is the fully
  * built archive bytes (client packs it with fflate). Returns "" when the blob
  * exceeds SHARE_MAX_BYTES so the caller can surface a friendly notice.
  */
 export function buildShareText(zip: Uint8Array, manifest: PortraitGroupManifestSource): string {
-  const header = textEncoder().encode(JSON.stringify({ v: SHARE_VERSION, m: manifest, z: zip.length }) + "\n");
+  const header = textEncoder().encode(
+    JSON.stringify({ v: SHARE_VERSION, m: manifest, z: zip.length, c: fnv1a32(zip) }) + "\n",
+  );
   const blob = new Uint8Array(header.length + zip.length);
   blob.set(header, 0);
   blob.set(zip, header.length);
@@ -114,7 +128,7 @@ export function parseShareText(text: string): { zip: Uint8Array; manifest: Portr
     header = null;
   }
   if (typeof header !== "object" || header === null) return null;
-  const h = header as { v?: unknown; m?: unknown; z?: unknown };
+  const h = header as { v?: unknown; m?: unknown; z?: unknown; c?: unknown };
   if (h.v !== SHARE_VERSION) return null;
   const manifest = h.m as PortraitGroupManifestSource | undefined;
   if (typeof manifest !== "object" || manifest === null || typeof manifest.id !== "string" || manifest.id.length === 0) {
@@ -123,7 +137,12 @@ export function parseShareText(text: string): { zip: Uint8Array; manifest: Portr
   const zlen = Number(h.z);
   const zipStart = nl + 1;
   if (!Number.isInteger(zlen) || zlen < 0 || zipStart + zlen > bytes.length) return null;
-  return { zip: bytes.slice(zipStart, zipStart + zlen), manifest };
+  const zip = bytes.slice(zipStart, zipStart + zlen);
+  // Legacy shares predating the checksum field carry no `c`; accept them as-is.
+  // When present, a mismatch means the bytes were corrupted or edited.
+  const checksum = Number(h.c);
+  if (Number.isFinite(checksum) && checksum !== fnv1a32(zip)) return null;
+  return { zip, manifest };
 }
 
 /**

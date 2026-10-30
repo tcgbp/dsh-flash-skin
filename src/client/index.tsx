@@ -1639,6 +1639,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "zipTooFewImages": "图片不足：一个皮肤组至少需要 {min} 张图片（当前 {n} 张）",
     "zipImported": "已导入 {n} 张图片，创建了新的皮肤组",
     "zipImportedMeta": "，并按压缩包内元数据设置了标识、中英文名称与深浅切换点",
+    "zipManifestCountMismatch": "（清单声明 {manifest} 张，实际导入 {imported} 张，按实际导入为准）",
     "metaImported": "已按清单创建新组（{n} 张在线图片）",
     "importIdConflict": "标识（Set ID）「{id}」已被占用，请换一个唯一标识再导入",
     "importConfirm": "导入",
@@ -1739,6 +1740,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "zipTooFewImages": "Too few images to import — a portrait group needs at least {min} (currently {n})",
     "zipImported": "Imported {n} images and created a new group",
     "zipImportedMeta": ", and set the id, Chinese/English names and light/dark threshold from the archive metadata",
+    "zipManifestCountMismatch": "(the manifest declared {manifest} images but {imported} were imported — using the actual import)",
     "metaImported": "Created a new group from the manifest metadata with {n} image URLs",
     "importIdConflict": "Set ID \"{id}\" is already in use — pick a unique one before importing",
     "importConfirm": "Import",
@@ -1852,6 +1854,32 @@ function mediaTypeForEntry(name: string, bytes: Uint8Array): string {
   const dot = name.lastIndexOf(".");
   const ext = dot >= 0 ? name.slice(dot).toLowerCase() : "";
   return MEDIA_TYPE_BY_EXT[ext] ?? "image/png";
+}
+
+// Strict magic-byte sniff: returns the media type only when the leading bytes
+// are a signature we can actually decode, "" otherwise. Used to validate each
+// frame on export/share so a remote HTTP-200 non-image (e.g. an HTML error page)
+// is refused instead of packed as garbage.
+function imageMediaTypeFromBytes(bytes: Uint8Array): string {
+  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50
+    && bytes[2] === 0x4e && bytes[3] === 0x47
+    && bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a) {
+    return "image/png";
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (bytes.length >= 12
+    && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 // RIFF
+    && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) {
+    return "image/webp"; // WEBP
+  }
+  if (bytes.length >= 6 && (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46
+    && (bytes[3] === 0x38 && bytes[4] === 0x37 || bytes[3] === 0x38 && bytes[4] === 0x39)
+    && bytes[5] === 0x61)) {
+    return "image/gif"; // GIF87a / GIF89a
+  }
+  return "";
 }
 
 function readLocalFileAsArrayBuffer(file: File): Promise<ArrayBuffer> {
@@ -2335,6 +2363,9 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
       for (const source of group.images) {
         try {
           const bytes = await fetchExportImageBytes(source);
+          if (imageMediaTypeFromBytes(bytes) === "") {
+            throw new Error("frame is not a decodable image");
+          }
           frames.push({ bytes, ext: extensionForImageUrl(source, bytes) });
         } catch {
           setSharePhase("ready");
@@ -2348,7 +2379,22 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
       frames.forEach((frame, index) => {
         entries[`${index}${frame.ext}`] = frame.bytes;
       });
-      const text = buildShareText(zipSync(entries, { level: 6 }), group);
+      // Immediately unpack the just-built archive in memory and confirm every
+      // packed frame de-compresses back to a decodable image. A packing bug or
+      // a CRC failure is caught right here, before the share text is copied or
+      // the zip is downloaded, instead of only surfacing as a failed re-import.
+      const zipped = zipSync(entries, { level: 6 });
+      const inflated = unzipSync(zipped);
+      if (inflated["portrait.yaml"] === undefined) {
+        throw new Error("archive round-trip self-check failed: manifest missing");
+      }
+      frames.forEach((frame, index) => {
+        const bytes = inflated[`${index}${frame.ext}`];
+        if (!(bytes instanceof Uint8Array) || bytes.length === 0 || imageMediaTypeFromBytes(bytes) === "") {
+          throw new Error("archive round-trip self-check failed for " + index + frame.ext);
+        }
+      });
+      const text = buildShareText(zipped, group);
       if (!text) {
         setSharePhase("ready");
         setShareNotice(t("shareTooBig"));
@@ -2596,6 +2642,9 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
       for (const source of group.images) {
         try {
           const bytes = await fetchExportImageBytes(source);
+          if (imageMediaTypeFromBytes(bytes) === "") {
+            throw new Error("frame is not a decodable image");
+          }
           frames.push({ bytes, ext: extensionForImageUrl(source, bytes) });
         } catch {
           setFileError(t("exportDownloadFailed").replace("{n}", String(group.images.length)));
@@ -2610,6 +2659,22 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
       });
       // Synchronous zip build; with ≤64 sub-2MB frames this is comfortably fast.
       const zipped = zipSync(entries, { level: 6 });
+      // Immediately unpack the fresh archive in memory and confirm every packed
+      // frame de-compresses back to a decodable image. A packing bug or a CRC
+      // failure surfaces here, before a broken .zip is handed to the browser,
+      // instead of only appearing as a failed re-import later.
+      const inflated = unzipSync(zipped);
+      let failedFrame: string | null = null;
+      frames.forEach((frame, index) => {
+        const bytes = inflated[`${index}${frame.ext}`];
+        if (!(bytes instanceof Uint8Array) || bytes.length === 0 || imageMediaTypeFromBytes(bytes) === "") {
+          failedFrame = `${index}${frame.ext}`;
+        }
+      });
+      if (failedFrame !== null || inflated["portrait.yaml"] === undefined) {
+        setFileError(t("exportDownloadFailed").replace("{n}", String(group.images.length)));
+        return;
+      }
       downloadBytes(zipped, `${sanitizeExportBase(group.id)}.zip`, "application/zip");
       // Shown on the card's single status line, just like import success.
       setFileError(t("exportDone"));
@@ -2845,6 +2910,18 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
         }
         if (meta) {
           notice += " " + t("zipImportedMeta");
+        }
+        // When the archive carries embedded frames (which always win) but its
+        // manifest also declared an image list, surface a notice if the two
+        // disagree — the manifest count then differs from what was imported.
+        if (
+          entries.length > 0
+          && manifestImages.length > 0
+          && manifestImages.length !== images.length
+        ) {
+          notice += " " + t("zipManifestCountMismatch")
+            .replace("{manifest}", String(manifestImages.length))
+            .replace("{imported}", String(images.length));
         }
         if (skippedOversize > 0) {
           notice += " " + t("zipSkippedOversize").replace("{n}", String(skippedOversize));

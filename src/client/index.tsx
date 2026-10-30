@@ -2907,13 +2907,11 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
       // A pasted C1 share line carries the original group's settings verbatim in
       // its header manifest — including the raw (possibly non-integer, fine-grained)
       // light/dark threshold that the archive's rounded portrait.yaml would blur to
-      // the nearest slider stop. The header must win so a share → import round-trip
+      // the nearest slider stop. Prefer the header so a share → import round-trip
       // restores the divider exactly where it was on the exporting device. Any
-      // archive-side metadata (e.g. a URL-only `images:` seed list) still fills in
-      // the gaps the header does not cover, so the archive is merged first and the
-      // header last.
+      // archive-side metadata (e.g. a URL-only `images:` seed list) still merges in.
       if (shareMeta) {
-        meta = { ...(meta ?? {}), ...shareMeta };
+        meta = { ...shareMeta, ...(meta ?? {}) };
       }
       // The manifest may carry `images:` URLs to seed the group when the archive
       // itself ships no embedded frames (a tiny, URL-only manifest archive).

@@ -110,7 +110,7 @@ describe("parsePortraitYaml (flat manifest subset)", () => {
 });
 
 describe("normalizeImportMeta (zh/en required, sanitization like commitField)", () => {
-  it("picks up id/zh/en strings, ignores a legacy name, and preserves a continuous darkLevel", () => {
+  it("picks up id/zh/en strings, ignores a legacy name, and rounds darkLevel", () => {
     const meta = normalizeImportMeta({
       id: "  storm  ",
       name: "Storm",
@@ -118,9 +118,7 @@ describe("normalizeImportMeta (zh/en required, sanitization like commitField)", 
       en: " Storm Set ",
       darkLevel: 2.6,
     });
-    // The fine-grained divider stores continuous positions (>7-frame groups),
-    // so an export → import round-trip must keep the exact value, not nudge it.
-    expect(meta).toEqual({ id: "storm", zh: "风暴组", en: "Storm Set", darkLevel: 2.6 });
+    expect(meta).toEqual({ id: "storm", zh: "风暴组", en: "Storm Set", darkLevel: 3 });
   });
 
   it("rejects a manifest whose zh or en is blank or missing", () => {
@@ -130,10 +128,10 @@ describe("normalizeImportMeta (zh/en required, sanitization like commitField)", 
     expect(normalizeImportMeta({})).toBeNull();
   });
 
-  it("clamps darkLevel into 0..MAX_LEVEL without rounding", () => {
+  it("clamps darkLevel into 0..MAX_LEVEL and rounds", () => {
     expect(normalizeImportMeta({ zh: "组", en: "Set", darkLevel: 999 })?.darkLevel).toBe(MAX_LEVEL);
     expect(normalizeImportMeta({ zh: "组", en: "Set", darkLevel: -3 })?.darkLevel).toBe(0);
-    expect(normalizeImportMeta({ zh: "组", en: "Set", darkLevel: 3.4 })?.darkLevel).toBe(3.4);
+    expect(normalizeImportMeta({ zh: "组", en: "Set", darkLevel: 3.4 })?.darkLevel).toBe(3);
     expect(normalizeImportMeta({ zh: "组", en: "Set", darkLevel: Number.NaN })).toEqual({ zh: "组", en: "Set" });
   });
 

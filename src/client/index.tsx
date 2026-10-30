@@ -975,20 +975,38 @@ function CompositeLevelControl({
     && decodeMs != null && Number.isFinite(decodeMs) && decodeMs > 0;
 
   // Staleness clock: the projection never resets its decode totals when
-  // generation stops, so we track the last time decode data changed and tick
+  // generation stops, so we track the last time decode data *grew* and tick
   // `now` while the composite gauge is mounted. Once no fresh decode has
   // arrived for the configured grace window, the speed factor decays toward 0
   // over the configured fade window and the composite level relaxes back down
-  // instead of pinning at the last run's saturated speed.
+  // instead of pinning at the last run's saturated speed. The clock is only
+  // re-armed when the produced-token total actually increases — switching to a
+  // different (idle) session re-feeds that session's already-known totals, and
+  // re-arming then would falsely spike the speed gauge on an idle conversation.
   const [now, setNow] = useState(() => Date.now());
   const lastDecodeAt = useRef<number | null>(null);
+  const lastDecodeTokens = useRef<number | null>(null);
   useEffect(() => {
     if (!enabled) return;
     const id = window.setInterval(() => setNow(Date.now()), 200);
     return () => window.clearInterval(id);
   }, [enabled]);
   useEffect(() => {
-    if (decodingActive) lastDecodeAt.current = Date.now();
+    // Only a genuine increase in produced tokens marks fresh decoding. The
+    // projection's totals persist after generation stops (and across a session
+    // switch), so comparing against the last-seen count keeps the clock from
+    // being armed by stale/replayed history.
+    const hasTokens = decodeTokens !== null && Number.isFinite(decodeTokens);
+    const prev = lastDecodeTokens.current;
+    lastDecodeTokens.current = hasTokens ? decodeTokens : null;
+    if (!decodingActive || !hasTokens) return;
+    // The first measurement (prev === null) is treated as history, not growth —
+    // arming on it would falsely spike the gauge right after switching to an
+    // idle session that merely has past produced tokens. Only a real increase
+    // past an established baseline re-arms the clock.
+    if (prev !== null && decodeTokens !== null && decodeTokens > prev) {
+      lastDecodeAt.current = Date.now();
+    }
   }, [decodingActive, decodeTokens, decodeMs]);
   const speedF = speedBase > 0 && lastDecodeAt.current != null
     ? speedBase * freshnessDecay(now - lastDecodeAt.current, tuning.graceMs, tuning.fadeMs)

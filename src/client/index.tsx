@@ -39,7 +39,6 @@ import {
   stagedFrames,
   tokenSpeedFactor,
   usageFactor,
-  weightedLevel,
   type CompositeWeights,
   type EffortLike,
   type Palette,
@@ -1083,6 +1082,23 @@ function CompositeLevelControl({
   const compBonus = COMPACTION_SCORE_BONUS * compactionF;
   const combined = wBase + compBonus;
   const compActive = compactionF > 0;
+  // Idle-score hold: the host only surfaces projections for the *active*
+  // conversation, so switching to an idle set re-feeds no real usage/pressure/
+  // speed data and the raw weighted score would collapse to 0 (frame 0, the
+  // first image). Hold the last known positive composite score as a stable
+  // anchor: while any live source contributes (combined > 0) we keep syncing
+  // it in real time; once every source drops away (combined == 0, i.e. we are
+  // looking at an idle session with no live data) the displayed score stays
+  // pinned at the last known value instead of jumping back to the first frame.
+  // The portrait/palette ride `displayScore`; the true live `combined` still
+  // feeds fresh syncs the moment a source comes back.
+  const lastKnownScoreRef = useRef<number>(0);
+  if (Number.isFinite(combined) && combined > 0) {
+    lastKnownScoreRef.current = combined;
+  }
+  const displayScore = Number.isFinite(combined) && combined > 0
+    ? combined
+    : lastKnownScoreRef.current;
 
   const lastLevelRef = useRef(-1);
 
@@ -1091,16 +1107,14 @@ function CompositeLevelControl({
   }, [enabled, load]);
 
   useEffect(() => {
+    // The level ride the same held score as the portrait: while live signals
+    // feed a real combined value we map that straight to a 0..MAX_LEVEL stop;
+    // once the sources drop away (idle session) we stay pinned on the last
+    // known score instead of collapsing to 0/first frame. Clamped so the
+    // 压缩-bonus can never push past MAX_LEVEL.
     const next = Math.max(
       0,
-      Math.min(MAX_LEVEL, Math.round(
-        weightedLevel(weightsSnapshot, {
-          usage: usageF,
-          pressure: pressureF,
-          effort: effortF,
-          speed: speedF,
-        }) + compBonus * MAX_LEVEL,
-      )),
+      Math.min(MAX_LEVEL, Math.round(displayScore * MAX_LEVEL)),
     );
     // Palette rides the rounded 0..MAX_LEVEL grip (light/dark shell decision);
     // only ever push it when the integer stop actually changes.
@@ -1109,9 +1123,9 @@ function CompositeLevelControl({
       presenter.setLevel(next);
     }
     if (presenter.isEnabled()) {
-      // Portrait rides the summed weighted + 压缩-bonus score, mapped straight
-      // onto the group's N frames — so all N are reachable, not just the 7 stops.
-      presenter.setPortraitScore(combined);
+      // Portrait rides the held composite score, mapped straight onto the
+      // group's N frames — so all N are reachable, not just the 7 stops.
+      presenter.setPortraitScore(displayScore);
     }
   }, [
     presenter,
@@ -1123,13 +1137,14 @@ function CompositeLevelControl({
     compactionF,
     compBonus,
     combined,
+    displayScore,
   ]);
 
   const count = presenter.getPortraitCount();
   const w = normalized;
-  // 综合加权拿去取帧的是「加权得分 + 压缩加分项」的合计(combined):0..1 连续
+  // 综合加权拿去取帧的是「加权得分 + 压缩加分项」的合计(displayScore):0..1 连续
   // 得分线性落到组内 N 帧,没有 6 挡这一层。
-  const frame = count > 0 ? frameIndexForScore(combined, count) : 0;
+  const frame = count > 0 ? frameIndexForScore(displayScore, count) : 0;
   // 数值格式:去掉小数末尾的多余 0(0.30 → 0.3、0.00 → 0),省空间又直观。
   const fmt = (n: number) => Number(n.toFixed(2)).toString();
   // 落帧刻度:直接取「帧数」——0..1 得分 × count 映射到组内帧,与 frameIndexForScore
@@ -1184,13 +1199,13 @@ function CompositeLevelControl({
                 <span className="flash-level-control__bonus">{fmt(compBonus)}</span>
               </span>
               <i className="flash-level-control__eq">=</i>
-              <span className="flash-level-control__sum" title={`最终得分 = 加权 ${fmt(wBase)} + 压缩 ${fmt(compBonus)} = ${fmt(combined)} (0..1)`}>{fmt(combined)}</span>
+              <span className="flash-level-control__sum" title={`最终得分 = 加权 ${fmt(wBase)} + 压缩 ${fmt(compBonus)} = ${fmt(displayScore)} (0..1)`}>{fmt(displayScore)}</span>
             </Fragment>
           )}
           {/* 落帧映射的最终结果:只显示当前帧位,不再展示「加权得分 × 帧数」的中间算式。 */}
           <i className="flash-level-control__arrow">→</i>
-          <span className="flash-level-control__score" title={`得分 ${fmt(combined * displayScale)} · 帧 ${count > 0 ? `${frame + 1}/${count}` : "—"} (由 ${fmt(combined)} × ${displayScale} 帧映射)`}>
-            {label("weights.score", "得分")} {fmt(combined * displayScale)}· {label("weights.frame", "帧")} {count > 0 ? `${frame + 1}/${count}` : "—"}
+          <span className="flash-level-control__score" title={`得分 ${fmt(displayScore * displayScale)} · 帧 ${count > 0 ? `${frame + 1}/${count}` : "—"} (由 ${fmt(displayScore)} × ${displayScale} 帧映射)`}>
+            {label("weights.score", "得分")} {fmt(displayScore * displayScale)}· {label("weights.frame", "帧")} {count > 0 ? `${frame + 1}/${count}` : "—"}
           </span>
         </span>
       </output>

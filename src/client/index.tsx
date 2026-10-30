@@ -2575,11 +2575,9 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
   };
 
   // Click-driven threshold: move the light/dark boundary with the left/right
-  // arrows that flank the divider. No mouse drag. darkLevel advances by the
-  // group's per-image gap (`dividerStepFor`), so on >7-frame groups the divider
-  // moves exactly one cell at a time instead of snapping over intermediate
-  // cells; small groups keep the historical one-integer-stop step. The value is
-  // continuous in 0..MAX_LEVEL (persisted as-is) and its boundary is clamped.
+  // arrows that flank the divider. No mouse drag. `darkLevel` is an integer
+  // slider stop in 0..MAX_LEVEL (persisted as-is); each press advances one
+  // integer stop via `nextDividerLevel`, and its boundary is clamped.
   const stepDivider = (groupIndex: number, delta: -1 | 1) => {
     if (!writable || busy) return;
     const group = groups[groupIndex];
@@ -2854,7 +2852,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
       name: zh,
       zh,
       en,
-      darkLevel: meta?.darkLevel ?? MAX_LEVEL - 1,
+      darkLevel: clampLevel(meta?.darkLevel ?? MAX_LEVEL - 1),
       images,
     }];
     void commit(next);

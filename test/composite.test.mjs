@@ -482,8 +482,8 @@ describe("light/dark divider reachability (dividerStepFor)", () => {
     return out;
   };
 
-  it("keeps the per-stop step while the frame count does not exceed the stops", () => {
-    for (let count = 2; count <= MAX_LEVEL + 1; count += 1) {
+  it("every arrow press steps exactly one integer stop, regardless of frame count", () => {
+    for (const count of [2, 7, 8, 9, 12, 16]) {
       expect(dividerStepFor(count)).toBe(1);
     }
     // degenerate / empty groups keep the plain stop step too
@@ -493,64 +493,60 @@ describe("light/dark divider reachability (dividerStepFor)", () => {
     expect(dividerStepFor(Infinity)).toBe(1);
   });
 
-  it("small sets without collisions (N ≤ stops) already reach every boundary", () => {
-    for (let count = 2; count <= MAX_LEVEL; count += 1) {
-      expect(reachableByStops(count).size).toBe(count + 1);
+  it("darkLevel always stays an integer in 0..MAX_LEVEL across arrow presses", () => {
+    for (const start of [0, 2, MAX_LEVEL]) {
+      let level = start;
+      for (let presses = 0; presses < 40; presses += 1) {
+        level = nextDividerLevel(level, 1, 9);
+        expect(Number.isInteger(level)).toBe(true);
+        expect(level).toBeGreaterThanOrEqual(0);
+        expect(level).toBeLessThanOrEqual(MAX_LEVEL);
+      }
     }
   });
 
-  it("7 frames keep the historical one-step behavior (gap 3 stays unreachable)", () => {
-    // 7 frames → 8 slots but only 7 integer stops; gap 3 is skipped today and
-    // the one-stop step is retained for N ≤ stops + 1 so nothing regresses.
-    expect(dividerStepFor(7)).toBe(1);
-    expect(reachableByStops(7).has(3)).toBe(false);
-    expect(reachableByStops(7).size).toBe(7);
-  });
-
-  it("9 frames used to skip gaps (1/4/7) that the fine step now makes reachable", () => {
-    expect(dividerStepFor(9)).toBeCloseTo(MAX_LEVEL / 9);
-    // the seven integer stops alone miss slots — the reported "6,7" gap is slot 7
-    expect(reachableByStops(9).has(7)).toBe(false);
-    // walking the fine step from one end covers every slot 0..count
-    const covered = new Set();
-    for (let k = 0; k <= 9; k += 1) {
-      const level = Math.round(k * dividerStepFor(9) * 1000) / 1000;
-      covered.add(boundaryForDarkLevel(9, level));
-    }
-    for (let gap = 0; gap <= 9; gap += 1) expect(covered.has(gap)).toBe(true);
-  });
-
-  it("stays consistent on 8 frames (just above the stops) as well", () => {
-    expect(dividerStepFor(8)).toBeCloseTo(MAX_LEVEL / 8);
-    const covered = new Set();
-    for (let k = 0; k <= 8; k += 1) {
-      const level = Math.round(k * dividerStepFor(8) * 1000) / 1000;
-      covered.add(boundaryForDarkLevel(8, level));
-    }
-    for (let gap = 0; gap <= 8; gap += 1) expect(covered.has(gap)).toBe(true);
-  });
-
-  it("UI arrow stepping (nextDividerLevel) never jumps two cells on >7-frame groups", () => {
-    // Regression for the reported "divider jumps two cells when moved": the
-    // config card arrow steps darkLevel via nextDividerLevel, which for groups
-    // exceeding the slider stops advances by a single image gap. Walking the
-    // arrow from one end must land on every boundary one cell at a time.
-    for (const count of [8, 9, 12, 16]) {
+  it("walking the integer stops from either end lands on every reachable boundary", () => {
+    for (const count of [2, 7, 8, 9]) {
       const levelFor = (k) => {
         let level = 0;
         for (let i = 0; i < k; i += 1) level = nextDividerLevel(level, 1, count);
         return level;
       };
       const boundaries = [0];
-      for (let k = 1; k <= count; k += 1) boundaries.push(boundaryForDarkLevel(count, levelFor(k)));
-      // Clamped at the far edge and every step advances exactly one cell.
-      expect(levelFor(count)).toBeCloseTo(MAX_LEVEL);
-      for (let i = 1; i < boundaries.length; i += 1) {
-        expect(boundaries[i] - boundaries[i - 1]).toBe(1);
+      for (let k = 1; k <= MAX_LEVEL; k += 1) {
+        boundaries.push(boundaryForDarkLevel(count, levelFor(k)));
       }
-      expect(boundaries[boundaries.length - 1]).toBe(count);
-      // Plus the reverse direction steps back by a single image gap.
-      expect(nextDividerLevel(levelFor(count), -1, count)).toBeCloseTo(MAX_LEVEL - dividerStepFor(count));
+      // The stops walk is monotone and never regresses; the fine gaps that no
+      // integer stop can hit stay unreachable (accepted tradeoff of integer stops).
+      for (let i = 1; i < boundaries.length; i += 1) {
+        expect(boundaries[i]).toBeGreaterThanOrEqual(boundaries[i - 1]);
+      }
+      expect(levelFor(MAX_LEVEL)).toBe(MAX_LEVEL);
+      // Reverse direction steps back by exactly one integer stop.
+      const atEnd = levelFor(MAX_LEVEL);
+      expect(nextDividerLevel(atEnd, -1, count)).toBe(MAX_LEVEL - 1);
     }
+  });
+
+  it("small sets without collisions (N ≤ stops) still reach every boundary", () => {
+    for (let count = 2; count <= MAX_LEVEL; count += 1) {
+      expect(reachableByStops(count).size).toBe(count + 1);
+    }
+  });
+
+  it("7 frames keep the historical one-stop behavior (gap 3 stays unreachable)", () => {
+    // 7 frames → 8 slots but only 7 integer stops; gap 3 is skipped and the
+    // one-stop step is retained, so nothing regresses vs. the classic scheme.
+    expect(dividerStepFor(7)).toBe(1);
+    expect(reachableByStops(7).has(3)).toBe(false);
+    expect(reachableByStops(7).size).toBe(7);
+  });
+
+  it("8+ frame groups keep integer darkLevel (gaps between stops stay unreachable)", () => {
+    // 8 frames → 9 slots but only 7 integer stops: with an integer threshold the
+    // intermediate gaps are simply not reachable, which is the accepted tradeoff.
+    expect(dividerStepFor(8)).toBe(1);
+    expect(Number.isInteger(nextDividerLevel(0, 1, 9))).toBe(true);
+    expect(reachableByStops(9).size).toBeLessThan(10);
   });
 });

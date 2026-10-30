@@ -276,13 +276,11 @@ export const Config = z.object({
       id: z.string().min(1).required(),
       name: z.string().min(1).required(),
       images: z.array(z.string().min(1)).default([]),
-      // Optional per-group divider threshold in 0..MAX_LEVEL. On a group with
-      // more frames than slider stops (≥8) the light/dark divider rests at a
-      // continuous position between integer stops, so the value is a real
-      // number, not necessarily an integer. Object fields are optional unless
+      // Optional per-group divider threshold: an integer slider stop in
+      // 0..MAX_LEVEL (7 stops). Object fields are optional unless
       // `.required()`, so an absent value resolves to the default threshold
       // (MAX_LEVEL - 1), keeping older persisted configs working unchanged.
-      darkLevel: z.number().min(0).max(6),
+      darkLevel: z.natural().max(6),
       // Optional bilingual display names, editable from the plugin detail page.
       // Absent values fall back to `name` / the other language at render time,
       // so pre-bilingual persisted configs keep working unchanged.

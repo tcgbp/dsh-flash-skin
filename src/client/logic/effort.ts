@@ -24,31 +24,21 @@ export function clampLevelContinuous(value: number): number {
 
 /**
  * How far one arrow click moves the light/dark divider for a `count`-frame
- * group. The divider position is derived from darkLevel via
- * `boundaryForDarkLevel` = round(darkLevel / MAX_LEVEL * count), which maps
- * the 0..MAX_LEVEL stops onto the `count + 1` boundary slots. As long as N ≤
- * MAX_LEVEL + 1 every slot is reachable with a one-stop step, but with more
- * frames than stops some gaps can never be landed on (e.g. 9 frames leaves
- * gaps 1/4/7 unreachable). Once N exceeds the stops, step by a single image
- * gap (MAX_LEVEL / N in slider terms) so every boundary stays reachable.
+ * group. `darkLevel` is an integer slider stop in 0..MAX_LEVEL, so every press
+ * advances exactly one integer stop regardless of the frame count.
  */
-export function dividerStepFor(count: number): number {
-  if (!Number.isFinite(count) || count <= 1) return 1;
-  const total = Math.floor(count);
-  return total - 1 > MAX_LEVEL ? MAX_LEVEL / total : 1;
+export function dividerStepFor(_count: number): number {
+  return 1;
 }
 
 /**
- * Level the light/dark divider moves to after one arrow press. Steps from the
- * current (possibly continuous) `darkLevel` by the group's per-image gap when
- * the frame count exceeds the slider stops (see `dividerStepFor`), and clamps
- * onto the 0..MAX_LEVEL slider. Because the divider position is
- * round(level / MAX_LEVEL * count), a one-image-gap step guarantees the
- * boundary advances exactly one cell on >7-frame groups — never two — while
- * small groups (N ≤ MAX_LEVEL + 1) keep the historical one-stop step.
+ * Level the light/dark divider moves to after one arrow press. Steps the
+ * current integer `darkLevel` by one slider stop in the chosen direction and
+ * clamps onto the 0..MAX_LEVEL slider, rounding to the nearest integer stop so
+ * the persisted threshold is always an integer.
  */
-export function nextDividerLevel(current: number, delta: -1 | 1, count: number): number {
-  const next = clampLevelContinuous(current + delta * dividerStepFor(count));
+export function nextDividerLevel(current: number, delta: -1 | 1, _count: number): number {
+  const next = clampLevel(current + delta);
   // Avoid a redundant no-op write when the divider is already at a slider end.
   return next === current ? current : next;
 }

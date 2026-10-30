@@ -1,5 +1,5 @@
 import { MAX_LEVEL, PORTRAIT_IMPORT_MAX_IMAGES } from "./constants";
-import { clampLevel } from "./effort";
+import { clampLevelContinuous } from "./effort";
 
 // -----------------------------------------------------------------------------
 // Archive manifest (portrait.yaml / meta.yaml / portrait.json / meta.json)
@@ -55,7 +55,11 @@ export function normalizeImportMeta(raw: unknown): PortraitImportMeta | null {
   // Accept both camelCase (`darkLevel`) and kebab-case (`dark-level`) keys.
   const levelField = typeof src["dark-level"] === "number" ? src["dark-level"] : src.darkLevel;
   if (typeof levelField === "number" && Number.isFinite(levelField)) {
-    meta.darkLevel = clampLevel(levelField);
+    // Clamp into 0..MAX_LEVEL without rounding: the fine-grained light/dark
+    // divider stores continuous positions on >7-frame groups (`nextDividerLevel`
+    // steps by one image gap), so preserving the exact value keeps an
+    // export → import round-trip from nudging the divider to the nearest stop.
+    meta.darkLevel = clampLevelContinuous(levelField);
   }
   // Optional image-URL list. URLs are trimmed, blanks dropped, duplicates
   // collapsed and the list capped at PORTRAIT_IMPORT_MAX_IMAGES so an oversized
@@ -265,7 +269,7 @@ export function buildPortraitManifest(group: PortraitGroupManifestSource): strin
   const fallback = group.name || id || "group";
   const zh = (group.zh ?? "").trim() || fallback;
   const en = (group.en ?? "").trim() || fallback;
-  const darkLevel = clampLevel(group.darkLevel ?? MAX_LEVEL - 1);
+  const darkLevel = clampLevelContinuous(group.darkLevel ?? MAX_LEVEL - 1);
   return [
     "# Portrait archive exported by dsh-flash-skin",
     "# Re-importing this archive recreates the portrait group below.",

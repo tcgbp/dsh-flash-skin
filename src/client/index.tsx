@@ -499,10 +499,18 @@ class SkinPresenter {
   private sourcesForSet(set: PortraitSet, configs = this.groupConfigs): readonly PortraitSource[] {
     // Prefer the user-configured images for this set, staged by the pure
     // count-driven stagedFrames() helper so added/removed frames re-spread
-    // automatically across the 0..MAX_LEVEL slider (no fixed number of stops).
+    // automatically across the active set's dynamic axis (0..dividerAxisMax).
+    // The axis must match the one the consumers (slider, palette switch and
+    // portrait selection) already share — otherwise a group with more frames
+    // than MAX_LEVEL stages its frames on the tiny 0..MAX_LEVEL grid while the
+    // portrait selector targets the wider 0..dividerAxisMax scale, and every
+    // target above MAX_LEVEL snaps to the top frame: the background locks on
+    // the last frame while the light/dark shell keeps switching.
     const group = configs[set.id];
     if (group && group.images.length > 0) {
-      const frames = stagedFrames(group.images.length);
+      const count = group.images.length;
+      const axis = dividerAxisMax(count);
+      const frames = stagedFrames(count, axis);
       return group.images.map((url, index) => ({
         level: frames[index] ?? 0,
         url,

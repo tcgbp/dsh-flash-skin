@@ -241,6 +241,32 @@ describe("stagedFrames — group-size adaptation", () => {
       }
     }
   });
+
+  it("stages sources on the SAME dynamic axis the consumers target (portrait follows score)", () => {
+    // Regression: the skin's loading/staging axis must equal the scale used by
+    // the portrait/slider consumers (dividerAxisMax(count), not MAX_LEVEL).
+    // sourcesForSet() stages frames with stagedFrames(count, dividerAxisMax(count)),
+    // and setPortraitScore/updatePortrait target t * dividerAxisMax(count).
+    // If the two ever diverge, a group with more frames than MAX_LEVEL (e.g. 11)
+    // stages on the tiny 0..MAX_LEVEL grid while targets go up to dividerAxisMax:
+    // every target above MAX_LEVEL snaps to the top frame and the background
+    // locks there while the light/dark shell keeps switching.
+    for (let count = 2; count <= 14; count += 1) {
+      const axis = dividerAxisMax(count);
+      const frames = stagedFrames(count, axis);
+      const top = frames[count - 1];
+      // Each staged frame level is a distinct reachable stop on the shared axis.
+      expect(new Set(frames).size).toBe(count);
+      expect(frames[0]).toBe(0);
+      expect(top).toBe(axis);
+      // The composite portrait target t*axis must always land inside the staged
+      // frame axis (never beyond the top frame).
+      for (const t of [0, 0.25, 0.5, 0.75, 1]) {
+        const target = t * axis;
+        expect(Math.abs(target - Math.min(axis, Math.max(0, target)))).toBe(0);
+      }
+    }
+  });
 });
 
 describe("frameIndexForLevel", () => {

@@ -34,15 +34,16 @@ const DARK = {
 
 // The skin's colour scheme is frozen to the dark palette — sliding the level
 // only swaps the portrait frame, it no longer blends any colours.
-export const FROZEN_PALETTE: Palette = paletteForLevel(MAX_LEVEL);
+export const FROZEN_PALETTE: Palette = paletteForLevel(MAX_LEVEL, MAX_LEVEL - 1, MAX_LEVEL);
 
-export function paletteForLevel(rawLevel: number, darkLevel?: number): Palette {
-  const level = clampLevel(rawLevel);
+export function paletteForLevel(rawLevel: number, darkLevel?: number, maxLevel: number = MAX_LEVEL): Palette {
+  const level = clampLevel(rawLevel, maxLevel);
+  const max = Number.isFinite(maxLevel) ? Math.max(0, Math.round(maxLevel)) : MAX_LEVEL;
   const darkAt = (() => {
-    if (darkLevel === undefined) return MAX_LEVEL - 1;
-    return Math.min(MAX_LEVEL, Math.max(0, Math.round(darkLevel)));
+    if (darkLevel === undefined) return Math.max(0, max - 1);
+    return Math.min(max, Math.max(0, Math.round(darkLevel)));
   })();
-  const t = level / MAX_LEVEL;
+  const t = max > 0 ? level / max : 0;
   const mix = (from: string, to: string, amount: number) => {
     const pa = parseInt(from.slice(1), 16);
     const pb = parseInt(to.slice(1), 16);
@@ -58,11 +59,13 @@ export function paletteForLevel(rawLevel: number, darkLevel?: number): Palette {
   };
   // Mirror dsh-liang-skin's binary appearance: the lowest levels keep the
   // native light shell, and only levels at/above the (per-group, default
-  // MAX_LEVEL - 1) dark threshold switch to the dark shell. The portrait frame
-  // still advances continuously with the level.
+  // maxLevel - 1) dark threshold switch to the dark shell. The portrait frame
+  // still advances continuously with the level. Both level and darkLevel live
+  // on the same 0..maxLevel axis (maxLevel = the active group's frame count),
+  // so a group with more frames than MAX_LEVEL re-scales the whole shell.
   const dark = level >= darkAt;
   const base = dark ? DARK : LIGHT;
-  const portraitScale = level / MAX_LEVEL;
+  const portraitScale = max > 0 ? level / max : 0;
   return {
     level,
     stage: dark ? 1 : 0,

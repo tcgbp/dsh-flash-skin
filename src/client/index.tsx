@@ -25,6 +25,7 @@ import {
   contextCompactionFactor,
   contextPressureFactor,
   dividerStepFor,
+  dividerAxisMax,
   frameIndexForLevel,
   frameIndexForContinuousLevel,
   frameIndexForScore,
@@ -149,6 +150,37 @@ function readLikedStore(): Record<string, boolean> {
 function writeLikedStore(next: Record<string, boolean>): Record<string, boolean> {
   try {
     localStorage.setItem(FLASH_SKIN_LIKED_KEY, JSON.stringify(next));
+  } catch {
+    // localStorage 不可用时仅本次会话生效。
+  }
+  return next;
+}
+
+// Per-session composite-score hold: remember the last *real* weighted score a
+// session produced so switching back to a stopped/idle session restores that
+// session's own actual score instead of collapsing to 0 (frame 0, the first
+// image). Keyed by session id → 0..1 score; negative/zero/NaN entries are
+// dropped so only meaningful scores are retained.
+const COMPOSITE_SCORE_KEY = "flash-skin:composite-score-by-session";
+
+function readCompositeScoreStore(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(COMPOSITE_SCORE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const out: Record<string, number> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === "number" && Number.isFinite(value) && value > 0) out[key] = value;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writeCompositeScoreStore(next: Record<string, number>): Record<string, number> {
+  try {
+    localStorage.setItem(COMPOSITE_SCORE_KEY, JSON.stringify(next));
   } catch {
     // localStorage 不可用时仅本次会话生效。
   }
@@ -323,6 +355,10 @@ interface RecorderProps {
   presenter: SkinPresenter;
   scope: PreferenceStore;
   settings: { level: number };
+  /** The conversation/session id this control is mounted in; used to persist
+   *  the per-session composite score so switched-to stopped sessions keep
+   *  showing their own actual score. */
+  sessionId?: string;
   /** Persisted, user-editable composite weights (shared with the config card). */
   weights: WeightsStore;
   /**
@@ -430,8 +466,9 @@ class SkinPresenter {
 
   private darkLevelForCurrentSet(): number {
     const value = this.groupConfigs[this.set.id]?.darkLevel;
-    if (value === undefined) return MAX_LEVEL - 1;
-    return Math.min(MAX_LEVEL, Math.max(0, Math.round(value)));
+    const max = dividerAxisMax(this.portraitsSources.length);
+    if (value === undefined) return Math.max(0, max - 1);
+    return Math.min(max, Math.max(0, Math.round(value)));
   }
 
   // Push an updated persisted config into the presenter: swap the current set's
@@ -603,17 +640,20 @@ class SkinPresenter {
     if (this.disposed) return;
     // Accept continuous values so a fine-grained slider can land on every
     // staged frame; the palette clamps internally and existing integer callers
-    // (composer rail, effort binding) are unchanged.
-    this.level = clampLevelContinuous(level);
+    // (composer rail, effort binding) are unchanged. The clamp eiis onto the
+    // active group's dynamic axis max, so a >MAX_LEVEL group holds values up
+    // to its own frame count.
+    this.level = clampLevelContinuous(level, dividerAxisMax(this.portraitsSources.length));
     if (this.enabled) this.applyPalette();
   }
 
   // The colour scheme follows the reasoning level the way dsh-liang-skin does:
-  // low levels keep the native light shell, and only the highest two stops
-  // (level 5 and 6) switch to the dark shell.
+  // low levels keep the native light shell, and only levels at/above the
+  // per-group dark threshold switch to the dark shell.
   private applyPalette() {
     if (this.disposed || !this.enabled) return;
-    const palette = paletteForLevel(this.level, this.darkLevelForCurrentSet());
+    const max = dividerAxisMax(this.portraitsSources.length);
+    const palette = paletteForLevel(this.level, this.darkLevelForCurrentSet(), max);
     const body = document.body;
     this.syncNativeTheme(palette.stage === 1 ? "dark" : "light");
     body.dataset.flashStage = String(palette.stage);
@@ -630,21 +670,22 @@ class SkinPresenter {
   private updatePortrait() {
     // The loader nearest-selects continuous staged frame levels, so a
     // fine-grained slider level can settle on every frame of the group; the
-    // composer's integer 0..MAX_LEVEL grip keeps snapping there, unchanged.
-    this.portraits.select(clampLevelContinuous(this.level));
+    // composer's integer grip spreads across the group's staged frame count
+    // (N+1 stops), unchanged.
+    this.portraits.select(clampLevelContinuous(this.level, dividerAxisMax(this.portraitsSources.length)));
   }
 
   /**
    * Composite mode: drive the portrait frame by a continuous normalized score
-   * (0..1) mapped directly onto the group's N frames. The palette level stays
-   * the integer 0..MAX_LEVEL grip; only the portrait advances freely so all N
-   * frames are reachable, not just the seven integer stops.
+   * (0..1) mapped directly onto the group's N frames. The palette level rides
+   * the same normalized score scaled to the group's frame-axis max, so all N
+   * frames are reachable, not just the integer stops of a fixed 0..MAX_LEVEL.
    */
   setPortraitScore(score: number) {
     if (this.disposed) return;
     if (!Number.isFinite(score)) return;
     const t = Math.min(1, Math.max(0, score));
-    this.portraits.select(t * MAX_LEVEL);
+    this.portraits.select(t * dividerAxisMax(this.portraitsSources.length));
   }
 
   /** Number of portrait frames currently staged for the active set (0 when none). */
@@ -713,6 +754,7 @@ function FlashLevelControl({
   useProjection,
   locale,
   t,
+  sessionId,
 }: RecorderProps) {
   const state = useSyncExternalStore(
     (listener) => directory.subscribe(listener),
@@ -736,9 +778,15 @@ function FlashLevelControl({
     ? MAX_LEVEL
     : levelForEffort(committedIndex, efforts.length);
   const driver = skin.driver;
+  // The level axis is dynamic: the slider spans the active group's staged
+  // frame count plus one (N+1 stops), and a set with no frames keeps the fixed
+  // 0..MAX_LEVEL baseline instead of collapsing the slider. Every consumer
+  // (slider value, palette light/dark switch, divider) shares this axis max so
+  // the datum is the same scale end to end.
+  const axisMax = Math.max(MAX_LEVEL, presenter.getPortraitCount());
   const [level, setLevel] = useState(() => {
     if (driver === "composite") return 0;
-    return clampLevel(settings.level);
+    return clampLevel(settings.level, axisMax);
   });
   const [interacting, setInteracting] = useState(false);
   const dragging = useRef(false);
@@ -750,10 +798,15 @@ function FlashLevelControl({
   }, [enabled, load]);
 
   useEffect(() => {
-    if (enabled) presenter.setLevel(level);
-    // The composite gauge is transient: it follows live signals and must never
-    // overwrite the level the user picked manually.
+    // Composite driver owns both the palette and the portrait through
+    // CompositeLevelControl (it maps the weighted score straight onto the
+    // portrait frames and drives the light/dark shell). Calling setLevel() here
+    // would run AFTER that component's mount effect (parent effects run last on
+    // mount) and force the portrait back to the first frame, overriding the
+    // stopped session's real score — so composite skips the level push entirely
+    // and never persists a durable level (composite has none).
     if (driver === "composite") return;
+    if (enabled) presenter.setLevel(level);
     try {
       localStorage.setItem(LEVEL_KEY, String(level));
     } catch {
@@ -763,12 +816,12 @@ function FlashLevelControl({
 
   if (!enabled) return null;
 
-  const progressRatio = Math.min(1, level / MAX_LEVEL);
+  const progressRatio = Math.min(1, level / axisMax);
   const readOnly = driver === "composite";
   // The grip spans the active group's staged frame count plus one (N+1 stops)
   // so every frame stays reachable; a set with no frames keeps the fixed
   // 0..MAX_LEVEL baseline instead of collapsing the slider.
-  const sliderMax = Math.max(MAX_LEVEL, presenter.getPortraitCount());
+  const sliderMax = axisMax;
 
   // Composite driver: hand the render off to a dedicated component that owns
   // the projection hooks — a separate component means the useProjection calls
@@ -785,6 +838,7 @@ function FlashLevelControl({
         enabled={enabled}
         locale={locale}
         t={t}
+        sessionId={sessionId}
       />
     );
   }
@@ -808,7 +862,7 @@ function FlashLevelControl({
 
   const commit = (rawLevel: number) => {
     dragging.current = false;
-    const next = clampLevel(rawLevel);
+    const next = clampLevel(rawLevel, axisMax);
     setLevel(next);
     presenter.setLevel(next);
   };
@@ -933,6 +987,7 @@ function CompositeLevelControl({
   enabled,
   locale,
   t,
+  sessionId,
 }: {
   useProjection: ProjectionApi;
   weights: WeightsStore;
@@ -942,6 +997,7 @@ function CompositeLevelControl({
   enabled: boolean;
   locale?: LocaleFaceLike | null;
   t?: (key: string) => string;
+  sessionId?: string;
 }) {
   const weightsSnapshot = useSyncExternalStore(
     (listener) => weights.subscribe(listener),
@@ -1083,22 +1139,41 @@ function CompositeLevelControl({
   const combined = wBase + compBonus;
   const compActive = compactionF > 0;
   // Idle-score hold: the host only surfaces projections for the *active*
-  // conversation, so switching to an idle set re-feeds no real usage/pressure/
-  // speed data and the raw weighted score would collapse to 0 (frame 0, the
-  // first image). Hold the last known positive composite score as a stable
-  // anchor: while any live source contributes (combined > 0) we keep syncing
-  // it in real time; once every source drops away (combined == 0, i.e. we are
-  // looking at an idle session with no live data) the displayed score stays
-  // pinned at the last known value instead of jumping back to the first frame.
-  // The portrait/palette ride `displayScore`; the true live `combined` still
-  // feeds fresh syncs the moment a source comes back.
-  const lastKnownScoreRef = useRef<number>(0);
-  if (Number.isFinite(combined) && combined > 0) {
-    lastKnownScoreRef.current = combined;
-  }
-  const displayScore = Number.isFinite(combined) && combined > 0
+  // conversation, so switching to a stopped/idle session re-feeds no real
+  // usage/pressure/speed data and the raw weighted score would collapse to 0
+  // (frame 0, the first image). Each session's last real composite score is
+  // persisted per-session (see COMPOSITE_SCORE_KEY); while any live source
+  // contributes (combined > 0) we keep syncing it in real time and write it
+  // through for this session; once every source drops away (combined == 0,
+  // i.e. we are looking at a stopped session with no live data) the displayed
+  // score is restored from that session's own persisted value instead of
+  // jumping back to the first frame. The portrait/palette ride
+  // `displayScore`; the true live `combined` still feeds fresh syncs the
+  // moment a source comes back.
+  const compositeScoresRef = useRef<Record<string, number> | null>(null);
+  const compositeScores = () => {
+    if (compositeScoresRef.current === null) {
+      compositeScoresRef.current = readCompositeScoreStore();
+    }
+    return compositeScoresRef.current;
+  };
+  const hasLive = Number.isFinite(combined) && combined > 0;
+  // Persist this session's last real composite score while live signals are
+  // present, so a later switch back to this (now stopped) session restores its
+  // own actual score instead of collapsing to frame 0. Writes are idempotent.
+  useEffect(() => {
+    if (!sessionId || !(Number.isFinite(combined) && combined > 0)) return;
+    const scores = compositeScores();
+    if (scores[sessionId] !== combined) {
+      scores[sessionId] = combined;
+      writeCompositeScoreStore(scores);
+    }
+  }, [sessionId, combined]);
+  const displayScore = hasLive
     ? combined
-    : lastKnownScoreRef.current;
+    : sessionId
+      ? compositeScores()[sessionId] ?? 0
+      : 0;
 
   const lastLevelRef = useRef(-1);
 
@@ -2216,12 +2291,15 @@ async function uploadArchiveImages(entries: ZipImageEntry[]): Promise<string[]> 
 }
 
 // The light/dark boundary for a group: with `count` images there are
-// `count + 1` boundaries, and darkLevel (0..MAX_LEVEL) is the slider stop at
-// which the set goes dark, so the boundary position maps linearly onto the
-// slider stops.
+// `count + 1` boundaries. darkLevel rides the same dynamic axis max as the
+// slider (max(MAX_LEVEL, count)) and is the slider stop at which the set goes
+// dark, so the boundary position maps the axis level linearly onto the group's
+// frame slots. For a group with more frames than MAX_LEVEL this makes each stop
+// land exactly on a frame; a smaller group keeps the classic proportional grid.
 function boundaryForDarkLevel(count: number, level: number): number {
   if (count <= 0) return 0;
-  return Math.min(count, Math.max(0, Math.round((level / MAX_LEVEL) * count)));
+  const axis = dividerAxisMax(count);
+  return Math.min(count, Math.max(0, Math.round((level / axis) * count)));
 }
 
 // When「Flash皮肤插件配置」opens the plugin-manager detail page, the host cannot
@@ -4408,6 +4486,7 @@ export function apply(ctx: ClientContext) {
         settings: { level: readLevel() },
         locale: ctx.locale,
         t: setLabel,
+        sessionId,
         load: () => {
           if (available) void directory.load().catch(() => undefined);
         },

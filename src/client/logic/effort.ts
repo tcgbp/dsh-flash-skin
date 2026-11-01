@@ -23,6 +23,19 @@ export function clampLevelContinuous(value: number): number {
 }
 
 /**
+ * The effective width of the slider/portrait axis for a `count`-frame group:
+ * the group's own frame count when it exceeds the fixed MAX_LEVEL stops, else
+ * the classic 0..MAX_LEVEL baseline. Every consumer (slider value, palette
+ * light/dark switch, portrait frame, light/dark divider) normalizes against
+ * this axis so a group with more frames than MAX_LEVEL keeps every frame
+ * reachable instead of collapsing to the baseline.
+ */
+export function dividerAxisMax(count: number): number {
+  const safe = Number.isFinite(count) && count > 1 ? Math.floor(count) : 0;
+  return Math.max(MAX_LEVEL, safe);
+}
+
+/**
  * How far one arrow click moves the light/dark divider for a `count`-frame
  * group. `darkLevel` is an integer slider stop in 0..MAX_LEVEL, so every press
  * advances exactly one integer stop regardless of the frame count.

@@ -128,8 +128,12 @@ describe("normalizeImportMeta (zh/en required, sanitization like commitField)", 
     expect(normalizeImportMeta({})).toBeNull();
   });
 
-  it("clamps darkLevel into 0..MAX_LEVEL and rounds", () => {
-    expect(normalizeImportMeta({ zh: "组", en: "Set", darkLevel: 999 })?.darkLevel).toBe(MAX_LEVEL);
+  it("rounds non-negative darkLevel and does not cap at MAX_LEVEL (large frame axes round-trip)", () => {
+    // Values above MAX_LEVEL are preserved (Math.max(0, round); no MAX_LEVEL
+    // cap) so a group with more frames than MAX_LEVEL keeps its exact threshold
+    // through export→import; the config card re-clamps against the group's own
+    // frame axis when it lands, and clears out-of-range negatives.
+    expect(normalizeImportMeta({ zh: "组", en: "Set", darkLevel: 999 })?.darkLevel).toBe(999);
     expect(normalizeImportMeta({ zh: "组", en: "Set", darkLevel: -3 })?.darkLevel).toBe(0);
     expect(normalizeImportMeta({ zh: "组", en: "Set", darkLevel: 3.4 })?.darkLevel).toBe(3);
     expect(normalizeImportMeta({ zh: "组", en: "Set", darkLevel: Number.NaN })).toEqual({ zh: "组", en: "Set" });
@@ -264,13 +268,16 @@ describe("buildPortraitManifest (export side of the round-trip)", () => {
     });
   });
 
-  it("falls zh/en back to name then id, and clamps darkLevel", () => {
+  it("falls zh/en back to name then id, and preserves a non-negative darkLevel (no MAX_LEVEL cap)", () => {
+    // On the dynamic frame axis a group can legitimately hold a darkLevel above
+    // MAX_LEVEL (e.g. a 99-frame set). The round trip must preserve it — the
+    // config card clamps against the imported group's own axis when it lands.
     const withName = buildPortraitManifest({ id: "liangsheng", name: "Liang the Saint", darkLevel: 99 });
     expect(parseImportMetaText(withName)).toEqual({
       id: "liangsheng",
       zh: "Liang the Saint",
       en: "Liang the Saint",
-      darkLevel: 6,
+      darkLevel: 99,
     });
 
     const withId = buildPortraitManifest({ id: "liangsheng", name: "" });

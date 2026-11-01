@@ -276,11 +276,14 @@ export const Config = z.object({
       id: z.string().min(1).required(),
       name: z.string().min(1).required(),
       images: z.array(z.string().min(1)).default([]),
-      // Optional per-group divider threshold: an integer slider stop in
-      // 0..MAX_LEVEL (7 stops). Object fields are optional unless
-      // `.required()`, so an absent value resolves to the default threshold
-      // (MAX_LEVEL - 1), keeping older persisted configs working unchanged.
-      darkLevel: z.natural().max(6),
+      // Optional per-group divider threshold: a non-negative integer slider
+      // stop on the group's dynamic frame axis (0..imageCount, with groups
+      // under the fixed floor keeping 0..MAX_LEVEL). It is not capped at
+      // MAX_LEVEL here because a group with more frames than that floor stores
+      // a value up to its own frame count; the client clamps against the actual
+      // frame axis at render/commit time, so an unconstrained non-negative
+      // integer keeps the export→import round trip stable.
+      darkLevel: z.natural(),
       // Optional bilingual display names, editable from the plugin detail page.
       // Absent values fall back to `name` / the other language at render time,
       // so pre-bilingual persisted configs keep working unchanged.

@@ -65,15 +65,19 @@ describe("Config schema (plugin activation contract)", () => {
     });
   });
 
-  it("accepts integer darkLevel thresholds in range and rejects non-integer or out-of-range ones", () => {
-    // `darkLevel` is a slider stop in 0..MAX_LEVEL (7 stops) and must be an
-    // integer; values outside the range, non-numbers, or non-integers fail.
+  it("accepts non-negative integer darkLevel thresholds (no MAX_LEVEL cap) and rejects non-integer or negative ones", () => {
+    // `darkLevel` is an integer slider stop on the group's dynamic frame axis
+    // (0..frameCount) and must be a non-negative integer. There is no MAX_LEVEL
+    // cap because a group with more frames than MAX_LEVEL stores a threshold up
+    // to its own frame count; the client clamps against the real axis at
+    // render/commit time. Non-integers, negatives and non-numbers still fail.
     expect(() => Config({ portraitGroups: [{ id: "a", name: "A", darkLevel: 5 }] })).not.toThrow();
     expect(() => Config({ portraitGroups: [{ id: "a", name: "A", darkLevel: 0 }] })).not.toThrow();
     expect(() => Config({ portraitGroups: [{ id: "a", name: "A", darkLevel: 6 }] })).not.toThrow();
+    expect(() => Config({ portraitGroups: [{ id: "a", name: "A", darkLevel: 7 }] })).not.toThrow();
+    expect(() => Config({ portraitGroups: [{ id: "a", name: "A", darkLevel: 64 }] })).not.toThrow();
     expect(() => Config({ portraitGroups: [{ id: "a", name: "A", darkLevel: 2.667 }] })).toThrow();
     expect(() => Config({ portraitGroups: [{ id: "a", name: "A", darkLevel: -1 }] })).toThrow();
-    expect(() => Config({ portraitGroups: [{ id: "a", name: "A", darkLevel: 7 }] })).toThrow();
     expect(() => Config({ portraitGroups: [{ id: "a", name: "A", darkLevel: "3" }] })).toThrow();
   });
 });

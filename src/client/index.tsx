@@ -693,7 +693,7 @@ class SkinPresenter {
     return this.portraitsSources.length;
   }
 
-  syncNativeTheme(theme: NativeThemeId = paletteForLevel(this.level, this.darkLevelForCurrentSet()).stage === 1 ? "dark" : "light") {
+  syncNativeTheme(theme: NativeThemeId = paletteForLevel(this.level, this.darkLevelForCurrentSet(), dividerAxisMax(this.portraitsSources.length)).stage === 1 ? "dark" : "light") {
     if (!this.enabled) return;
     const preference = this.theme.getTheme().preference;
     if (preference === theme) return;
@@ -1182,16 +1182,19 @@ function CompositeLevelControl({
   }, [enabled, load]);
 
   useEffect(() => {
-    // The level ride the same held score as the portrait: while live signals
-    // feed a real combined value we map that straight to a 0..MAX_LEVEL stop;
-    // once the sources drop away (idle session) we stay pinned on the last
-    // known score instead of collapsing to 0/first frame. Clamped so the
-    // 压缩-bonus can never push past MAX_LEVEL.
+    // The level rides the same held score as the portrait: while live signals
+    // feed a real combined value we map that straight onto the group's dynamic
+    // frame-axis stop (max(MAX_LEVEL, count)); once the sources drop away
+    // (idle session) we stay pinned on the last known score instead of
+    // collapsing to 0/first frame. Clamped so the 压缩-bonus can never push past
+    // the axis max. The shell switch, portrait frame and slider all share this
+    // one scale.
+    const axisMax = dividerAxisMax(presenter.getPortraitCount());
     const next = Math.max(
       0,
-      Math.min(MAX_LEVEL, Math.round(displayScore * MAX_LEVEL)),
+      Math.min(Math.max(axisMax, 1), Math.round(displayScore * axisMax)),
     );
-    // Palette rides the rounded 0..MAX_LEVEL grip (light/dark shell decision);
+    // Palette rides the rounded frame-axis grip (light/dark shell decision);
     // only ever push it when the integer stop actually changes.
     if (lastLevelRef.current !== next) {
       lastLevelRef.current = next;
@@ -1199,7 +1202,8 @@ function CompositeLevelControl({
     }
     if (presenter.isEnabled()) {
       // Portrait rides the held composite score, mapped straight onto the
-      // group's N frames — so all N are reachable, not just the 7 stops.
+      // group's N frames — so all N are reachable, not just the stops of a
+      // fixed 0..MAX_LEVEL.
       presenter.setPortraitScore(displayScore);
     }
   }, [
@@ -2671,7 +2675,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
   // between images, after the last image at the far-right edge, or as a
   // still-usable placeholder on a brand-new (image-less) group so the
   // threshold control is always present and adjustable.
-  const renderDivider = (dividerKey: string | number, groupIndex: number, effectiveDark: number) => (
+  const renderDivider = (dividerKey: string | number, groupIndex: number, effectiveDark: number, frameCount: number) => (
     <li
       key={dividerKey}
       className="flash-portrait-group__divider"
@@ -2692,7 +2696,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
         type="button"
         className="flash-portrait-group__divider-arrow"
         aria-label={t("dividerRight")}
-        disabled={!writable || busy || effectiveDark >= MAX_LEVEL}
+        disabled={!writable || busy || effectiveDark >= dividerAxisMax(frameCount)}
         onClick={() => stepDivider(groupIndex, +1)}
       >
         ▶
@@ -2930,7 +2934,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
       name: zh,
       zh,
       en,
-      darkLevel: clampLevel(meta?.darkLevel ?? MAX_LEVEL - 1),
+      darkLevel: clampLevel(meta?.darkLevel ?? MAX_LEVEL - 1, dividerAxisMax(images.length)),
       images,
     }];
     void commit(next);
@@ -3449,7 +3453,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
                   return (
                     <Fragment key={imageIndex}>
                       {imageIndex === boundary && count > 0 && (
-                        renderDivider(imageIndex, groupIndex, effectiveDark)
+                        renderDivider(imageIndex, groupIndex, effectiveDark, count)
                       )}
                       <li className="flash-portrait-group__image">
                       {editingReplace ? (
@@ -3565,7 +3569,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
                   // the divider at the head of the add-slot, so the light/dark
                   // threshold control stays visible and adjustable for every group.
                   return boundaryForDarkLevel(count, effectiveDark) >= count
-                    ? renderDivider(count, groupIndex, effectiveDark)
+                    ? renderDivider(count, groupIndex, effectiveDark, count)
                     : null;
                 })()}
                 {editingAdd ? (

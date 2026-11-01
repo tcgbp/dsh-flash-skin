@@ -55,7 +55,11 @@ export function normalizeImportMeta(raw: unknown): PortraitImportMeta | null {
   // Accept both camelCase (`darkLevel`) and kebab-case (`dark-level`) keys.
   const levelField = typeof src["dark-level"] === "number" ? src["dark-level"] : src.darkLevel;
   if (typeof levelField === "number" && Number.isFinite(levelField)) {
-    meta.darkLevel = clampLevel(levelField);
+    // Round to a non-negative integer WITHOUT capping at MAX_LEVEL: a group
+    // with more frames than MAX_LEVEL exports a darkLevel up to its own frame
+    // count, and clamping here would flatten the round-trip value. The config
+    // card re-clamps against the imported group's own axis when it lands.
+    meta.darkLevel = Math.max(0, Math.round(levelField));
   }
   // Optional image-URL list. URLs are trimmed, blanks dropped, duplicates
   // collapsed and the list capped at PORTRAIT_IMPORT_MAX_IMAGES so an oversized
@@ -265,7 +269,12 @@ export function buildPortraitManifest(group: PortraitGroupManifestSource): strin
   const fallback = group.name || id || "group";
   const zh = (group.zh ?? "").trim() || fallback;
   const en = (group.en ?? "").trim() || fallback;
-  const darkLevel = clampLevel(group.darkLevel ?? MAX_LEVEL - 1);
+  // Only round non-negative without capping at MAX_LEVEL: an exported group may
+  // carry a darkLevel above MAX_LEVEL when it has more frames than the fixed
+  // axis, and flattening it here would break the export→import round trip.
+  const darkLevel = group.darkLevel === undefined
+    ? clampLevel(MAX_LEVEL - 1)
+    : Math.max(0, Math.round(group.darkLevel));
   return [
     "# Portrait archive exported by dsh-flash-skin",
     "# Re-importing this archive recreates the portrait group below.",

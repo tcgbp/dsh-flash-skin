@@ -20,6 +20,7 @@ import {
   frameIndexForContinuousLevel,
   frameIndexForScore,
   dividerStepFor,
+  dividerAxisMax,
   nextDividerLevel,
 } from "../src/client/logic.ts";
 
@@ -493,14 +494,18 @@ describe("light/dark divider reachability (dividerStepFor)", () => {
     expect(dividerStepFor(Infinity)).toBe(1);
   });
 
-  it("darkLevel always stays an integer in 0..MAX_LEVEL across arrow presses", () => {
-    for (const start of [0, 2, MAX_LEVEL]) {
+  it("darkLevel always stays an integer in 0..dividerAxisMax(count) across arrow presses", () => {
+    // `dividerAxisMax` is the dynamic frame-axis ceiling: max(MAX_LEVEL, count).
+    // For a 9-frame group it is 9, so levels may rise above MAX_LEVEL as long as
+    // they stay on the group's own axis and never regress past the ends.
+    const axis = dividerAxisMax(9);
+    for (const start of [0, 2, axis]) {
       let level = start;
       for (let presses = 0; presses < 40; presses += 1) {
         level = nextDividerLevel(level, 1, 9);
         expect(Number.isInteger(level)).toBe(true);
         expect(level).toBeGreaterThanOrEqual(0);
-        expect(level).toBeLessThanOrEqual(MAX_LEVEL);
+        expect(level).toBeLessThanOrEqual(axis);
       }
     }
   });

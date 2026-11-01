@@ -34,12 +34,21 @@ conversation UI:
 - **Portrait-driven appearance.** A fixed background layer
   (`.flash-skin-backdrop`) shows character portraits that swap as the level
   slider moves; low slider levels keep the native light shell, and only the
-  **highest two levels (slider 5 and 6 of the 0..6 slider)** switch to the dark
-  shell. The slider exposes **7 stops** (`MAX_LEVEL = 6`); each portrait group
-  lists its frames in rank order, staged across the levels by the count-driven
-  `stagedFrames()` helper. No portrait art ships on disk: the original three
-  sets (梁圣/梁神/梁祖) are importable example archives, and an untouched install
-  falls back to a single image-less `default` identity (flat shell).
+  **highest levels switch to the dark shell**. The level axis is **dynamic**:
+  it spans `0..axisMax` where `axisMax = dividerAxisMax(count) =
+  max(MAX_LEVEL, count)` and `count` is the active portrait group's frame count
+  (a group with more frames than the `MAX_LEVEL = 6` floor widens the axis to
+  its own frame count, so every frame is slide-reachable; an image-less set
+  keeps the fixed `0..MAX_LEVEL` baseline instead of collapsing the slider).
+  Each portrait group lists its frames in rank order, staged across the levels
+  by the count-driven `stagedFrames(count, axisMax)` helper, and **every
+  consumer (slider value, palette light/dark switch, divider `darkLevel`) shares
+  that same dynamic axis** — do not stage or compare against a fixed
+  `0..MAX_LEVEL` scale, or a group with more frames than `MAX_LEVEL` locks its
+  background on the last frame while the shell keeps toggling. No portrait art
+  ships on disk: the original three sets (梁圣/梁神/梁祖) are importable example
+  archives, and an untouched install falls back to a single image-less
+  `default` identity (flat shell).
 - **Persisted settings.** Inputs (level, active set, bind-effort, portrait
   groups) persist through `ctx.settings`/localStorage; the config card is keyed
   by the bundle npm name `dsh-flash-skin` under namespace `flash-skin`.
@@ -81,10 +90,16 @@ reflects the change, then re-run `npm test`.
 - `src/client/index.tsx` — main bundle. `SkinPresenter` owns the backdrop,
   theme switching (`syncNativeTheme`), palette application (`applyPalette`),
   and config-form / settings slots.
-- `src/client/logic.ts` — pure level/palette math: `MAX_LEVEL = 6`,
-  `PORTRAIT_MAX_LEVEL = 30`, `LIGHT`/`DARK` palettes, `paletteForLevel`
-  (binary: `dark = level >= MAX_LEVEL - 1`), `FROZEN_PALETTE` (registration
-  source only), `levelForEffort`, `selectedEffortIndex`, `nearestEffortIndex`.
+- `src/client/logic/*` — pure level/palette math, re-exported through
+  `src/client/logic.ts`: `constants.ts` (`MAX_LEVEL = 6`, the fixed floor),
+  `effort.ts` (`clampLevel`, `clampLevelContinuous`, `dividerAxisMax(count) =
+  max(MAX_LEVEL, count)`, `nextDividerLevel`, `levelForEffort`),
+  `frames.ts` (`stagedFrames(count, maxLevel = MAX_LEVEL)`,
+  `frameIndexForLevel`, `frameIndexForContinuousLevel`, `frameIndexForScore`),
+  `palette.ts` (`LIGHT`/`DARK`, `FROZEN_PALETTE`), and `composite.ts`
+  (weighted multi-signal level). `paletteForLevel` is binary over the shared
+  **dynamic** axis (`dark = level >= darkAt`, where `darkAt` defaults to
+  `maxLevel - 1`) — it is never hard-capped to `MAX_LEVEL`.
 - `src/client/skin.css` — all skin CSS. Inject via CSS-module import; do not
   add inline `<style>` duplicates.
 - `src/client/appearance.ts` — native appearance-extension wiring.
@@ -115,17 +130,23 @@ These were explicit user requirements. Keep them intact and gated:
 
 ## Theme / palette model
 
-- `paletteForLevel` switches the **binary UI scheme**:
-  - slider levels 0–4 → **light** (native Harness light shell)
-  - slider levels 5–6 → **dark**
+- `paletteForLevel` switches the **binary UI scheme**. The light/dark flip is
+  governed by the **dynamic** divider axis shared by every consumer:
+  - for a group on the default `0..MAX_LEVEL` scale: slider levels 0–4 →
+    **light** (native Harness light shell), levels 5–6 → **dark**
+  - for a group with more frames than `MAX_LEVEL`, the axis widens to
+    `0..dividerAxisMax(count)` and the shell flips at the group's configured
+    `darkLevel` stop on that same scale (never cap at `MAX_LEVEL`).
 - `applyPalette(level)` sets the 7 `--flash-*` CSS vars on `<body>`, sets
   `body.dataset.flashStage` (0/1), and calls
   `syncNativeTheme("light" | "dark")`.
 - `syncNativeTheme` guards against trampling an active flash palette (via
   `isFlashThemeId`/`flashThemeIdForSet`) — never switch the native theme while
   a registered flash appearance is active.
-- The portrait frame always advances with the level
-  (`this.portraits.select(Math.round(scale * PORTRAIT_MAX_LEVEL))`).
+- The portrait frame always advances with the level through the shared dynamic
+  axis (`updatePortrait` → `portraits.select(clampLevelContinuous(level,
+  dividerAxisMax(count)))`), so the displayed frame and the shell flip agree
+  with the slider on the same scale.
 
 ## Conventions
 

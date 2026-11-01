@@ -265,9 +265,9 @@ function setDisplayName(set: { id?: string; name?: string; zh?: string; en?: str
 
 // Resolve the full ordered frame list for a portrait set, for the general
 // settings preview strip. Configured groups expose their whole image list,
-// mapped onto the 0..MAX_LEVEL slider by the count-driven stagedFrames()
-// helper. Returns [] when the set has nothing to show yet (e.g. a brand-new
-// image-less group, or the untouched default set).
+// staged across the shared dynamic level axis by the count-driven
+// stagedFrames() helper. Returns [] when the set has nothing to show yet (e.g.
+// a brand-new image-less group, or the untouched default set).
 function setFrames(set: PortraitGroupConfig | DefaultPortraitSet): string[] {
   const configuredImages = (set as PortraitGroupConfig).images;
   return Array.isArray(configuredImages) ? configuredImages.slice() : [];
@@ -457,8 +457,8 @@ class SkinPresenter {
   // <body>; the skin.css left-align rules activate only while this is ON.
   private layout = restoreLayout();
   // Per-group config mirrored from the persisted config card. images drive the
-  // portrait sequence; darkLevel (absent → MAX_LEVEL - 1) drives the flip to
-  // the dark shell.
+  // portrait sequence; darkLevel (absent → the top stop, axisMax - 1) drives
+  // the flip to the dark shell, on the same dynamic axis as the slider.
   private groupConfigs: Record<string, { images: string[]; darkLevel?: number }> = {};
   private portraitsSources: readonly PortraitSource[] = [];
   private disposed = false;
@@ -1666,8 +1666,10 @@ interface PortraitGroupConfig {
   /** 英文显示名（界面为英文时优先）。 */
   en?: string;
   images: string[];
-  // Per-group slider level (0..MAX_LEVEL) at which this set flips to the dark
-  // shell. Absent means the default threshold (MAX_LEVEL - 1).
+  // Per-group slider stop (0..dividerAxisMax(group frame count)) at which this
+  // set flips to the dark shell. Absent means the default threshold
+  // (MAX_LEVEL - 1 on the baseline scale). Never capped at MAX_LEVEL for a
+  // group with more frames than that floor.
   darkLevel?: number;
 }
 
@@ -2666,8 +2668,9 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
 
   // Click-driven threshold: move the light/dark boundary with the left/right
   // arrows that flank the divider. No mouse drag. `darkLevel` is an integer
-  // slider stop in 0..MAX_LEVEL (persisted as-is); each press advances one
-  // integer stop via `nextDividerLevel`, and its boundary is clamped.
+  // slider stop on the shared dynamic axis 0..dividerAxisMax(group frame count)
+  // (persisted as-is); each press advances one integer stop via
+  // `nextDividerLevel`, and its boundary is clamped on that same dynamic scale.
   const stepDivider = (groupIndex: number, delta: -1 | 1) => {
     if (!writable || busy) return;
     const group = groups[groupIndex];
@@ -4194,12 +4197,18 @@ export function apply(ctx: ClientContext) {
       min: 0,
       max,
       step: 1,
-      getValue: () => frameIndexForContinuousLevel(presenter.getLevel(), presenter.getPortraitCount()),
+      getValue: () => frameIndexForContinuousLevel(
+        presenter.getLevel(),
+        presenter.getPortraitCount(),
+        dividerAxisMax(presenter.getPortraitCount()),
+      ),
       setValue: (value) => {
         const c = presenter.getPortraitCount();
         if (c < 2) return;
         const index = Math.min(c - 1, Math.max(0, Math.round(Number(value) || 0)));
-        const next = stagedFrames(c)[index] ?? 0;
+        // Stage on the same dynamic axis the presenter/sources use, so the
+        // panel slider and the background portrait pick the identical frames.
+        const next = stagedFrames(c, dividerAxisMax(c))[index] ?? 0;
         presenter.setLevel(next);
         try {
           localStorage.setItem(LEVEL_KEY, String(next));

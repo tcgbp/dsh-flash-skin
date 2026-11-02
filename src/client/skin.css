@@ -67,6 +67,15 @@ html[data-windows-titlebar] body[data-flash-skin="on"] #root [class*="_frame"]:h
   background: transparent !important;
 }
 
+/* Keep the right-hand column an opaque, skin-toned surface so the portrait
+   only shows through the center column. Applies in both the web shell and the
+   desktop host (the preceding :has() rule makes the whole frame transparent,
+   which would otherwise bleed the backdrop behind the rightbar too). The left
+   sidebar keeps its own native surface. */
+body[data-flash-skin="on"] #root [class*="_rightbarCol"] {
+  background: var(--flash-surface, #f5f6f8) !important;
+}
+
 /* In desktop modes the host owns a top frame (caption/controls); offset the
    fixed backdrop below it so the portrait isn't hidden under the frame. */
 body[data-flash-skin="on"]:is(

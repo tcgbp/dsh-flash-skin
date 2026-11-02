@@ -1043,6 +1043,17 @@ body[data-flash-skin="on"][data-flash-layout="left"] [class*="_heroWorkspaceRow"
   padding-left: 0 !important;
 }
 
+/* 4c) 「+ 命令按钮 → 权限/模式下拉」之间的行内间距。
+ *     原生 .uV2eYG_tools{gap:12px}（容器 ≤560px 时收窄为 8px），叠加 + 按钮
+ *     内图标的自身内缩，视觉上在 + 与权限下拉之间留下一段明显空白。这里仅把
+ *     该行内部 gap 收窄到 4px，让 + 与下拉真正贴合；+ 按钮的左缘及其与输入卡
+ *     左缘的原生对齐完全保持（行内边距 8px 未动），不做任何位移/重排。仅作用
+ *     于左对齐布局，且限定在输入卡内（避开配置卡等其它同名 *_tools 节点）。
+ */
+body[data-flash-skin="on"][data-flash-layout="left"] [class*="_root"] > [class*="_card"] [class*="_tools"] {
+  gap: 4px !important;
+}
+
 /* 5) todo 任务栏与内容列一起居左。
  *    TodoPanel 挂载在 conversation.input.dock，与输入卡同处
  *    [class*="_composerStack"]；原生其根加了 margin:0 auto 居中。
@@ -1053,8 +1064,12 @@ body[data-flash-skin="on"][data-flash-layout="left"] [class*="_heroWorkspaceRow"
  *    注：todo 根与输入卡根同为 *_root，但 todo 根不含直接 _card 子节点，
  *    用「composerStack 内非卡片 _root」跨构建定位，不再依赖单次编译的哈希前缀
  *    （与第 4 段输入卡根的定位方式对称互补，二者在栈内互斥）。
+ *    陷阱：菜单（Menu）组件的包装层类名形如 _root_<hash>_<n>，同样含 "_root"，
+ *    且存在于输入卡内部（权限下拉、模型选择等每一下拉各有一个）。若只按
+ *    "_root 且不含 _card 子节点" 匹配，会把它们一并左移 72px，在 `+` 与权限
+ *    下拉之间撑出一大段空白。故再排除「输入卡内部」的 _root，只留栈内面板根。
  */
-body[data-flash-skin="on"][data-flash-layout="left"] [class*="_composerStack"] [class*="_root"]:not(:has(> [class*="_card"])) {
+body[data-flash-skin="on"][data-flash-layout="left"] [class*="_composerStack"] [class*="_root"]:not(:has(> [class*="_card"])):not([class*="_card"] *) {
   margin-left: calc(
     var(--dsh-composer-side-clearance, 16px) + 16px
     + var(--dsh-flash-timeline-gutter, 50px)
@@ -1109,7 +1124,6 @@ body[data-flash-skin="on"][data-flash-layout="left"] [class*="_toBottomSlot"] {
     - var(--dsh-chat-content-width)
   ) !important;
 }
-
 
 /* 8) 强度驱动模式选择行（DriverRow）。
  *    手动 / 综合加权 的两段选择。自 dsh-client-ui-primitives 的宿主原生

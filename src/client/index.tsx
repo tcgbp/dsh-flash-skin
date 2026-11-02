@@ -601,10 +601,14 @@ class SkinPresenter {
 
   // Mirror the skin on/off body-attribute pattern: `data-flash-layout="left"`
   // activates the gated left-align rules; removing it returns to native.
-  // Desktop (Electron) doesn't support left-align, so never stamp the gate there.
+  // The left-align rules in skin.css (timeline gutter, width handles, composer
+  // card, hero workspace, todo/queue docks) target this attribute directly and
+  // apply in every host, including desktop (Electron) — only ever our own CSS
+  // gate, no host coupling. A desktop top frame is offset separately via
+  // `data-dsh-desktop-mode` in skin.css and is unaffected.
   private applyLayout() {
     if (this.disposed) return;
-    if (this.enabled && this.layout && !desktopMode())
+    if (this.enabled && this.layout)
       document.body.dataset.flashLayout = "left";
     else document.body.removeAttribute("data-flash-layout");
   }
@@ -4359,9 +4363,11 @@ export function apply(ctx: ClientContext) {
           presenter.setLayout(Boolean(value));
           quickControl?.notifyChange?.(LAYOUT_SWITCH_ID);
         },
-        // 桌面版不提供居左对齐（宿主自带兼容/扩展两种桌面形态，layout 覆盖在
-        // Electron 外壳下不适用），直接在皮肤里隐藏该项。
-        visible: () => presenter.isEnabled() && !desktopMode(),
+        // Offered in every host, desktop included: the left-align gate is this
+        // skin's own CSS (`data-flash-layout`) and applies under the Electron
+        // shell too. The desktop top-frame offset is handled separately in
+        // skin.css via `data-dsh-desktop-mode` and is not affected.
+        visible: () => presenter.isEnabled(),
       });
       // the select at 26 and the open-details action at 27): it switches the
       // ACTIVE person's level and gives one stop per frame of that group, so

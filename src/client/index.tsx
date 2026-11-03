@@ -62,7 +62,16 @@ const LEVEL_KEY = "dsh-flash-skin.level";
 const SET_KEY = "dsh-flash-skin.set";
 const DRIVER_KEY = "dsh-flash-skin.driver";
 const LAYOUT_KEY = "dsh-flash-skin.layout-left";
+// Blend strength (%) of the translucent background chip behind chat text.
+// Persisted so the readability scrim keeps a user-tuned opacity across reloads,
+// consumed by skin.css via `--flash-text-bg-strength` on <body>.
+const TEXT_BG_KEY = "dsh-flash-skin.text-bg-strength";
 const WEIGHTS_KEY = "dsh-flash-skin.weights";
+
+// Default and allowed range for the text-background blend strength (%).
+const DEFAULT_TEXT_BG_STRENGTH = 80;
+const TEXT_BG_MIN = 40;
+const TEXT_BG_MAX = 100;
 
 // Desktop-host detection. The desktop version is a real Electron app (its
 // resources ship as app.asar + Electron PE/runtime DLLs), while the web GUI
@@ -445,6 +454,7 @@ const cssVariables = [
   "--flash-mask-base",
   "--flash-mask-strong",
   "--flash-mask-soft",
+  "--flash-text-bg-strength",
 ] as const;
 
 class SkinPresenter {
@@ -459,6 +469,10 @@ class SkinPresenter {
   // Left-aligned layout gate (persisted). Drives `data-flash-layout` on
   // <body>; the skin.css left-align rules activate only while this is ON.
   private layout = restoreLayout();
+  // Text-background blend strength (%) (persisted). Drives the
+  // `--flash-text-bg-strength` custom property on <body>; skin.css feeds it
+  // into the `color-mix` fill of the chat-text readability chip.
+  private textBgStrength = restoreTextBg();
   // Per-group config mirrored from the persisted config card. images drive the
   // portrait sequence; darkLevel (absent → the top stop, axisMax - 1) drives
   // the flip to the dark shell, on the same dynamic axis as the slider.
@@ -617,6 +631,31 @@ class SkinPresenter {
     else document.body.removeAttribute("data-flash-layout");
   }
 
+  getTextBg(): number {
+    return this.textBgStrength;
+  }
+
+  setTextBg(strength: number) {
+    if (this.disposed) return;
+    this.textBgStrength = Math.min(TEXT_BG_MAX, Math.max(TEXT_BG_MIN, Math.round(strength)));
+    try {
+      localStorage.setItem(TEXT_BG_KEY, String(this.textBgStrength));
+    } catch {
+      // storage may be unavailable
+    }
+    this.applyTextBg();
+  }
+
+  // Mirror the palette body-variable pattern: `--flash-text-bg-strength`
+  // carries the current chip strength to skin.css; removing it restores the
+  // CSS default (80%). Only ever this skin's own CSS variable — no host coupling.
+  private applyTextBg() {
+    if (this.disposed) return;
+    if (this.enabled)
+      document.body.style.setProperty("--flash-text-bg-strength", `${this.textBgStrength}%`);
+    else document.body.style.removeProperty("--flash-text-bg-strength");
+  }
+
   setPortraitSet(set: PortraitSet) {
     if (this.disposed || set.id === this.set.id) return;
     this.set = set;
@@ -639,6 +678,7 @@ class SkinPresenter {
       if (!this.root.isConnected) document.body.prepend(this.root);
       document.body.dataset.flashSkin = "on";
       this.applyLayout();
+      this.applyTextBg();
       this.applyPalette();
       this.portraits.start();
     } else {
@@ -648,6 +688,7 @@ class SkinPresenter {
       this.root.dataset.media = "color";
       document.body.removeAttribute("data-flash-skin");
       this.applyLayout();
+      this.applyTextBg();
       for (const name of cssVariables) document.body.style.removeProperty(name);
     }
   }
@@ -1469,6 +1510,20 @@ function restoreLayout(): boolean {
     // storage may be unavailable
   }
   return true;
+}
+
+// Restore the text-background blend strength (%). Defaults to DEFAULT_TEXT_BG_STRENGTH;
+// a present but non-numeric / out-of-range value snaps back to the default.
+function restoreTextBg(): number {
+  try {
+    const raw = Number(localStorage.getItem(TEXT_BG_KEY));
+    if (Number.isFinite(raw)) {
+      return Math.min(TEXT_BG_MAX, Math.max(TEXT_BG_MIN, Math.round(raw)));
+    }
+  } catch {
+    // storage may be unavailable
+  }
+  return DEFAULT_TEXT_BG_STRENGTH;
 }
 
 function readWeightsState(): { weights: CompositeWeights; tuning: SpeedTuning } {
@@ -4032,6 +4087,7 @@ export function apply(ctx: ClientContext) {
         "portraitSet": "人物肖像组",
         "portraitSwitch": "人物强度",
         "layout.title": "内容居左对齐",
+        "textBg.title": "文字背景浓度",
         "driver.title": "强度驱动",
         "driver.manual": "手动",
         "driver.composite": "综合加权",
@@ -4074,6 +4130,7 @@ export function apply(ctx: ClientContext) {
         "portraitSet": "Portrait set",
         "portraitSwitch": "Person level",
         "layout.title": "Left-aligned layout",
+        "textBg.title": "Text-chip opacity",
         "driver.title": "Level driver",
         "driver.manual": "Manual",
         "driver.composite": "Composite",
@@ -4148,6 +4205,7 @@ export function apply(ctx: ClientContext) {
   const PORTRAIT_SLIDER_SWITCH_ID = `${PACKAGE_ID}:portrait-slider`;
   const DRIVER_SWITCH_ID = `${PACKAGE_ID}:driver`;
   const LAYOUT_SWITCH_ID = `${PACKAGE_ID}:layout-left`;
+  const TEXT_BG_SWITCH_ID = `${PACKAGE_ID}:text-bg-strength`;
   // 这五个皮肤开关共享同一个簇字符串，宿主会把它们折叠成一张以
   // 「Flash 皮肤」为标题的卡片（首行控件常开、其余收进折叠体）。
   const FLASH_SKIN_CLUSTER = "flash-skin";
@@ -4376,6 +4434,32 @@ export function apply(ctx: ClientContext) {
         // skin.css via `data-dsh-desktop-mode` and is not affected.
         visible: () => presenter.isEnabled(),
       });
+      // Text-background blend strength (26.8, just under the layout gate at
+      // 26.7): a slider that tunes how strong the translucent readability chip
+      // behind chat text is (40–100%). Runs through the presenter
+      // (`presenter.setTextBg` persists via localStorage TEXT_BG_KEY) and
+      // applies live through the `--flash-text-bg-strength` custom property;
+      // skin.css feeds it into the `color-mix` fill of the text chips. Own
+      // CSS only — no host coupling.
+      const textBgDispose = reg.registerSwitch?.({
+        id: TEXT_BG_SWITCH_ID,
+        label: () => setLabel("textBg.title"),
+        cluster: FLASH_SKIN_CLUSTER,
+        icon: "text-height",
+        type: "slider",
+        group: "appearance",
+        order: 26.8,
+        min: TEXT_BG_MIN,
+        max: TEXT_BG_MAX,
+        step: 5,
+        getValue: () => presenter.getTextBg(),
+        setValue: (value) => {
+          presenter.setTextBg(Number(value));
+          quickControl?.notifyChange?.(TEXT_BG_SWITCH_ID);
+        },
+        formatLabel: (value) => `${Math.round(Number(value) || DEFAULT_TEXT_BG_STRENGTH)}%`,
+        visible: () => presenter.isEnabled(),
+      });
       // the select at 26 and the open-details action at 27): it switches the
       // ACTIVE person's level and gives one stop per frame of that group, so
       // sliding walks through every image of the current person. For a group
@@ -4417,6 +4501,8 @@ export function apply(ctx: ClientContext) {
         else reg.unregisterSwitch?.(OPEN_DETAILS_SWITCH_ID);
         if (typeof layoutDispose === "function") layoutDispose();
         else reg.unregisterSwitch?.(LAYOUT_SWITCH_ID);
+        if (typeof textBgDispose === "function") textBgDispose();
+        else reg.unregisterSwitch?.(TEXT_BG_SWITCH_ID);
         offScope();
       };
     }, "flash-skin: quick switches");

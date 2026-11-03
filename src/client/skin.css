@@ -77,30 +77,45 @@ body[data-flash-skin="on"] > #root {
   background: transparent !important;
 }
 
-/* 只给“没有特殊效果的普通段落 + 列表项”加半透明灰底（深浅色通用，随 flashStage
- * 自适应）：
- * - 普通正文在宿主 markdown 渲染里是 <p>，列表项是 <li>；而代码块是 <pre>、
- *   表格是 <table>、数学公式是 <math>/katex、引用块是 <blockquote>。
- * - 用 :not() 把「嵌套在这些特殊容器内的元素」显式排除，让代码块、表格、公式、
- *   引用各自保持其自带的底色，不再叠加本面板；列表项与普通段落都套面板。
- * - li 与 li 内的 p 不双叠：普通段 p 排除 li 内 p（列表项已由 li 整块覆盖），
- *   列表项 li 只命中不在引用/表格/代码/公式内的条目。
- * - 每段/每项各自一块圆角小面板（不铺满整个区域）。
+/* 只给“没有特殊效果（或该富内容本身无底色）的正文、列表项、行内 code 与
+ * 表格单元格”加半透明灰底（深浅色通用，随 flashStage 自适应）：
+ * - 普通正文在宿主 markdown 渲染里是 <p>，列表项是 <li>；行内 code 是不在
+ *   <pre> 内的 <code>，表格内文字是 <td>/<th>；而代码块是 <pre>、
+ *   数学公式是 <math>/katex、引用块是 <blockquote>。
+ * - 用 :not() 把「嵌套在这些特殊容器内的元素」显式排除，让代码块、公式、
+ *   引用各自保持其自带的底色，不再叠加本面板。块级 <pre> 内整体排除，故
+ *   行内 <code>（不在 <pre> 内）单独命中并套同款面板；列表项自成一块。
+ * - li 与 li 内的 p 不双叠：普通段 p 排除 li 内 p（列表项已由 li 整块覆盖）。
+ * - 每块各自一个圆角小面板（不铺满整个区域）。
  * - 半透明灰取当前 --flash-surface（浅色阶段白、深色阶段暗，见 palette.ts），
- *   使浅色文字与深色文字在人像背景上都保持可读；纯语义选择器，无宿主耦合。 */
+ *   浓度由 --flash-text-bg-strength 控制（默认 80%，设置滑块改写该变量）；
+ *   使浅色文字与深色文字在人像背景上都保持可读；
+ *   纯语义选择器，无宿主耦合。 */
 body[data-flash-skin="on"] [class*="_column"]
-  p:not(blockquote p):not(li p):not(pre p):not(td p):not(math p):not(.katex p) {
-  background: color-mix(in srgb, var(--flash-surface, #f5f6f8) 80%, transparent);
+  p:not(blockquote p):not(li p):not(pre p):not(td p):not(th p):not(math p):not(.katex p) {
+  background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent);
   border-radius: 10px;
   padding: 4px 10px;
   width: fit-content;
 }
 body[data-flash-skin="on"] [class*="_column"]
-  li:not(blockquote li):not(td li):not(pre li):not(math li):not(.katex li) {
-  background: color-mix(in srgb, var(--flash-surface, #f5f6f8) 80%, transparent);
+  li:not(blockquote li):not(pre li):not(math li):not(.katex li) {
+  background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent);
   border-radius: 10px;
   padding: 2px 10px;
   width: fit-content;
+}
+body[data-flash-skin="on"] [class*="_column"]
+  code:not(pre code) {
+  background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent);
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+body[data-flash-skin="on"] [class*="_column"]
+  td:not(pre td):not(math td):not(.katex td),
+body[data-flash-skin="on"] [class*="_column"]
+  th:not(pre th):not(math th):not(.katex th) {
+  background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent);
 }
 
 /* Desktop (Electron) specifics — the port is what lets the z-index:-1

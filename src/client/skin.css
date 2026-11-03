@@ -26,7 +26,7 @@ body[data-flash-skin="on"] .flash-skin-backdrop {
   height: 100%;
   object-fit: cover;
   object-position: 50% 42%;
-  opacity: var(--flash-portrait-opacity, 0.45);
+  opacity: var(--flash-portrait-opacity, 1);
   transform: translateY(-50%);
   filter: none;
   mask-image: linear-gradient(90deg, transparent 0%, rgb(0 0 0 / 20%) 10%, black 30%, black 100%);
@@ -39,7 +39,7 @@ body[data-flash-skin="on"] .flash-skin-backdrop {
 
 .flash-skin-backdrop[data-media="sequence"] .flash-skin-sequence-frame {
   display: block;
-  opacity: var(--flash-portrait-opacity, 0.6);
+  opacity: var(--flash-portrait-opacity, 1);
 }
 
 /* Stage-local scrim (mirrors dsh-liang-skin): a horizontal overlay that

@@ -76,7 +76,6 @@ export function paletteForLevel(rawLevel: number, darkLevel?: number, maxLevel: 
   // so a group with more frames than MAX_LEVEL re-scales the whole shell.
   const dark = level >= darkAt;
   const base = dark ? DARK : LIGHT;
-  const portraitScale = max > 0 ? level / max : 0;
   return {
     level,
     stage: dark ? 1 : 0,
@@ -87,7 +86,12 @@ export function paletteForLevel(rawLevel: number, darkLevel?: number, maxLevel: 
     secondary: base.secondary,
     accent: base.accent,
     accentHover: mix(base.accent, base.ink, 0.13),
-    portraitOpacity: String(0.4 + portraitScale * 0.42),
+    // Match dsh-liang-skin's rendering: the portrait frame is drawn fully
+    // opaque (liang keeps portraitOpacity = 1 at every level). A lower opacity
+    // lets the shell page bleed through the image like a veil, which reads as
+    // a "mask" and makes the same picture look dimmer/less clear than in
+    // liang-skin. The level-driven fade is deliberately removed for parity.
+    portraitOpacity: "1",
     // Scrim overlay mirrors dsh-liang-skin: base is denser on the dark shell
     // (0.42 vs 0.28 on light) so the portrait reads sharp on dark and airier
     // on light; strong/soft drive the horizontal fade.

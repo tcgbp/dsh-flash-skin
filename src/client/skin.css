@@ -57,16 +57,20 @@ body[data-flash-skin="on"] > #root {
   background: transparent !important;
 }
 
-/* 会话内容可读性（深浅色通用）：肖像背景层是以 z-index:-1 透出的，人物的右侧
- * 区域会与靠左的内容列重叠，压住文字。这里给对话内容列铺一层“随当前深浅色阶段
- * 自适应”的半透明灰底 —— 浅色阶段用白色表面、深色阶段用暗色表面，各按中等
- * alpha 半透，让两种模式下文字与背景图之间都保持足够对比度、不会看不清。
- * 只用本皮肤自己的 CSS 变量（--flash-surface 由 applyPalette 按 flashStage
- * 注入，见 palette.ts），不触碰宿主布局，也不依赖单次编译的哈希前缀。 */
-body[data-flash-skin="on"] [class*="_column"] {
-  background: color-mix(in srgb, var(--flash-surface, #f5f6f8) 86%, transparent) !important;
-  border-radius: 14px !important;
-  padding: 14px 18px !important;
+/* 只给“没有特殊效果的普通段落”加半透明灰底（深浅色通用，随 flashStage 自适应）：
+ * - 普通正文在宿主 markdown 渲染里是 <p>，而代码块是 <pre>、表格是 <table>、
+ *   数学公式是 <math>/katex、引用块是 <blockquote>、列表是 <ul>/<ol> ；
+ *   用 :not() 把「嵌套在这些特殊容器内的段落」显式排除，让代码块、表格、公式、
+ *   引用与列表各自保持其自带的底色，不再叠加本面板。
+ * - 命中的是内容列里的顶层普通段落，每段各自一块圆角小面板（不铺满整个区域）。
+ * - 半透明灰取当前 --flash-surface（浅色阶段白、深色阶段暗，见 palette.ts），
+ *   使浅色文字与深色文字在人像背景上都保持可读；纯语义选择器，无宿主耦合。 */
+body[data-flash-skin="on"] [class*="_column"]
+  p:not(blockquote p):not(li p):not(pre p):not(td p):not(math p):not(.katex p) {
+  background: color-mix(in srgb, var(--flash-surface, #f5f6f8) 82%, transparent);
+  border-radius: 10px;
+  padding: 4px 10px;
+  width: fit-content;
 }
 
 /* Desktop (Electron) specifics — the port is what lets the z-index:-1

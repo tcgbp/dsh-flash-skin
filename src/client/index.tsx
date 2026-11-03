@@ -73,6 +73,14 @@ const DEFAULT_TEXT_BG_STRENGTH = 80;
 const TEXT_BG_MIN = 40;
 const TEXT_BG_MAX = 100;
 
+// Displayed size (%) of the backdrop portrait, alongside the blend-strength
+// control. Persisted across reloads, consumed by skin.css via
+// `--flash-portrait-size` on <body> (factor form: 100% = 1.0).
+const PORTRAIT_SIZE_KEY = "dsh-flash-skin.portrait-size";
+const DEFAULT_PORTRAIT_SIZE = 100;
+const PORTRAIT_SIZE_MIN = 60;
+const PORTRAIT_SIZE_MAX = 150;
+
 // Desktop-host detection. The desktop version is a real Electron app (its
 // resources ship as app.asar + Electron PE/runtime DLLs), while the web GUI
 // runs in a normal browser. Signals, most reliable first:
@@ -455,6 +463,7 @@ const cssVariables = [
   "--flash-mask-strong",
   "--flash-mask-soft",
   "--flash-text-bg-strength",
+  "--flash-portrait-size",
 ] as const;
 
 class SkinPresenter {
@@ -473,6 +482,7 @@ class SkinPresenter {
   // `--flash-text-bg-strength` custom property on <body>; skin.css feeds it
   // into the `color-mix` fill of the chat-text readability chip.
   private textBgStrength = restoreTextBg();
+  private portraitSize = restorePortraitSize();
   // Per-group config mirrored from the persisted config card. images drive the
   // portrait sequence; darkLevel (absent → the top stop, axisMax - 1) drives
   // the flip to the dark shell, on the same dynamic axis as the slider.
@@ -656,6 +666,33 @@ class SkinPresenter {
     else document.body.style.removeProperty("--flash-text-bg-strength");
   }
 
+  getPortraitSize(): number {
+    return this.portraitSize;
+  }
+
+  setPortraitSize(size: number) {
+    if (this.disposed) return;
+    this.portraitSize = Math.min(PORTRAIT_SIZE_MAX, Math.max(PORTRAIT_SIZE_MIN, Math.round(size)));
+    try {
+      localStorage.setItem(PORTRAIT_SIZE_KEY, String(this.portraitSize));
+    } catch {
+      // storage may be unavailable
+    }
+    this.applyPortraitSize();
+  }
+
+  // Mirror the palette body-variable pattern: `--flash-portrait-size` carries the
+  // current display scale (factor form, e.g. 115% → 1.15) to skin.css; removing it
+  // restores the CSS default (100%). Only ever this skin's own CSS variable — no host
+  // coupling.
+  private applyPortraitSize() {
+    if (this.disposed) return;
+    const factor = (this.portraitSize / 100).toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+    if (this.enabled)
+      document.body.style.setProperty("--flash-portrait-size", factor === "1" ? "1" : factor);
+    else document.body.style.removeProperty("--flash-portrait-size");
+  }
+
   setPortraitSet(set: PortraitSet) {
     if (this.disposed || set.id === this.set.id) return;
     this.set = set;
@@ -679,6 +716,7 @@ class SkinPresenter {
       document.body.dataset.flashSkin = "on";
       this.applyLayout();
       this.applyTextBg();
+      this.applyPortraitSize();
       this.applyPalette();
       this.portraits.start();
     } else {
@@ -689,6 +727,7 @@ class SkinPresenter {
       document.body.removeAttribute("data-flash-skin");
       this.applyLayout();
       this.applyTextBg();
+      this.applyPortraitSize();
       for (const name of cssVariables) document.body.style.removeProperty(name);
     }
   }
@@ -1524,6 +1563,20 @@ function restoreTextBg(): number {
     // storage may be unavailable
   }
   return DEFAULT_TEXT_BG_STRENGTH;
+}
+
+// Restore the backdrop portrait size (%). Defaults to DEFAULT_PORTRAIT_SIZE;
+// a present but non-numeric / out-of-range value snaps back to the default.
+function restorePortraitSize(): number {
+  try {
+    const raw = Number(localStorage.getItem(PORTRAIT_SIZE_KEY));
+    if (Number.isFinite(raw)) {
+      return Math.min(PORTRAIT_SIZE_MAX, Math.max(PORTRAIT_SIZE_MIN, Math.round(raw)));
+    }
+  } catch {
+    // storage may be unavailable
+  }
+  return DEFAULT_PORTRAIT_SIZE;
 }
 
 function readWeightsState(): { weights: CompositeWeights; tuning: SpeedTuning } {
@@ -4088,6 +4141,7 @@ export function apply(ctx: ClientContext) {
         "portraitSwitch": "人物强度",
         "layout.title": "内容居左对齐",
         "textBg.title": "文字背景浓度",
+        "portraitSize.title": "人物显示大小",
         "driver.title": "强度驱动",
         "driver.manual": "手动",
         "driver.composite": "综合加权",
@@ -4131,6 +4185,7 @@ export function apply(ctx: ClientContext) {
         "portraitSwitch": "Person level",
         "layout.title": "Left-aligned layout",
         "textBg.title": "Text-chip opacity",
+        "portraitSize.title": "Portrait size",
         "driver.title": "Level driver",
         "driver.manual": "Manual",
         "driver.composite": "Composite",
@@ -4206,6 +4261,7 @@ export function apply(ctx: ClientContext) {
   const DRIVER_SWITCH_ID = `${PACKAGE_ID}:driver`;
   const LAYOUT_SWITCH_ID = `${PACKAGE_ID}:layout-left`;
   const TEXT_BG_SWITCH_ID = `${PACKAGE_ID}:text-bg-strength`;
+  const PORTRAIT_SIZE_SWITCH_ID = `${PACKAGE_ID}:portrait-size`;
   // 这五个皮肤开关共享同一个簇字符串，宿主会把它们折叠成一张以
   // 「Flash 皮肤」为标题的卡片（首行控件常开、其余收进折叠体）。
   const FLASH_SKIN_CLUSTER = "flash-skin";
@@ -4445,7 +4501,7 @@ export function apply(ctx: ClientContext) {
         id: TEXT_BG_SWITCH_ID,
         label: () => setLabel("textBg.title"),
         cluster: FLASH_SKIN_CLUSTER,
-        icon: "text-height",
+        icon: "sliders",
         type: "slider",
         group: "appearance",
         order: 26.8,
@@ -4458,6 +4514,31 @@ export function apply(ctx: ClientContext) {
           quickControl?.notifyChange?.(TEXT_BG_SWITCH_ID);
         },
         formatLabel: (value) => `${Math.round(Number(value) || DEFAULT_TEXT_BG_STRENGTH)}%`,
+        visible: () => presenter.isEnabled(),
+      });
+      // Displayed portrait size (26.6, directly under the level slider at 26.5):
+      // a slider that zooms the backdrop portrait bigger or smaller (60–150% of
+      // its base width). Runs through the presenter (`presenter.setPortraitSize`
+      // persists via localStorage PORTRAIT_SIZE_KEY) and applies live through the
+      // `--flash-portrait-size` custom property; skin.css feeds it into the frame
+      // width. Own CSS only — no host coupling.
+      const portraitSizeDispose = reg.registerSwitch?.({
+        id: PORTRAIT_SIZE_SWITCH_ID,
+        label: () => setLabel("portraitSize.title"),
+        cluster: FLASH_SKIN_CLUSTER,
+        icon: "expand",
+        type: "slider",
+        group: "appearance",
+        order: 26.6,
+        min: PORTRAIT_SIZE_MIN,
+        max: PORTRAIT_SIZE_MAX,
+        step: 5,
+        getValue: () => presenter.getPortraitSize(),
+        setValue: (value) => {
+          presenter.setPortraitSize(Number(value));
+          quickControl?.notifyChange?.(PORTRAIT_SIZE_SWITCH_ID);
+        },
+        formatLabel: (value) => `${Math.round(Number(value) || DEFAULT_PORTRAIT_SIZE)}%`,
         visible: () => presenter.isEnabled(),
       });
       // the select at 26 and the open-details action at 27): it switches the
@@ -4503,6 +4584,8 @@ export function apply(ctx: ClientContext) {
         else reg.unregisterSwitch?.(LAYOUT_SWITCH_ID);
         if (typeof textBgDispose === "function") textBgDispose();
         else reg.unregisterSwitch?.(TEXT_BG_SWITCH_ID);
+        if (typeof portraitSizeDispose === "function") portraitSizeDispose();
+        else reg.unregisterSwitch?.(PORTRAIT_SIZE_SWITCH_ID);
         offScope();
       };
     }, "flash-skin: quick switches");

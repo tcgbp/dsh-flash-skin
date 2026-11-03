@@ -13,13 +13,16 @@ body[data-flash-skin="on"] .flash-skin-backdrop {
   opacity: 1;
 }
 
-/* Portrait sequence layer: a person image that changes with the slider. */
+/* Portrait sequence layer: a person image that changes with the slider.
+   Width scales by the user-tuned --flash-portrait-size (factor, default 1) so
+   the displayed portrait can be made bigger or smaller; object-fit keeps the
+   crop centered. */
 .flash-skin-backdrop .flash-skin-sequence-frame {
   position: absolute;
   top: 50%;
   right: 0;
   display: block;
-  width: min(42vw, 720px);
+  width: calc(min(42vw, 720px) * var(--flash-portrait-size, 1));
   height: 100%;
   object-fit: cover;
   object-position: 50% 42%;

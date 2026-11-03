@@ -14,6 +14,13 @@ export interface Palette {
   ink: string;
   secondary: string;
   portraitOpacity: string;
+  /** Scrim overlay colours (rgba over the shell `page`), used by the
+   *  `::after` stage mask the way dsh-liang-skin does. Strong/soft feed the
+   *  left-to-right gradient, base tints the whole stage; each follows the
+   *  active shell so the overlay reads differently in light vs dark. */
+  maskBase: string;
+  maskStrong: string;
+  maskSoft: string;
 }
 
 const LIGHT = {
@@ -57,6 +64,10 @@ export function paletteForLevel(rawLevel: number, darkLevel?: number, maxLevel: 
     const blue = ch(0);
     return `#${((1 << 24) | (r << 16) | (g << 8) | blue).toString(16).slice(1)}`;
   };
+  const rgba = (hex: string, alpha: number) => {
+    const num = parseInt(hex.slice(1), 16);
+    return `rgba(${(num >> 16) & 0xff}, ${(num >> 8) & 0xff}, ${num & 0xff}, ${alpha})`;
+  };
   // Mirror dsh-liang-skin's binary appearance: the lowest levels keep the
   // native light shell, and only levels at/above the (per-group, default
   // maxLevel - 1) dark threshold switch to the dark shell. The portrait frame
@@ -77,5 +88,11 @@ export function paletteForLevel(rawLevel: number, darkLevel?: number, maxLevel: 
     accent: base.accent,
     accentHover: mix(base.accent, base.ink, 0.13),
     portraitOpacity: String(0.4 + portraitScale * 0.42),
+    // Scrim overlay mirrors dsh-liang-skin: base is denser on the dark shell
+    // (0.42 vs 0.28 on light) so the portrait reads sharp on dark and airier
+    // on light; strong/soft drive the horizontal fade.
+    maskBase: rgba(base.page, dark ? 0.42 : 0.28),
+    maskStrong: rgba(base.page, 0.46),
+    maskSoft: rgba(base.page, 0.2),
   };
 }

@@ -442,6 +442,9 @@ const cssVariables = [
   "--flash-accent",
   "--flash-accent-hover",
   "--flash-portrait-opacity",
+  "--flash-mask-base",
+  "--flash-mask-strong",
+  "--flash-mask-soft",
 ] as const;
 
 class SkinPresenter {
@@ -536,6 +539,7 @@ class SkinPresenter {
     this.root.className = "flash-skin-backdrop";
     this.root.dataset.plugin = PACKAGE_ID;
     this.root.dataset.media = "color";
+    this.root.dataset.mask = "on";
     this.root.setAttribute("aria-hidden", "true");
     this.onChange = ({ image }) => {
       if (this.disposed || !this.enabled) return;
@@ -676,6 +680,9 @@ class SkinPresenter {
     body.style.setProperty("--flash-accent", palette.accent);
     body.style.setProperty("--flash-accent-hover", palette.accentHover);
     body.style.setProperty("--flash-portrait-opacity", palette.portraitOpacity);
+    body.style.setProperty("--flash-mask-base", palette.maskBase);
+    body.style.setProperty("--flash-mask-strong", palette.maskStrong);
+    body.style.setProperty("--flash-mask-soft", palette.maskSoft);
     this.updatePortrait();
   }
 

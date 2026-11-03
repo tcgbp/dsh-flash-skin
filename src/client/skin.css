@@ -39,6 +39,26 @@ body[data-flash-skin="on"] .flash-skin-backdrop {
   opacity: var(--flash-portrait-opacity, 0.6);
 }
 
+/* Stage-local scrim (mirrors dsh-liang-skin): a horizontal overlay that
+   desaturates/softens the portrait without painting over transcript text or
+   native portals. Colours come from applyPalette as --flash-mask-* (rgba over
+   the active shell page): base tints the whole stage, strong/soft drive the
+   left-to-right fade. The data-mask switch lets the overlay be toggled. */
+.flash-skin-backdrop::after {
+  position: absolute;
+  inset: 0;
+  display: none;
+  content: "";
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, var(--flash-mask-strong, transparent) 0%, var(--flash-mask-soft, transparent) 38%, transparent 66%),
+    linear-gradient(var(--flash-mask-base, transparent), var(--flash-mask-base, transparent));
+}
+
+.flash-skin-backdrop[data-mask="on"]::after {
+  display: block;
+}
+
 .flash-skin-backdrop[data-media="color"] img {
   display: none;
 }

@@ -57,6 +57,18 @@ body[data-flash-skin="on"] > #root {
   background: transparent !important;
 }
 
+/* 会话内容可读性（深浅色通用）：肖像背景层是以 z-index:-1 透出的，人物的右侧
+ * 区域会与靠左的内容列重叠，压住文字。这里给对话内容列铺一层“随当前深浅色阶段
+ * 自适应”的半透明灰底 —— 浅色阶段用白色表面、深色阶段用暗色表面，各按中等
+ * alpha 半透，让两种模式下文字与背景图之间都保持足够对比度、不会看不清。
+ * 只用本皮肤自己的 CSS 变量（--flash-surface 由 applyPalette 按 flashStage
+ * 注入，见 palette.ts），不触碰宿主布局，也不依赖单次编译的哈希前缀。 */
+body[data-flash-skin="on"] [class*="_column"] {
+  background: color-mix(in srgb, var(--flash-surface, #f5f6f8) 86%, transparent) !important;
+  border-radius: 14px !important;
+  padding: 14px 18px !important;
+}
+
 /* Desktop (Electron) specifics — the port is what lets the z-index:-1
  * backdrop show through the native host frame, mirroring the predecessor
  * skin on the same host. Transparent here only: no token tinting. */

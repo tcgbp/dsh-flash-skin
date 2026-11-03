@@ -6,7 +6,7 @@ import z from "@deepseek-ai/schemastery";
 import { z as zod } from "zod";
 import { parseSingleRange } from "./range.js";
 import { installLikeRoutes } from "./likes.js";
-import { COMMUNITY_PROVIDERS, createCommunityClient, installCommunityRoutes, readCommunityLikes, submitCommunityLikes } from "./community.js";
+import { COMMUNITY_PROVIDERS, createCommunityClient, DEFAULT_COMMUNITY_TARGET, installCommunityRoutes, readCommunityLikes, submitCommunityLikes } from "./community.js";
 
 export { parseSingleRange } from "./range.js";
 
@@ -296,9 +296,11 @@ export const Config = z.object({
   // Feishu Bitable base whose shares table holds `<setId>` -> url pointer
   // records; sharers keep custody of their zip URL (the table only ever stores
   // the text pointer — never archive bytes). When absent the community routing
-  // is inert and the C1 text-share channel still works standalone.
+  // falls back to the baked-in code constant DEFAULT_COMMUNITY_TARGET
+  // (src/community.js), so the channels configure themselves out of the box;
+  // any field set here wins over that default per-field (see getCommunityTarget).
   // Keep non-volatile: this is deliberate admin metadata, not per-user runtime
-  // state, so it persists in the profile patch like any other exposed config.
+  // state.
   communityDirectory: z.object({
       /**
        * Community backend for the directory channel: `feishu` (the shipped,
@@ -636,14 +638,22 @@ export function apply(ctx, config) {
     };
     const getCommunityTarget = () => {
       const dir = readCommunityDirectory();
-      const kind = typeof dir.provider === "string" && dir.provider ? dir.provider : "feishu";
+      // Per-field fallback to the baked-in code constant (DEFAULT_COMMUNITY_TARGET)
+      // so the C2 community channels configure themselves even when no
+      // communityDirectory row exists in the profile patch. An explicit value
+      // from the resolved config always wins over the default.
+      const pick = (field) => {
+        const v = typeof dir?.[field] === "string" && dir[field] ? dir[field] : "";
+        return v || DEFAULT_COMMUNITY_TARGET[field] || "";
+      };
+      const kind = pick("provider");
       return {
         provider: COMMUNITY_PROVIDERS[kind] ? kind : "feishu",
-        appId: typeof dir.appId === "string" && dir.appId ? dir.appId : "",
-        appSecret: typeof dir.appSecret === "string" && dir.appSecret ? dir.appSecret : "",
-        appToken: typeof dir.appToken === "string" && dir.appToken ? dir.appToken : "",
-        sharesTableId: typeof dir.sharesTableId === "string" && dir.sharesTableId ? dir.sharesTableId : "",
-        likesTableId: typeof dir.likesTableId === "string" && dir.likesTableId ? dir.likesTableId : "",
+        appId: pick("appId"),
+        appSecret: pick("appSecret"),
+        appToken: pick("appToken"),
+        sharesTableId: pick("sharesTableId"),
+        likesTableId: pick("likesTableId"),
       };
     };
     // The C2 like channel needs the server-held Feishu app credentials plus a

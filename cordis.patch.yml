@@ -8,3 +8,8 @@
 - insert:
     - id: flash-skin
       name: 'dsh-flash-skin'
+    # The community-directory target (Feishu app credentials + table ids) is no
+    # longer injected here — it's baked in as a code constant
+    # (`DEFAULT_COMMUNITY_TARGET` in src/community.js), so the C2 community
+    # channels work without any patch row. Set an explicit communityDirectory
+    # below ONLY to override the code default.

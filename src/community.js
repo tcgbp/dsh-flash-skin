@@ -89,6 +89,22 @@ const FEISHU_PROVIDER = {
 
 export const COMMUNITY_PROVIDERS = { feishu: FEISHU_PROVIDER };
 
+// Default community-directory target, baked in as a compile-time constant.
+// The share/like channels used to be pointed at this Feishu Bitable base via
+// the profile patch's `config.communityDirectory`; that external injection is
+// gone — the target now lives here in code so the C2 channel configures itself
+// out of the box. Any explicit per-field override from the resolved config
+// still wins (see getCommunityTarget in index.js). Shape matches what
+// getCommunityTarget emits exactly.
+export const DEFAULT_COMMUNITY_TARGET = Object.freeze({
+  provider: "feishu",
+  appId: "cli_aa69e7cbcdb8dd24",
+  appSecret: "Qn6UEZOK6IK5aiMGCB5Szf1FYNG3DFEh",
+  appToken: "MxS6bh9M3a9IZUscyBbce2Dhn5b",
+  sharesTableId: "tblgfZGkYEn2wSLD",
+  likesTableId: "tblIk4f5YBYrGDqc",
+});
+
 /**
  * Resolve the provider (pluggable backend) for a community target. Unknown
  * kinds fall back to the shipped feishu provider.

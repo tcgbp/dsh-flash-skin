@@ -2518,8 +2518,8 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
   const [likedById, setLikedById] = useState<Record<string, boolean>>(() => readLikedStore());
   const [communityLikes, setCommunityLikes] = useState<Record<string, number>>({});
   const [likesError, setLikesError] = useState<string | null>(null);
-  const isLikedById = (groupId: string) => !!likedById[groupId];
-  const likeCountFor = (groupId: string) => mergeLikeCount(isLikedById(groupId), communityLikes[groupId]);
+  const isLikedById = (setId: string) => !!likedById[setId];
+  const likeCountFor = (setId: string) => mergeLikeCount(isLikedById(setId), communityLikes[setId]);
 
   // One-shot best-effort fetch of community like totals on mount.
   useEffect(() => {
@@ -2543,21 +2543,20 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
     return () => { cancelled = true; };
   }, []);
 
-  const toggleLike = async (groupIndex: number) => {
-    const group = groups[groupIndex];
-    if (!group || busy) return;
-    const next = !likedById[group.id];
-    setLikedById((prev) => writeLikedStore({ ...prev, [group.id]: next }));
+  const toggleLike = async (setId: string) => {
+    if (!setId || busy) return;
+    const next = !likedById[setId];
+    setLikedById((prev) => writeLikedStore({ ...prev, [setId]: next }));
     setLikesError(null);
     try {
       const response = await fetch(LIKE_PATH, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ groupId: group.id }),
+        body: JSON.stringify({ setId }),
       });
       const payload = (await response.json().catch(() => null)) as { count?: unknown } | null;
       if (payload && typeof payload === "object" && typeof payload.count === "number") {
-        setCommunityLikes((prev) => ({ ...prev, [group.id]: payload.count as number }));
+        setCommunityLikes((prev) => ({ ...prev, [setId]: payload.count as number }));
       }
     } catch {
       setLikesError(t("likeSyncFailed"));
@@ -3517,18 +3516,6 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
                   </button>
                   <button
                     type="button"
-                    className={isLikedById(group.id) ? "flash-portrait-group__like flash-portrait-group__like--on" : "flash-portrait-group__like"}
-                    title={t("likeTitle")}
-                    aria-pressed={isLikedById(group.id)}
-                    // Liking is route-based bookkeeping, read-only w.r.t. the
-                    // config document, so it works even when it is not writable.
-                    disabled={busy}
-                    onClick={() => void toggleLike(groupIndex)}
-                  >
-                    {isLikedById(group.id) ? "♥" : "♡"} {likeCountFor(group.id)}
-                  </button>
-                  <button
-                    type="button"
                     className="flash-portrait-group__share"
                     title={t("shareGroupTitle")}
                     disabled={busy || group.images.length < PORTRAIT_IMPORT_MIN_IMAGES}
@@ -3798,15 +3785,29 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
                   <a className="flash-community__url" href={entry.url} target="_blank" rel="noreferrer" title={entry.url}>
                     {entry.url}
                   </a>
-                  <button
-                    type="button"
-                    className="flash-community__import"
-                    disabled={!writable || busy}
-                    onClick={() => void importCommunityEntry(entry)}
-                    title={t("communityImportTitle")}
-                  >
-                    {t("communityImport")}
-                  </button>
+                  <div className="flash-community__actions">
+                    <button
+                      type="button"
+                      className={isLikedById(entry.setId) ? "flash-community__like flash-community__like--on" : "flash-community__like"}
+                      title={t("likeTitle")}
+                      aria-pressed={isLikedById(entry.setId)}
+                      // Liking is route-based bookkeeping keyed to the community
+                      // entry's stable setId, read-only w.r.t. the config doc.
+                      disabled={busy}
+                      onClick={() => void toggleLike(entry.setId)}
+                    >
+                      {isLikedById(entry.setId) ? "♥" : "♡"} {likeCountFor(entry.setId)}
+                    </button>
+                    <button
+                      type="button"
+                      className="flash-community__import"
+                      disabled={!writable || busy}
+                      onClick={() => void importCommunityEntry(entry)}
+                      title={t("communityImportTitle")}
+                    >
+                      {t("communityImport")}
+                    </button>
+                  </div>
                 </li>
               ))}
             </ul>

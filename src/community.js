@@ -50,7 +50,7 @@ export const COMMUNITY_URL_MAX = 2048;
 export const MAX_SUBMIT_BODY_BYTES = 256 * 1024;
 /** Field-name mapping for the Feishu Bitable shares/likes tables. */
 export const SHARES_FIELDS = { entryId: "entryId", setId: "setId", url: "url", md5: "md5" };
-export const LIKES_FIELDS = { groupId: "groupId", count: "count" };
+export const LIKES_FIELDS = { setId: "setId", count: "count" };
 
 const SET_ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 
@@ -464,10 +464,10 @@ export async function readCommunityLikes(client, target) {
   const counts = {};
   for (const rec of listed.records) {
     const f = rec.fields || {};
-    const groupId = typeof f[LIKES_FIELDS.groupId] === "string" ? f[LIKES_FIELDS.groupId].trim() : "";
-    if (!groupId || groupId.length > 128 || /[\s\u007f]/.test(groupId)) continue;
+    const setId = typeof f[LIKES_FIELDS.setId] === "string" ? f[LIKES_FIELDS.setId].trim() : "";
+    if (!setId || setId.length > 128 || /[\s\u007f]/.test(setId)) continue;
     const n = Number(f[LIKES_FIELDS.count]);
-    if (Number.isFinite(n) && n > 0) counts[groupId] = Math.floor(n);
+    if (Number.isFinite(n) && n > 0) counts[setId] = Math.floor(n);
   }
   return { ok: true, counts, error: null };
 }
@@ -491,17 +491,17 @@ export async function submitCommunityLikes(client, target, { counts } = {}) {
 
   const listed = await listAllRecords(client, target, target.likesTableId);
   if (!listed.ok) return { ok: false, error: listed.error };
-  const recordByGroup = new Map();
+  const recordBySetId = new Map();
   for (const rec of listed.records) {
     const f = rec.fields || {};
-    const g = typeof f[LIKES_FIELDS.groupId] === "string" ? f[LIKES_FIELDS.groupId].trim() : "";
-    if (g) recordByGroup.set(g, rec.recordId);
+    const s = typeof f[LIKES_FIELDS.setId] === "string" ? f[LIKES_FIELDS.setId].trim() : "";
+    if (s) recordBySetId.set(s, rec.recordId);
   }
 
   let updated = 0;
-  for (const [groupId, count] of Object.entries(normalized)) {
-    const fields = { [LIKES_FIELDS.groupId]: groupId, [LIKES_FIELDS.count]: count };
-    const recordId = recordByGroup.get(groupId);
+  for (const [setId, count] of Object.entries(normalized)) {
+    const fields = { [LIKES_FIELDS.setId]: setId, [LIKES_FIELDS.count]: count };
+    const recordId = recordBySetId.get(setId);
     const res = recordId
       ? await client.updateRecord(target.appToken, target.likesTableId, token, recordId, fields)
       : await client.createRecord(target.appToken, target.likesTableId, token, fields);

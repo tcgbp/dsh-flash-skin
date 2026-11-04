@@ -467,11 +467,11 @@ describe("C2 community helper functions (community.js)", () => {
           code: 0,
           data: {
             items: [
-              { record_id: "r1", fields: { groupId: "han-li", count: 3 } },
-              { record_id: "r2", fields: { groupId: "a b", count: 2 } },
-              { record_id: "r3", fields: { groupId: "neg", count: -3 } },
-              { record_id: "r4", fields: { groupId: "frac", count: 2.9 } },
-              { record_id: "r5", fields: { groupId: "x".repeat(200), count: 1 } },
+              { record_id: "r1", fields: { setId: "han-li", count: 3 } },
+              { record_id: "r2", fields: { setId: "a b", count: 2 } },
+              { record_id: "r3", fields: { setId: "neg", count: -3 } },
+              { record_id: "r4", fields: { setId: "frac", count: 2.9 } },
+              { record_id: "r5", fields: { setId: "x".repeat(200), count: 1 } },
             ],
             has_more: false,
           },
@@ -523,7 +523,7 @@ describe("C2 community helper functions (community.js)", () => {
           json: {
             code: 0,
             data: {
-              items: [{ record_id: "rec-old", fields: { groupId: "han-li", count: 0 } }],
+              items: [{ record_id: "rec-old", fields: { setId: "han-li", count: 0 } }],
               has_more: false,
             },
           },
@@ -535,7 +535,7 @@ describe("C2 community helper functions (community.js)", () => {
       expect(res.ok).toBe(true);
       expect(res.updated).toBe(2);
       expect(calls.some(([k, , f]) => k === "update" && f.count === 5)).toBe(true);
-      expect(calls.some(([k, , f]) => k === "create" && f.groupId === "jiu-gong")).toBe(true);
+      expect(calls.some(([k, , f]) => k === "create" && f.setId === "jiu-gong")).toBe(true);
       // "bad id" invalid key dropped; neg/zero dropped before write.
       expect(calls.filter(([k]) => k === "create").length).toBe(1);
     });

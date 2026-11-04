@@ -436,9 +436,9 @@ export function installLikeRoutes(ctx, opts = {}) {
       } catch {
         envelope = null;
       }
-      const groupId = envelope && typeof envelope.groupId === "string" ? envelope.groupId : "";
+      const setId = envelope && typeof envelope.setId === "string" ? envelope.setId : "";
       const remote = req.socket && typeof req.socket.remoteAddress === "string" ? req.socket.remoteAddress : "";
-      const result = ledger.toggle(groupId, String(req.headers[PEER_HEADER] ?? ""), peerFromRemote(remote, salt));
+      const result = ledger.toggle(setId, String(req.headers[PEER_HEADER] ?? ""), peerFromRemote(remote, salt));
       if (!result.ok) {
         sendJson(res, 400, { ok: false, error: result.error });
         return;
@@ -450,7 +450,7 @@ export function installLikeRoutes(ctx, opts = {}) {
       scheduleCommunityFlush();
       sendJson(res, 200, {
         ok: true,
-        groupId: result.groupId,
+        setId: result.groupId,
         liked: result.liked,
         count: result.count,
         peerId: result.peerId,

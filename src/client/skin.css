@@ -80,20 +80,26 @@ body[data-flash-skin="on"] > #root {
   background: transparent !important;
 }
 
-/* 只给“没有特殊效果（或该富内容本身无底色）的正文、列表项、行内 code 与
- * 表格单元格”加半透明灰底（深浅色通用，随 flashStage 自适应）：
+/* 只给“没有特殊背景（或该富内容本身无底色）的正文、列表项、行内 code、
+ * 表格单元格与代码块”加半透明灰底（深浅色通用，随 flashStage 自适应）：
  * - 普通正文在宿主 markdown 渲染里是 <p>，列表项是 <li>；行内 code 是不在
- *   <pre> 内的 <code>，表格内文字是 <td>/<th>；而代码块是 <pre>、
- *   数学公式是 <math>/katex、引用块是 <blockquote>。
- * - 用 :not() 把「嵌套在这些特殊容器内的元素」显式排除，让代码块、公式、
- *   引用各自保持其自带的底色，不再叠加本面板。块级 <pre> 内整体排除，故
- *   行内 <code>（不在 <pre> 内）单独命中并套同款面板；列表项自成一块。
+ *   <pre> 内的 <code>，表格内文字是 <td>/<th>；代码块是宿主 .md-code-block
+ *   卡片（banner 头 + data-code-block-content 内嵌 pre / pre.plain）；数学
+ *   公式是 <math>/katex、引用块是 <blockquote>。
+ * - 用 :not() 把「嵌套在这些特殊容器内的元素」显式排除，让公式、引用各自
+ *   保持其自带的底色，不再叠加本面板。块级 <pre> 内整体排除，故行内 <code>
+ *   （不在 <pre> 内）单独命中并套同款面板；列表项自成一块。
+ * - 代码块与正文同一套浓度：卡片与 banner 的宿主底色改为透明，只由 pre 内容
+ *   区与 banner 承担同一层半透明灰底（圆角沿用宿主的 radius-lg：banner 顶圆角、
+ *   pre 底圆角）；shiki 变体的 pre 带 !important，插件这里同样用 !important
+ *   压住，保证深浅色都一致且只在内容区吃一层、不双叠。
  * - li 与 li 内的 p 不双叠：普通段 p 排除 li 内 p（列表项已由 li 整块覆盖）。
  * - 每块各自一个圆角小面板（不铺满整个区域）。
  * - 半透明灰取当前 --flash-surface（浅色阶段白、深色阶段暗，见 palette.ts），
  *   浓度由 --flash-text-bg-strength 控制（默认 80%，设置滑块改写该变量）；
  *   使浅色文字与深色文字在人像背景上都保持可读；
- *   纯语义选择器，无宿主耦合。 */
+ *   选择器只依赖宿主的稳定类名/属性（.md-code-block、data-code-block-*），
+ *   无 dsh-flash 耦合。 */
 body[data-flash-skin="on"] [class*="_column"]
   p:not(blockquote p):not(li p):not(pre p):not(td p):not(th p):not(math p):not(.katex p) {
   background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent);
@@ -119,6 +125,21 @@ body[data-flash-skin="on"] [class*="_column"]
 body[data-flash-skin="on"] [class*="_column"]
   th:not(pre th):not(math th):not(.katex th) {
   background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent);
+}
+/* 代码块并入同一浓度控制：
+ * - 卡片 .md-code-block 本身撤掉宿主实心底色，避免与下方 pre 面板双叠；
+ * - pre（含 plain 与 shiki 变体）与 banner 头各吃一层同款半透明面板；
+ * - shiki 的 pre 带 !important，这里同规格 !important + 更高特异性压住；
+ * - 引用/公式内的代码块继续保留各自容器底色，故排除。 */
+body[data-flash-skin="on"] [class*="_column"]
+  .md-code-block:not(blockquote .md-code-block):not(math .md-code-block):not(.katex .md-code-block) {
+  background: transparent !important;
+}
+body[data-flash-skin="on"] [class*="_column"]
+  .md-code-block:not(blockquote .md-code-block):not(math .md-code-block):not(.katex .md-code-block) pre,
+body[data-flash-skin="on"] [class*="_column"]
+  .md-code-block:not(blockquote .md-code-block):not(math .md-code-block):not(.katex .md-code-block) [data-code-block-banner] {
+  background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent) !important;
 }
 
 /* Desktop (Electron) specifics — the port is what lets the z-index:-1
@@ -1606,6 +1627,44 @@ body[data-flash-skin="on"][data-flash-layout="left"] [class*="_toBottomSlot"] {
 
 .flash-community__url:hover {
   text-decoration: underline;
+}
+
+/* Community-entry like: read-only bookkeeping keyed to the setId; the filled
+   heart marks the local liked state, mirroring the group-like treatment. */
+.flash-community__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.flash-community__like {
+  flex: none;
+  padding: 3px 10px;
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-label-tertiary) 35%, transparent);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+  background: transparent;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.flash-community__like--on {
+  color: var(--dsw-static-severity-warning-default, #d97706) !important;
+  border-color: color-mix(in srgb, var(--dsw-static-severity-warning-default, #d97706) 55%, transparent) !important;
+  background: color-mix(in srgb, var(--dsw-static-severity-warning-default, #d97706) 10%, transparent);
+}
+
+.flash-community__like:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--dsw-alias-interactive-fg-default, #4073e0) 12%, transparent);
+}
+
+.flash-community__like:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .flash-community__import {

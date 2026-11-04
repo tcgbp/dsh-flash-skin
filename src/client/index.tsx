@@ -2316,13 +2316,48 @@ function maybeGunzip(bytes: Uint8Array): Uint8Array {
   return bytes;
 }
 
+// Natural (numeric-aware) ordering of two archive basenames, so `10.webp` sorts
+// after `9.webp` instead of being treated as a plain string (`10` < `2`). Used
+// to give imported frames a stable, human-expected sequence.
+function compareNaturalNames(a: string, b: string): number {
+  const ai = a.match(/\d+|\D+/g) ?? [a];
+  const bi = b.match(/\d+|\D+/g) ?? [b];
+  const len = Math.max(ai.length, bi.length);
+  for (let i = 0; i < len; i += 1) {
+    const x = ai[i];
+    const y = bi[i];
+    if (x === undefined) return y === undefined ? 0 : -1;
+    if (y === undefined) return 1;
+    const xd = /^\d+$/.test(x);
+    const yd = /^\d+$/.test(y);
+    if (xd && yd) {
+      const xn = Number(x);
+      const yn = Number(y);
+      if (xn !== yn) return xn < yn ? -1 : 1;
+      // Equal numeric value — fall through to a character tie-break so stable
+      // ordering (e.g. "01" vs "1") stays deterministic.
+    } else if (xd !== yd) {
+      return xd ? -1 : 1; // digits sort before letters
+    }
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+}
+
 // Normalize an archive back into an ordered list of image candidates (shared by
 // zip and tar) with a per-file size guard against oversized embedded images.
+// Entries are sorted by natural name order so numbered frames (`1,2,…,10`)
+// keep the sequence the author intended rather than the archive's raw order.
 function collectImages(rawEntries: ZipImageEntry[]): { entries: ZipImageEntry[]; skippedOversize: number } {
   const entries: ZipImageEntry[] = [];
   const nameCounts = new Map<string, number>();
   let skippedOversize = 0;
-  for (const rawEntry of rawEntries) {
+  const ordered = [...rawEntries].sort((a, b) => {
+    const baseA = (a.name.split("/").pop() ?? a.name).toLowerCase();
+    const baseB = (b.name.split("/").pop() ?? b.name).toLowerCase();
+    return compareNaturalNames(baseA, baseB);
+  });
+  for (const rawEntry of ordered) {
     if (entries.length >= MAX_IMAGES_PER_IMPORT) break;
     const base = rawEntry.name.split("/").pop() ?? rawEntry.name;
     if (!base || /^\./.test(base)) continue;

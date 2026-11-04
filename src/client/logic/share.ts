@@ -108,6 +108,8 @@ export interface CommunityEntry {
   url: string;
   /** MD5 fingerprint of the archive the url pointed at at share time ("" for legacy entries). */
   md5?: string;
+  /** Self-declared author name ("" / undefined for anonymous or legacy entries). */
+  author?: string;
 }
 
 /** Inverse of buildShareText; null when the text is not a valid share. */

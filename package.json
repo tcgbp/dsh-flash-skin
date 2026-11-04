@@ -1,7 +1,7 @@
 {
   "name": "dsh-flash-skin",
   "version": "0.1.2",
-  "description": "Flash Skin: a portrait-driven skin for DeepSeek Harness whose backdrop swaps character portraits as the reasoning level rises and flips the shell from light to dark at the top tiers. Three drivers — manual, follow-reasoning and a composite weighted mode that scores token usage, context pressure, reasoning effort and token speed in real time and maps the score straight onto the group's actual frame count; per-signal weights and decay tuning are configurable in the detail page.",
+  "description": "Flash Skin: a session-state-driven portrait skin for DeepSeek Harness whose backdrop swaps character portraits with the session state. In composite mode a score is computed in real time from token usage, context pressure, reasoning effort and token speed, mapped straight onto the group's actual frame count, with a temporary extra boost on context compaction; per-signal weights and decay tuning are configurable on the detail page.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/tcgbp/dsh-flash-skin.git"

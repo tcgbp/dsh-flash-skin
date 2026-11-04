@@ -48,8 +48,10 @@ export const COMMUNITY_ENTRY_MAX_BYTES = 64 * 1024;
 export const COMMUNITY_URL_MAX = 2048;
 /** Submit body budget: url + id metadata. */
 export const MAX_SUBMIT_BODY_BYTES = 256 * 1024;
+/** Max length of a self-declared author name after normalization. */
+export const COMMUNITY_AUTHOR_MAX = 40;
 /** Field-name mapping for the Feishu Bitable shares/likes tables. */
-export const SHARES_FIELDS = { entryId: "entryId", setId: "setId", url: "url", md5: "md5" };
+export const SHARES_FIELDS = { entryId: "entryId", setId: "setId", url: "url", md5: "md5", author: "author" };
 export const LIKES_FIELDS = { setId: "setId", count: "count" };
 
 const SET_ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
@@ -112,6 +114,13 @@ export const DEFAULT_COMMUNITY_TARGET = Object.freeze({
 export function providerFor(target) {
   const kind = target && typeof target.provider === "string" && target.provider ? target.provider : "feishu";
   return COMMUNITY_PROVIDERS[kind] || COMMUNITY_PROVIDERS.feishu;
+}
+
+/** Normalize a self-declared author name: strip control chars, cap length. Returns "" when empty. */
+export function normalizeCommunityAuthor(raw) {
+  if (typeof raw !== "string") return "";
+  const cleaned = raw.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, COMMUNITY_AUTHOR_MAX);
+  return cleaned;
 }
 
 /** Slug a free-form set id down to a safe `[a-z0-9-]` token, or null if empty/too long. */
@@ -391,14 +400,17 @@ export async function readCommunityDirectory(client, target) {
     const entryIdRaw = typeof f[SHARES_FIELDS.entryId] === "string" ? f[SHARES_FIELDS.entryId].trim() : "";
     const entryId = entryIdRaw || rec.recordId;
     const md5 = typeof f[SHARES_FIELDS.md5] === "string" ? f[SHARES_FIELDS.md5].trim() : "";
+    const author = normalizeCommunityAuthor(f[SHARES_FIELDS.author]);
     const cleanSetId = normalizeCommunitySetId(setId);
     const cleanUrl = parseCommunityEntryText(url);
     if (!cleanSetId || !cleanUrl || !entryId) continue;
     // Carry the stored MD5 fingerprint only when present; legacy records (and
     // non-fingerprinted backends) omit it so the directory shape stays clean:
     // the absence of a fingerprint is exactly the "cannot verify" signal.
-    if (md5) entries.push({ entryId, setId: cleanSetId, url: cleanUrl, md5 });
-    else entries.push({ entryId, setId: cleanSetId, url: cleanUrl });
+    const entry = { entryId, setId: cleanSetId, url: cleanUrl };
+    if (md5) entry.md5 = md5;
+    if (author) entry.author = author;
+    entries.push(entry);
   }
   entries.sort((a, b) => (a.setId < b.setId ? -1 : a.setId > b.setId ? 1 : 0));
   return { ok: true, configured: true, entries: entries.slice(0, COMMUNITY_MAX_ENTRIES), error: null };
@@ -408,7 +420,7 @@ export async function readCommunityDirectory(client, target) {
  * Submit a new share pointer to the community directory (server-side write via
  * the Feishu tenant token). Answers 409 when the set id already exists.
  */
-export async function submitCommunityShare(client, target, { setId, url } = {}) {
+export async function submitCommunityShare(client, target, { setId, url, author } = {}) {
   if (!configuredShares(target)) {
     return { ok: false, error: { code: "not-configured", message: "Community directory is not configured." } };
   }
@@ -416,6 +428,7 @@ export async function submitCommunityShare(client, target, { setId, url } = {}) 
   if (!cleanedId) return { ok: false, error: { code: "bad-set-id", message: "Invalid set id." } };
   const cleanUrl = parseCommunityEntryText(url);
   if (!cleanUrl) return { ok: false, error: { code: "bad-url", message: "Invalid archive URL." } };
+  const cleanAuthor = normalizeCommunityAuthor(author);
 
   const token = await client.tenantToken(target);
   if (!token) return { ok: false, error: { code: "auth", message: "Feishu app credentials invalid or missing." } };
@@ -443,6 +456,7 @@ export async function submitCommunityShare(client, target, { setId, url } = {}) 
     [SHARES_FIELDS.setId]: cleanedId,
     [SHARES_FIELDS.url]: cleanUrl,
     [SHARES_FIELDS.md5]: md5,
+    ...(cleanAuthor ? { [SHARES_FIELDS.author]: cleanAuthor } : {}),
   });
   if (!client.provider.ok(res && res.json)) {
     const status = res ? res.status : 0;
@@ -451,7 +465,9 @@ export async function submitCommunityShare(client, target, { setId, url } = {}) 
     return { ok: false, error: apiError(res, "create") };
   }
   const recordId = res.json && res.json.data && res.json.data.record ? res.json.data.record.record_id : null;
-  return { ok: true, entry: { entryId, setId: cleanedId, md5 }, recordId };
+  const entry = { entryId, setId: cleanedId, md5 };
+  if (cleanAuthor) entry.author = cleanAuthor;
+  return { ok: true, entry, recordId };
 }
 
 /** Read remote like counts (likes table) into a floored group->count map. */
@@ -552,7 +568,8 @@ export function installCommunityRoutes(ctx, opts = {}) {
       }
       const setId = envelope && typeof envelope.setId === "string" ? envelope.setId : "";
       const url = envelope && typeof envelope.url === "string" ? envelope.url : "";
-      const result = await submitCommunityShare(client, getTarget(), { setId, url });
+      const author = envelope && typeof envelope.author === "string" ? envelope.author : "";
+      const result = await submitCommunityShare(client, getTarget(), { setId, url, author });
       res.writeHead(result.ok ? 200 : 409, {
         "Content-Type": "application/json; charset=utf-8",
         "X-Content-Type-Options": "nosniff",

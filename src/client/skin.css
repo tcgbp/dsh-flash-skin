@@ -1589,40 +1589,105 @@ body[data-flash-skin="on"][data-flash-layout="left"] [class*="_toBottomSlot"] {
   opacity: 0.45;
 }
 
-.flash-community__list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+.flash-community__tablewrap {
+  max-width: 100%;
+  overflow-x: auto;
 }
 
-.flash-community__item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
+.flash-community__table {
+  width: 100%;
+  min-width: 480px;
+  border-collapse: collapse;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.flash-community__th {
+  text-align: left;
+  padding: 6px 10px;
+  font-size: 11px;
+  line-height: 15px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-tertiary);
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  white-space: nowrap;
+}
+
+.flash-community__th--index {
+  width: 40px;
+}
+
+.flash-community__th--actions {
+  text-align: right;
+}
+
+.flash-community__th--set {
+  width: 110px;
+}
+
+.flash-community__th--author {
+  width: 100px;
+}
+
+.flash-community__row + .flash-community__row .flash-community__td {
+  border-top: 1px solid var(--dsw-alias-border-l1, var(--dsw-alias-border-l2));
+}
+
+.flash-community__td {
+  padding: 6px 10px;
+  vertical-align: middle;
+}
+
+.flash-community__td--index {
+  width: 40px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-tertiary);
+  white-space: nowrap;
+}
+
+.flash-community__td--set {
+  width: 110px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.flash-community__td--author {
+  width: 100px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.flash-community__td--actions {
+  text-align: right;
+  width: 150px;
+  white-space: nowrap;
 }
 
 .flash-community__set {
-  flex: none;
   font-size: 12px;
   line-height: 16px;
   font-weight: 600;
   color: var(--dsw-alias-label-primary);
+  white-space: nowrap;
+}
+
+.flash-community__author {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary));
 }
 
 .flash-community__url {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-size: 12px;
   line-height: 16px;
   color: var(--dsw-alias-link-text, var(--dsw-alias-interactive-fg-default));
   text-decoration: none;
+  display: block;
+  word-break: break-all;
+  overflow-wrap: anywhere;
 }
 
 .flash-community__url:hover {

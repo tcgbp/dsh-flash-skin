@@ -52,7 +52,6 @@ import {
   mergeLikeCount,
   type CommunityEntry,
   parseImportMetaText,
-  summarizeUrl,
 } from "./logic";
 import { zipSync, strToU8, unzipSync, gunzipSync } from "./vendor/fflate";
 
@@ -119,6 +118,8 @@ const LIKE_PATH = `/plugins/${PACKAGE_ID}/like`;
 const LIKES_PATH = `/plugins/${PACKAGE_ID}/likes`;
 const COMMUNITY_PATH = `/plugins/${PACKAGE_ID}/community`;
 const COMMUNITY_SUBMIT_PATH = `/plugins/${PACKAGE_ID}/community/submit`;
+// Max length of the optional self-declared author (mirrors server-side cap).
+const COMMUNITY_AUTHOR_MAX = 40;
 // Per-device like bookkeeping, keyed by group id ({ [groupId]: boolean }). Not
 // part of the persisted config document, so liking never dirties the patch.
 const FLASH_SKIN_LIKED_KEY = "flash-skin:liked-by-id";
@@ -1923,6 +1924,15 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "communitySubmitTitle": "把本组的文本指针提交进社区目录，供所有人浏览导入",
     "communityFormUrlLabel": "压缩包 URL",
     "communityFormUrlHint": "该压缩包由你自己托管（任意公开 URL）；社区只存这一行文本指针。",
+    "communityFormAuthorLabel": "作者 / 昵称（可选）",
+    "communityFormAuthorHint": "留空则以「匿名」展示；仅作展示用途，不影响分享文本与校验。",
+    "communityFormAuthorPlaceholder": "匿名",
+    "communityAnonymous": "匿名",
+    "communityColIndex": "序号",
+    "communityColSet": "组名",
+    "communityColAuthor": "作者",
+    "communityColUrl": "链接",
+    "communityColActions": "操作",
     "communitySubmit": "提交分享",
     "communitySubmitting": "正在提交…",
     "communitySubmitDone": "已提交「{set}」到社区目录",
@@ -2024,6 +2034,15 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "communitySubmitTitle": "Submit this group's text pointer into the community directory for everyone to browse and import",
     "communityFormUrlLabel": "Archive URL",
     "communityFormUrlHint": "Host this zip yourself (any public URL); the community only stores this one-line text pointer.",
+    "communityFormAuthorLabel": "Author / nickname (optional)",
+    "communityFormAuthorHint": "Leave empty to show as “Anonymous”; display-only, does not affect the share text or integrity checks.",
+    "communityFormAuthorPlaceholder": "Anonymous",
+    "communityAnonymous": "Anonymous",
+    "communityColIndex": "#",
+    "communityColSet": "Group",
+    "communityColAuthor": "Author",
+    "communityColUrl": "Link",
+    "communityColActions": "Actions",
     "communitySubmit": "Submit share",
     "communitySubmitting": "Submitting…",
     "communitySubmitDone": "Submitted “{set}” to the community directory",
@@ -2699,6 +2718,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
   const [communityError, setCommunityError] = useState<string | null>(null);
   const [communityNotConfigured, setCommunityNotConfigured] = useState(false);
   const [submitUrl, setSubmitUrl] = useState("");
+  const [submitAuthor, setSubmitAuthor] = useState("");
   const [submitPhase, setSubmitPhase] = useState<"idle" | "submitting" | "done" | "error">("idle");
   const [submitMessage, setSubmitMessage] = useState<string | null>(null);
 
@@ -2747,6 +2767,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
   const submitCommunityShare = async (groupIndex: number) => {
     const group = groups[groupIndex];
     const url = submitUrl.trim();
+    const author = submitAuthor.trim();
     if (!group) return;
     if (!url) {
       setSubmitPhase("error");
@@ -2759,7 +2780,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
       const response = await fetch(COMMUNITY_SUBMIT_PATH, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ setId: group.id, url }),
+        body: JSON.stringify({ setId: group.id, url, author }),
       });
       const payload = (await response.json().catch(() => null)) as
         | { ok?: unknown; entry?: { setId?: unknown }; error?: { code?: string; message?: string } }
@@ -3814,39 +3835,60 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
             <p className="flash-portrait-groups__hint">{t("communityEmpty")}</p>
           )}
           {communityPhase === "ready" && !communityError && !communityNotConfigured && communityEntries.length > 0 && (
-            <ul className="flash-community__list">
-              {communityEntries.map((entry) => (
-                <li key={entry.entryId || entry.setId} className="flash-community__item">
-                  <span className="flash-community__set">{entry.setId}</span>
-                  <a className="flash-community__url" href={entry.url} target="_blank" rel="noreferrer" title={entry.url}>
-                    {summarizeUrl(entry.url)}
-                  </a>
-                  <div className="flash-community__actions">
-                    <button
-                      type="button"
-                      className={isLikedById(entry.setId) ? "flash-community__like flash-community__like--on" : "flash-community__like"}
-                      title={t("likeTitle")}
-                      aria-pressed={isLikedById(entry.setId)}
-                      // Liking is route-based bookkeeping keyed to the community
-                      // entry's stable setId, read-only w.r.t. the config doc.
-                      disabled={busy}
-                      onClick={() => void toggleLike(entry.setId)}
-                    >
-                      {isLikedById(entry.setId) ? "♥" : "♡"} {likeCountFor(entry.setId)}
-                    </button>
-                    <button
-                      type="button"
-                      className="flash-community__import"
-                      disabled={!writable || busy}
-                      onClick={() => void importCommunityEntry(entry)}
-                      title={t("communityImportTitle")}
-                    >
-                      {t("communityImport")}
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
+            <div className="flash-community__tablewrap">
+              <table className="flash-community__table">
+                <thead>
+                  <tr>
+                    <th scope="col" className="flash-community__th flash-community__th--index">{t("communityColIndex")}</th>
+                    <th scope="col" className="flash-community__th flash-community__th--set">{t("communityColSet")}</th>
+                    <th scope="col" className="flash-community__th flash-community__th--author">{t("communityColAuthor")}</th>
+                    <th scope="col" className="flash-community__th">{t("communityColUrl")}</th>
+                    <th scope="col" className="flash-community__th flash-community__th--actions">{t("communityColActions")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {communityEntries.map((entry, index) => (
+                    <tr key={entry.entryId || entry.setId} className="flash-community__row">
+                      <td className="flash-community__td flash-community__td--index">{index + 1}</td>
+                      <td className="flash-community__td flash-community__td--set"><span className="flash-community__set">{entry.setId}</span></td>
+                      <td className="flash-community__td flash-community__td--author">
+                        <span className="flash-community__author">{entry.author || t("communityAnonymous")}</span>
+                      </td>
+                      <td className="flash-community__td">
+                        <a className="flash-community__url" href={entry.url} target="_blank" rel="noreferrer" title={entry.url}>
+                          {entry.url}
+                        </a>
+                      </td>
+                      <td className="flash-community__td flash-community__td--actions">
+                        <div className="flash-community__actions">
+                          <button
+                            type="button"
+                            className={isLikedById(entry.setId) ? "flash-community__like flash-community__like--on" : "flash-community__like"}
+                            title={t("likeTitle")}
+                            aria-pressed={isLikedById(entry.setId)}
+                            // Liking is route-based bookkeeping keyed to the community
+                            // entry's stable setId, read-only w.r.t. the config doc.
+                            disabled={busy}
+                            onClick={() => void toggleLike(entry.setId)}
+                          >
+                            {isLikedById(entry.setId) ? "♥" : "♡"} {likeCountFor(entry.setId)}
+                          </button>
+                          <button
+                            type="button"
+                            className="flash-community__import"
+                            disabled={!writable || busy}
+                            onClick={() => void importCommunityEntry(entry)}
+                            title={t("communityImportTitle")}
+                          >
+                            {t("communityImport")}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </section>
       )}
@@ -4097,6 +4139,21 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
                   placeholder="https://…/group.zip"
                 />
                 <em className="flash-community__field-hint">{t("communityFormUrlHint")}</em>
+              </label>
+              <label className="flash-community__field">
+                <span className="flash-community__field-label">{t("communityFormAuthorLabel")}</span>
+                <input
+                  type="text"
+                  className="flash-weights__input"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  maxLength={COMMUNITY_AUTHOR_MAX}
+                  value={submitAuthor}
+                  onChange={(event) => setSubmitAuthor(event.currentTarget.value)}
+                  placeholder={t("communityFormAuthorPlaceholder")}
+                />
+                <em className="flash-community__field-hint">{t("communityFormAuthorHint")}</em>
               </label>
               <div className="flash-share__actions">
                 <button

@@ -52,6 +52,7 @@ import {
   mergeLikeCount,
   type CommunityEntry,
   parseImportMetaText,
+  summarizeUrl,
 } from "./logic";
 import { zipSync, strToU8, unzipSync, gunzipSync } from "./vendor/fflate";
 
@@ -3818,7 +3819,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
                 <li key={entry.entryId || entry.setId} className="flash-community__item">
                   <span className="flash-community__set">{entry.setId}</span>
                   <a className="flash-community__url" href={entry.url} target="_blank" rel="noreferrer" title={entry.url}>
-                    {entry.url}
+                    {summarizeUrl(entry.url)}
                   </a>
                   <div className="flash-community__actions">
                     <button

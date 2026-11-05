@@ -33,16 +33,18 @@ body[data-flash-skin="on"] .flash-skin-backdrop {
   transition: filter 180ms linear;
 }
 
-/* Mirrored left portrait for dual left+right mode. Anchored to the LEFT edge
-   (reversed fade so the face fades in from the screen center) and flipped
-   horizontally (scaleX(-1)) so the character looks inward across the stage.
+/* Mirrored left portrait for dual left+right mode. Anchored to the LEFT edge.
+   EXPERIMENT: no scaleX(-1) flip — instead the fade is pre-mirrored with a
+   reversed 270deg gradient so the face stays visible at the screen edge and
+   fades in from the screen center, symmetric with the right side, while the
+   element is NOT flipped (avoids any scaleX(-1) GPU re-sampling blur).
    Both frames share --flash-portrait-size / --flash-portrait-opacity and the
    [data-media="sequence"] visibility gate below, so the generic frame rule
    already reveals the left frame whenever the presenter attaches it. */
 .flash-skin-backdrop .flash-skin-sequence-frame--left {
   right: auto;
   left: 0;
-  transform: translateY(-50%) scaleX(-1);
+  transform: translateY(-50%);
   mask-image: linear-gradient(270deg, transparent 0%, rgb(0 0 0 / 20%) 10%, black 30%, black 100%);
 }
 
@@ -55,23 +57,28 @@ body[data-flash-skin="on"] .flash-skin-backdrop {
   opacity: var(--flash-portrait-opacity, 1);
 }
 
-/* Stage-local scrim (mirrors dsh-liang-skin): a horizontal overlay that
-   desaturates/softens the portrait without painting over transcript text or
-   native portals. Colours come from applyPalette as --flash-mask-* (rgba over
-   the active shell page): base tints the whole stage, strong/soft drive the
-   left-to-right fade. The data-mask switch lets the overlay be toggled. */
-.flash-skin-backdrop::after {
-  position: absolute;
+/* Stage-wide readability scrim (幕布): a full-viewport translucent dim layer
+   that floats ABOVE the app content (it is position:fixed with a high z-index,
+   unlike the -1 backdrop portraits, so it is actually visible) and spans the
+   ENTIRE width — left, center and right alike — dimming all three columns when
+   the strength is raised. The colour source is --flash-mask-soft (from
+   applyPalette, rgba over the active shell page); --flash-scrim-strength
+   (0..100%, driven by the 幕布强度 slider) scales that alpha — at 0 the mix is
+   fully transparent (off), so there is no separate on/off switch. It renders
+   only when the skin is enabled (gated by `data-scrim="on"` on <body>), and is
+   pointer-events:none so it never blocks clicking/selection. Purely cosmetic,
+   own element + own CSS — no host coupling. */
+.flash-skin-scrim {
+  position: fixed;
+  z-index: 900;
   inset: 0;
   display: none;
-  content: "";
   pointer-events: none;
-  background:
-    linear-gradient(90deg, var(--flash-mask-strong, transparent) 0%, var(--flash-mask-soft, transparent) 38%, transparent 66%),
-    linear-gradient(var(--flash-mask-base, transparent), var(--flash-mask-base, transparent));
+  background: color-mix(in srgb, var(--flash-mask-soft, rgb(0 0 0 / 20%)) var(--flash-scrim-strength, 100%), transparent);
+  transition: background 120ms ease;
 }
 
-.flash-skin-backdrop[data-mask="on"]::after {
+body[data-flash-skin="on"][data-scrim="on"] .flash-skin-scrim {
   display: block;
 }
 

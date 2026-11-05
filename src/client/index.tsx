@@ -86,6 +86,37 @@ const DEFAULT_PORTRAIT_SIZE = 100;
 const PORTRAIT_SIZE_MIN = 60;
 const PORTRAIT_SIZE_MAX = 150;
 
+// Readability scrim (中央对话区压暗层) strength (%). Persisted and consumed by
+// skin.css via the `--flash-scrim-strength` custom property (see applyScrim);
+// strength 0 is fully transparent — i.e. off — so there is no separate toggle.
+const SCRIM_STRENGTH_KEY = "dsh-flash-skin.scrim-strength";
+const DEFAULT_SCRIM_STRENGTH = 100;
+const SCRIM_STRENGTH_MIN = 0;
+const SCRIM_STRENGTH_MAX = 100;
+
+// Community "like" thumbs-up icon. Uses an SVG so it inherits currentColor
+// (the amber liked / tertiary unliked styling from skin.css), unlike emoji
+// which render in their own palette. Filled for the liked state, outlined
+// otherwise, mirroring the former heart glyph pair.
+function ThumbsUp({ filled }: { filled: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="14"
+      height="14"
+      aria-hidden="true"
+      style={{ verticalAlign: "-2px", marginRight: 4 }}
+      fill={filled ? "currentColor" : "none"}
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3" />
+    </svg>
+  );
+}
+
 // Desktop-host detection. The desktop version is a real Electron app (its
 // resources ship as app.asar + Electron PE/runtime DLLs), while the web GUI
 // runs in a normal browser. Signals, most reliable first:
@@ -499,6 +530,11 @@ class SkinPresenter {
   // into the `color-mix` fill of the chat-text readability chip.
   private textBgStrength = restoreTextBg();
   private portraitSize = restorePortraitSize();
+  // Readability-scrim strength (%) (persisted). Drives `--flash-scrim-strength`
+  // on <body>; skin.css feeds it into the central-column readability dim (see
+  // applyScrim). A strength of 0 makes the dim fully transparent — i.e. off —
+  // so there is no separate on/off switch.
+  private scrimStrength = restoreScrimStrength();
   // Per-group config mirrored from the persisted config card. images drive the
   // portrait sequence; darkLevel (absent → the top stop, axisMax - 1) drives
   // the flip to the dark shell, on the same dynamic axis as the slider.
@@ -591,6 +627,14 @@ class SkinPresenter {
     this.root.dataset.media = "color";
     this.root.dataset.mask = "on";
     this.root.setAttribute("aria-hidden", "true");
+    // A dedicated, full-viewport scrim layer (see skin.css .flash-skin-scrim).
+    // It must float ABOVE the app content to be reachable/visible, and it
+    // spans the whole width so left and right portraits are dimmed too. Own
+    // element, own CSS, pointer-events:none — no host coupling.
+    this.scrim = document.createElement("div");
+    this.scrim.className = "flash-skin-scrim";
+    this.scrim.dataset.plugin = PACKAGE_ID;
+    this.scrim.setAttribute("aria-hidden", "true");
     this.onChange = ({ image }) => this.renderFrame("right", image);
     this.leftOnChange = ({ image }) => this.renderFrame("left", image);
     this.portraits = this.buildPortraits(this.set, this.onChange);
@@ -742,6 +786,37 @@ class SkinPresenter {
     else document.body.style.removeProperty("--flash-portrait-size");
   }
 
+  getScrimStrength(): number {
+    return this.scrimStrength;
+  }
+
+  setScrimStrength(strength: number) {
+    if (this.disposed) return;
+    this.scrimStrength = Math.min(SCRIM_STRENGTH_MAX, Math.max(SCRIM_STRENGTH_MIN, Math.round(strength)));
+    try {
+      localStorage.setItem(SCRIM_STRENGTH_KEY, String(this.scrimStrength));
+    } catch {
+      // storage may be unavailable
+    }
+    this.applyScrim();
+  }
+
+  // Mirror the palette body-variable pattern: `--flash-scrim-strength`
+  // (percentage form, e.g. "80%") scales the central readability dim's alpha;
+  // at 0% it is fully transparent (off). Only ever this skin's own CSS — no
+  // host coupling. Written as a percentage because skin.css consumes it as the
+  // interpolation amount inside color-mix(), which requires a valid <percentage>.
+  private applyScrim() {
+    if (this.disposed) return;
+    if (this.enabled) {
+      document.body.setAttribute("data-scrim", "on");
+      document.body.style.setProperty("--flash-scrim-strength", `${this.scrimStrength}%`);
+    } else {
+      document.body.removeAttribute("data-scrim");
+      document.body.style.removeProperty("--flash-scrim-strength");
+    }
+  }
+
   setPortraitSet(set: PortraitSet) {
     if (this.disposed || set.id === this.set.id) return;
     this.set = set;
@@ -807,15 +882,18 @@ class SkinPresenter {
     this.enabled = enabled;
     if (enabled) {
       if (!this.root.isConnected) document.body.prepend(this.root);
+      if (!this.scrim.isConnected) document.body.prepend(this.scrim);
       document.body.dataset.flashSkin = "on";
       this.applyLayout();
       this.applyTextBg();
       this.applyPortraitSize();
+      this.applyScrim();
       this.applyPalette();
       this.portraits.start();
       if (this.dual) this.rebuildLeftPortraits();
     } else {
       this.root.remove();
+      this.scrim.remove();
       this.portraits.stop();
       this.leftPortraits?.stop();
       this.leftPortraits?.dispose();
@@ -827,6 +905,7 @@ class SkinPresenter {
       this.applyLayout();
       this.applyTextBg();
       this.applyPortraitSize();
+      this.applyScrim();
       for (const name of cssVariables) document.body.style.removeProperty(name);
     }
   }
@@ -950,6 +1029,7 @@ class SkinPresenter {
     this.leftPortraits?.dispose();
     this.leftPortraits = null;
     this.root.remove();
+    this.scrim.remove();
     document.body.removeAttribute("data-flash-skin");
     document.body.removeAttribute("data-flash-layout");
     delete document.body.dataset.flashStage;
@@ -1848,6 +1928,20 @@ function restorePortraitSize(): number {
     // storage may be unavailable
   }
   return DEFAULT_PORTRAIT_SIZE;
+}
+
+// Restore the readability-scrim strength (%). Defaults to DEFAULT_SCRIM_STRENGTH;
+// a present but non-numeric / out-of-range value snaps back to the default.
+function restoreScrimStrength(): number {
+  try {
+    const raw = Number(localStorage.getItem(SCRIM_STRENGTH_KEY));
+    if (Number.isFinite(raw)) {
+      return Math.min(SCRIM_STRENGTH_MAX, Math.max(SCRIM_STRENGTH_MIN, Math.round(raw)));
+    }
+  } catch {
+    // storage may be unavailable
+  }
+  return DEFAULT_SCRIM_STRENGTH;
 }
 
 function readWeightsState(): { weights: CompositeWeights; tuning: SpeedTuning } {
@@ -4167,7 +4261,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
                             disabled={busy}
                             onClick={() => void toggleLike(entry.setId)}
                           >
-                            {isLikedById(entry.setId) ? "♥" : "♡"} {likeCountFor(entry.setId)}
+                            {<ThumbsUp filled={isLikedById(entry.setId)} />}{likeCountFor(entry.setId)}
                           </button>
                           <button
                             type="button"
@@ -4538,6 +4632,7 @@ export function apply(ctx: ClientContext) {
         "layout.title": "内容居左对齐",
         "textBg.title": "文字背景浓度",
         "portraitSize.title": "人物显示大小",
+        "scrimStrength.title": "幕布强度",
         "driver.title": "强度驱动",
         "driver.manual": "手动",
         "driver.composite": "综合加权",
@@ -4588,6 +4683,7 @@ export function apply(ctx: ClientContext) {
         "layout.title": "Left-aligned layout",
         "textBg.title": "Text-chip opacity",
         "portraitSize.title": "Portrait size",
+        "scrimStrength.title": "Scrim strength",
         "driver.title": "Level driver",
         "driver.manual": "Manual",
         "driver.composite": "Composite",
@@ -4686,6 +4782,7 @@ export function apply(ctx: ClientContext) {
   const LAYOUT_SWITCH_ID = `${PACKAGE_ID}:layout-left`;
   const TEXT_BG_SWITCH_ID = `${PACKAGE_ID}:text-bg-strength`;
   const PORTRAIT_SIZE_SWITCH_ID = `${PACKAGE_ID}:portrait-size`;
+  const SCRIM_STRENGTH_SWITCH_ID = `${PACKAGE_ID}:scrim-strength`;
   const DUAL_SWITCH_ID = `${PACKAGE_ID}:portrait-dual`;
   const LEFT_SET_SWITCH_ID = `${PACKAGE_ID}:portrait-left-set`;
   // 这些皮肤开关共享同一个簇字符串，宿主会把它们折叠成一张以
@@ -4992,6 +5089,33 @@ export function apply(ctx: ClientContext) {
         formatLabel: (value) => `${Math.round(Number(value) || DEFAULT_TEXT_BG_STRENGTH)}%`,
         visible: () => presenter.isEnabled(),
       });
+      // Readability scrim strength (26.81, just under the text-bg slider at
+      // 26.8): a slider that tunes how strong the central-column readability
+      // dim (幕布) is (0–100%). Runs through the presenter
+      // (`presenter.setScrimStrength` persists via localStorage
+      // SCRIM_STRENGTH_KEY) and applies live through the
+      // `--flash-scrim-strength` custom property; skin.css mixes it into the
+      // scrim fill. At 0 the dim is fully transparent (off) — there is no
+      // separate on/off switch. Own CSS only — no host coupling.
+      const scrimStrengthDispose = reg.registerSwitch?.({
+        id: SCRIM_STRENGTH_SWITCH_ID,
+        label: () => setLabel("scrimStrength.title"),
+        cluster: FLASH_SKIN_CLUSTER,
+        icon: "sliders",
+        type: "slider",
+        group: "appearance",
+        order: 26.81,
+        min: SCRIM_STRENGTH_MIN,
+        max: SCRIM_STRENGTH_MAX,
+        step: 5,
+        getValue: () => presenter.getScrimStrength(),
+        setValue: (value) => {
+          presenter.setScrimStrength(Number(value));
+          quickControl?.notifyChange?.(SCRIM_STRENGTH_SWITCH_ID);
+        },
+        formatLabel: (value) => `${Math.round(Number(value) || DEFAULT_SCRIM_STRENGTH)}%`,
+        visible: () => presenter.isEnabled(),
+      });
       // Displayed portrait size (26.6, directly under the level slider at 26.5):
       // a slider that zooms the backdrop portrait bigger or smaller (60–150% of
       // its base width). Runs through the presenter (`presenter.setPortraitSize`
@@ -5066,6 +5190,8 @@ export function apply(ctx: ClientContext) {
         else reg.unregisterSwitch?.(TEXT_BG_SWITCH_ID);
         if (typeof portraitSizeDispose === "function") portraitSizeDispose();
         else reg.unregisterSwitch?.(PORTRAIT_SIZE_SWITCH_ID);
+        if (typeof scrimStrengthDispose === "function") scrimStrengthDispose();
+        else reg.unregisterSwitch?.(SCRIM_STRENGTH_SWITCH_ID);
         offScope();
       };
     }, "flash-skin: quick switches");

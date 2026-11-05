@@ -327,6 +327,11 @@ export function installLikeRoutes(ctx, opts = {}) {
   let communityPending = false;
   let communityInFlight = false;
   let communityFailed = false;
+  // groupIds this host explicitly unliked back to 0 (or otherwise removed from
+  // T1). They are folded into the community flush so the Bitable likes table
+  // deletes any lingering row instead of keeping a stale positive count. Only
+  // ids recorded here are ever deleted from the table.
+  const communityRemoved = new Set();
 
   const communityEnabled = () =>
     !!community &&
@@ -380,10 +385,18 @@ export function installLikeRoutes(ctx, opts = {}) {
     communityInFlight = true;
     try {
       const merged = { ...ledger.counts() };
-      const res = await community.submitCommunityLikes(client, target, { counts: merged });
+      // Fold explicitly-removed groupIds in so the table's stale rows for
+      // groups unliked back to 0 are actually deleted (not just left behind).
+      const removed = Array.from(communityRemoved);
+      const res = await community.submitCommunityLikes(client, target, { counts: merged, removed });
       if (res && res.ok === false) {
         // Never retry into an unconfigurable state this process lifetime.
         if (res.error && res.error.code === "not-configured") communityFailed = true;
+      } else if (res && res.ok === true) {
+        // A successful flush means every tracked removal was at least attempted
+        // against the table; drop them so a later re-like can re-create cleanly
+        // and we don't keep re-deleting on subsequent flushes.
+        communityRemoved.clear();
       }
     } catch {
       /* swallow: local ledger stays authoritative */
@@ -444,8 +457,15 @@ export function installLikeRoutes(ctx, opts = {}) {
         return;
       }
       // Durable mirror is fire-and-forget; never delays or fails the response.
-      if (result.deleted) void mirror.remove(result.groupId).catch(() => {});
-      else void mirror.write(result.groupId, result.count, result.peers).catch(() => {});
+      if (result.deleted) {
+        communityRemoved.add(result.groupId);
+        void mirror.remove(result.groupId).catch(() => {});
+      } else {
+        // Re-liked (or newly liked) groups are positive again in the ledger;
+        // make sure we don't keep planning to delete them from the table.
+        communityRemoved.delete(result.groupId);
+        void mirror.write(result.groupId, result.count, result.peers).catch(() => {});
+      }
       // Schedule a debounced community Bitable flush (aggregated likes).
       scheduleCommunityFlush();
       sendJson(res, 200, {

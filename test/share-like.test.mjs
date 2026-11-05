@@ -530,6 +530,7 @@ describe("C2 community helper functions (community.js)", () => {
         }),
         createRecord: async (appToken, tableId, token, fields) => { calls.push(["create", null, fields]); return { status: 200, json: { code: 0 } }; },
         updateRecord: async (appToken, tableId, token, recordId, fields) => { calls.push(["update", recordId, fields]); return { status: 200, json: { code: 0 } }; },
+        deleteRecord: async (appToken, tableId, token, recordId) => { calls.push(["delete", recordId]); return { status: 200, json: { code: 0 } }; },
       };
       const res = await submitCommunityLikes(base, target, { counts: { "han-li": 5, "jiu-gong": 2, "bad id": 3, neg: -1, zero: 0 } });
       expect(res.ok).toBe(true);
@@ -547,10 +548,50 @@ describe("C2 community helper functions (community.js)", () => {
         listRecords: async () => ({ status: 200, json: { code: 0, data: { items: [], has_more: false } } }),
         createRecord: async () => ({ status: 200, json: { code: 0 } }),
         updateRecord: async () => ({ status: 200, json: { code: 0 } }),
+        deleteRecord: async () => ({ status: 200, json: { code: 0 } }),
       };
       const res = await submitCommunityLikes(client, { provider: "feishu", appId: "a", appSecret: "s", appToken: "t", likesTableId: "" }, { counts: { a: 1 } });
       expect(res.ok).toBe(false);
       expect(res.error.code).toBe("not-configured");
+    });
+
+    it("deletes table rows for groups explicitly removed back to 0", async () => {
+      const calls = [];
+      const base = {
+        provider: COMMUNITY_PROVIDERS.feishu,
+        tenantToken: async () => "tok",
+        listRecords: async () => ({
+          status: 200,
+          json: {
+            code: 0,
+            data: {
+              items: [
+                { record_id: "rec-gone", fields: { setId: "gone", count: 3 } },
+                { record_id: "rec-reliked", fields: { setId: "reliked", count: 4 } },
+                { record_id: "rec-untouched", fields: { setId: "other-host", count: 7 } },
+              ],
+              has_more: false,
+            },
+          },
+        }),
+        createRecord: async () => ({ status: 200, json: { code: 0 } }),
+        updateRecord: async (appToken, tableId, token, recordId, fields) => { calls.push(["update", recordId, fields]); return { status: 200, json: { code: 0 } }; },
+        deleteRecord: async (appToken, tableId, token, recordId) => { calls.push(["delete", recordId]); return { status: 200, json: { code: 0 } }; },
+      };
+      // "gone" and "reliked" are in the removal list, but "reliked" is still
+      // counted in `counts` → it must be upserted, not deleted. "gone" has no
+      // positive count → only its row is deleted. "other-host" is absent from
+      // removal entirely → untouched (never owned by this host).
+      const res = await submitCommunityLikes(base, target, {
+        counts: { "reliked": 6 },
+        removed: ["gone", "reliked", "unknown"],
+      });
+      expect(res.ok).toBe(true);
+      expect(res.updated).toBe(1);
+      expect(res.deleted).toBe(1);
+      const deletes = calls.filter(([k]) => k === "delete").map(([, rid]) => rid);
+      expect(deletes).toEqual(["rec-gone"]);
+      expect(calls.some(([k, rid, f]) => k === "update" && rid === "rec-reliked" && f.count === 6)).toBe(true);
     });
 
     it("maps backend errors like exists", async () => {
@@ -560,6 +601,7 @@ describe("C2 community helper functions (community.js)", () => {
         listRecords: async () => ({ status: 200, json: { code: 0, data: { items: [], has_more: false } } }),
         createRecord: async () => ({ status: 200, json: { code: 1254003 } }),
         updateRecord: async () => ({ status: 200, json: { code: 0 } }),
+        deleteRecord: async () => ({ status: 200, json: { code: 0 } }),
       };
       const res = await submitCommunityLikes(client, target, { counts: { ok: 1 } });
       expect(res.ok).toBe(true);

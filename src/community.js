@@ -87,6 +87,9 @@ const FEISHU_PROVIDER = {
   updateRecordPath(appToken, tableId, recordId) {
     return `/bitable/v1/apps/${enc(appToken)}/tables/${enc(tableId)}/records/${enc(recordId)}`;
   },
+  deleteRecordPath(appToken, tableId, recordId) {
+    return `/bitable/v1/apps/${enc(appToken)}/tables/${enc(tableId)}/records/${enc(recordId)}`;
+  },
 };
 
 export const COMMUNITY_PROVIDERS = { feishu: FEISHU_PROVIDER };
@@ -346,6 +349,9 @@ export function createCommunityClient(provider = FEISHU_PROVIDER, fetchImpl = gl
   async function updateRecord(appToken, tableId, token, recordId, fields) {
     return request(active.updateRecordPath(appToken, tableId, recordId), { method: "PUT", token, body: { fields }, timeout: 20_000 });
   }
+  async function deleteRecord(appToken, tableId, token, recordId) {
+    return request(active.deleteRecordPath(appToken, tableId, recordId), { method: "DELETE", token, timeout: 20_000 });
+  }
 
   return {
     fetchImpl: fetchFn,
@@ -354,6 +360,7 @@ export function createCommunityClient(provider = FEISHU_PROVIDER, fetchImpl = gl
     listRecords,
     createRecord,
     updateRecord,
+    deleteRecord,
   };
 }
 
@@ -489,7 +496,7 @@ export async function readCommunityLikes(client, target) {
 }
 
 /** Upsert aggregated like counts into the likes table (server-side write). */
-export async function submitCommunityLikes(client, target, { counts } = {}) {
+export async function submitCommunityLikes(client, target, { counts, removed } = {}) {
   if (!configuredLikes(target)) {
     return { ok: false, error: { code: "not-configured", message: "Community likes table is not configured." } };
   }
@@ -504,6 +511,16 @@ export async function submitCommunityLikes(client, target, { counts } = {}) {
       if (Number.isFinite(n) && n > 0) normalized[key] = Math.floor(n);
     }
   }
+
+  // Explicitly-removed groups: every row in the table whose setId is in this
+  // list *and* is no longer present in the normalized (positive) set must be
+  // deleted, so a group unliked back to 0 stops lingering in the table. Only
+  // setIds named here are ever deleted — absence from `counts` alone (e.g. a
+  // group another host wrote that this host never saw) is never treated as a
+  // delete, which keeps the write-back scoped to the groups this host manages.
+  const removalSet = new Set(
+    Array.isArray(removed) ? removed.filter((id) => typeof id === "string" && id.length > 0) : [],
+  );
 
   const listed = await listAllRecords(client, target, target.likesTableId);
   if (!listed.ok) return { ok: false, error: listed.error };
@@ -523,7 +540,16 @@ export async function submitCommunityLikes(client, target, { counts } = {}) {
       : await client.createRecord(target.appToken, target.likesTableId, token, fields);
     if (client.provider.ok(res && res.json)) updated++;
   }
-  return { ok: true, updated };
+
+  let deleted = 0;
+  for (const setId of removalSet) {
+    if (normalized[setId] !== undefined) continue; // still liked → never delete
+    const recordId = recordBySetId.get(setId);
+    if (!recordId) continue; // no lingering row to remove
+    const res = await client.deleteRecord(target.appToken, target.likesTableId, token, recordId);
+    if (client.provider.ok(res && res.json)) deleted++;
+  }
+  return { ok: true, updated, deleted };
 }
 
 /**

@@ -36,6 +36,7 @@ import {
   paletteForLevel,
   PORTRAIT_IMPORT_MIN_IMAGES,
   reasoningEffortFactor,
+  remapSideLevel,
   selectedEffortIndex,
   stagedFrames,
   tokenSpeedFactor,
@@ -60,6 +61,10 @@ const LOCALE_NAMESPACE = "flash.skin";
 const CONFIG_NAMESPACE = "flash-skin";
 const LEVEL_KEY = "dsh-flash-skin.level";
 const SET_KEY = "dsh-flash-skin.set";
+// Secondary (left) portrait set id for dual mode; only consumed while dual is ON.
+const LEFT_SET_KEY = "dsh-flash-skin.left-set";
+// Dual left+right portrait mode on/off ("1"/"0").
+const DUAL_KEY = "dsh-flash-skin.dual";
 const DRIVER_KEY = "dsh-flash-skin.driver";
 const LAYOUT_KEY = "dsh-flash-skin.layout-left";
 // Blend strength (%) of the translucent background chip behind chat text.
@@ -321,7 +326,13 @@ type DriverMode = "manual" | "composite";
 
 interface SkinSettings {
   enabled: boolean;
+  // Primary portrait set, rendered on the RIGHT side by default (preserves the
+  // pre-dual single-set behavior verbatim). Persisted via localStorage SET_KEY.
   set: string;
+  // Secondary (left-side) portrait set id; only rendered while dual is ON.
+  leftSet?: string;
+  // Dual left+right side mode. OFF keeps the classic single (right) portrait.
+  dual: boolean;
   driver: DriverMode;
 }
 
@@ -330,6 +341,8 @@ interface PreferenceStore {
   subscribe(listener: () => void): () => void;
   set(enabled: boolean): Promise<void>;
   setSet(setId: string): Promise<void>;
+  setLeftSet(setId: string): Promise<void>;
+  setDual(dual: boolean): Promise<void>;
   setDriver(driver: DriverMode): Promise<void>;
   dispose(): void;
 }
@@ -473,6 +486,7 @@ class SkinPresenter {
   private readonly theme: ThemeService;
   private readonly root: HTMLDivElement;
   private readonly onChange: (state: { image: PortraitImage | null }) => void;
+  private readonly leftOnChange: (state: { image: PortraitImage | null }) => void;
   private portraits: ReturnType<typeof createPortraitLoader>;
   private enabled = true;
   private level = 0;
@@ -490,6 +504,13 @@ class SkinPresenter {
   // the flip to the dark shell, on the same dynamic axis as the slider.
   private groupConfigs: Record<string, { images: string[]; darkLevel?: number }> = {};
   private portraitsSources: readonly PortraitSource[] = [];
+  // Dual left+right mode: a second loader renders a mirrored character on the
+  // left while `portraits` keeps the primary (right) set. Both advance in step
+  // on the ONE shared level axis (master axis = the primary set's frame count).
+  private dual = false;
+  private leftSet: PortraitSet = DEFAULT_PORTRAIT_SET;
+  private leftPortraits: ReturnType<typeof createPortraitLoader> | null = null;
+  private leftPortraitsSources: readonly PortraitSource[] = [];
   private disposed = false;
   private unsubscribe: () => void;
 
@@ -521,6 +542,9 @@ class SkinPresenter {
         this.portraits.start();
         this.updatePortrait();
       }
+      // Group edits can change the left set's frame count too; rebuild the
+      // mirrored left loader so both sides stay in step (no-op when dual is off).
+      if (this.dual) this.rebuildLeftPortraits();
       this.applyPalette();
     }
   }
@@ -567,31 +591,18 @@ class SkinPresenter {
     this.root.dataset.media = "color";
     this.root.dataset.mask = "on";
     this.root.setAttribute("aria-hidden", "true");
-    this.onChange = ({ image }) => {
-      if (this.disposed || !this.enabled) return;
-      if (image === null) {
-        this.root.dataset.media = "color";
-        this.root.replaceChildren();
-        return;
-      }
-      // Reuse the decoded node so a frame swap cannot start a second fetch.
-      const portrait = image as HTMLImageElement;
-      portrait.className = "flash-skin-sequence-frame";
-      portrait.alt = "";
-      portrait.draggable = false;
-      if (this.root.firstChild !== portrait) this.root.replaceChildren(portrait);
-      this.root.dataset.media = "sequence";
-    };
-    this.portraits = this.buildPortraits(this.set);
+    this.onChange = ({ image }) => this.renderFrame("right", image);
+    this.leftOnChange = ({ image }) => this.renderFrame("left", image);
+    this.portraits = this.buildPortraits(this.set, this.onChange);
     this.portraitsSources = this.sourcesForSet(this.set);
     this.unsubscribe = scope.subscribe(() => this.syncSettings());
     this.syncSettings();
   }
 
-  private buildPortraits(set: PortraitSet) {
+  private buildPortraits(set: PortraitSet, onChange: (state: { image: PortraitImage | null }) => void) {
     return createPortraitLoader({
       sources: this.sourcesForSet(set),
-      onChange: this.onChange,
+      onChange,
     });
   }
 
@@ -599,6 +610,42 @@ class SkinPresenter {
     const snapshot = this.scope.getSnapshot();
     this.setEnabled(snapshot.enabled);
     this.setPortraitSet(this.resolveSet(snapshot.set));
+    this.setDual(Boolean(snapshot.dual));
+    this.setLeftSet(snapshot.leftSet || DEFAULT_PORTRAIT_SET.id);
+  }
+
+  // Upsert (or remove) one side's decoded <img> in the shared backdrop root.
+  // Built on up-to-three coexisting child nodes now (primary right frame plus
+  // an optional mirrored left frame), so swapping one side never wipes the
+  // other — hence no replaceChildren() here.
+  private upsertFrame(side: "right" | "left", node: HTMLImageElement | null) {
+    const existing = this.root.querySelector<HTMLImageElement>(`[data-side="${side}"]`);
+    if (node === null) {
+      existing?.remove();
+    } else {
+      node.className = side === "left"
+        ? "flash-skin-sequence-frame flash-skin-sequence-frame--left"
+        : "flash-skin-sequence-frame";
+      node.setAttribute("data-side", side);
+      node.alt = "";
+      node.draggable = false;
+      if (existing && existing !== node) existing.remove();
+      if (this.root.querySelector(`[data-side="${side}"]`) !== node) this.root.appendChild(node);
+    }
+    this.applyMediaState();
+  }
+
+  private renderFrame(side: "right" | "left", image: PortraitImage | null) {
+    if (this.disposed || !this.enabled) return;
+    if (side === "left" && !this.dual) return;
+    const node = image === null ? null : (image as HTMLImageElement);
+    this.upsertFrame(side, node);
+  }
+
+  private applyMediaState() {
+    if (this.disposed) return;
+    const hasFrame = this.root.querySelector<HTMLElement>(".flash-skin-sequence-frame") !== null;
+    this.root.dataset.media = hasFrame ? "sequence" : "color";
   }
 
   isEnabled() {
@@ -699,7 +746,7 @@ class SkinPresenter {
     if (this.disposed || set.id === this.set.id) return;
     this.set = set;
     this.portraits.dispose();
-    this.portraits = this.buildPortraits(set);
+    this.portraits = this.buildPortraits(set, this.onChange);
     this.portraitsSources = this.sourcesForSet(set);
     if (this.enabled) {
       this.portraits.start();
@@ -707,6 +754,51 @@ class SkinPresenter {
       // The dark threshold is per set; re-apply the palette so the shell
       // reflects the newly selected set's configuration.
       this.applyPalette();
+    }
+  }
+
+  getLeftSet() {
+    return this.leftSet;
+  }
+
+  getDual() {
+    return this.dual;
+  }
+
+  // Rebuild the left-side loader from the persisted left set. No-op unless
+  // that set is configured with at least one image and the skin is enabled.
+  private rebuildLeftPortraits(nextSources = this.sourcesForSet(this.leftSet)) {
+    this.leftPortraitsSources = nextSources;
+    this.leftPortraits?.dispose();
+    this.leftPortraits = null;
+    this.root.querySelector<HTMLElement>('[data-side="left"]')?.remove();
+    if (this.enabled && this.dual && this.leftPortraitsSources.length > 0) {
+      this.leftPortraits = this.buildPortraits(this.leftSet, this.leftOnChange);
+      this.leftPortraits.start();
+    }
+    this.applyMediaState();
+  }
+
+  setLeftSet(setId: string) {
+    const set = this.resolveSet(setId);
+    if (this.disposed || set.id === this.leftSet.id) return;
+    this.leftSet = set;
+    if (this.dual) this.rebuildLeftPortraits();
+  }
+
+  setDual(dual: boolean) {
+    if (this.disposed || this.dual === dual) return;
+    this.dual = dual;
+    if (!this.enabled) return;
+    if (dual) {
+      this.rebuildLeftPortraits();
+    } else {
+      this.leftPortraits?.dispose();
+      this.leftPortraits = null;
+      this.leftPortraitsSources = [];
+      this.root.querySelector<HTMLElement>('[data-side="left"]')?.remove();
+      this.applyMediaState();
+      this.updatePortrait();
     }
   }
 
@@ -721,9 +813,14 @@ class SkinPresenter {
       this.applyPortraitSize();
       this.applyPalette();
       this.portraits.start();
+      if (this.dual) this.rebuildLeftPortraits();
     } else {
       this.root.remove();
       this.portraits.stop();
+      this.leftPortraits?.stop();
+      this.leftPortraits?.dispose();
+      this.leftPortraits = null;
+      this.leftPortraitsSources = [];
       this.root.replaceChildren();
       this.root.dataset.media = "color";
       document.body.removeAttribute("data-flash-skin");
@@ -772,8 +869,16 @@ class SkinPresenter {
     // The loader nearest-selects continuous staged frame levels, so a
     // fine-grained slider level can settle on every frame of the group; the
     // composer's integer grip spreads across the group's staged frame count
-    // (N+1 stops), unchanged.
-    this.portraits.select(clampLevelContinuous(this.level, dividerAxisMax(this.portraitsSources.length)));
+    // (N+1 stops), unchanged. In dual mode the primary (right) set defines the
+    // master axis; the mirrored left set slices the SAME normalized level over
+    // its own frame count so both sides advance in lockstep.
+    const masterMax = dividerAxisMax(this.portraitsSources.length);
+    const level = clampLevelContinuous(this.level, masterMax);
+    this.portraits.select(level);
+    if (this.dual && this.leftPortraits && this.leftPortraitsSources.length > 0) {
+      const leftMax = dividerAxisMax(this.leftPortraitsSources.length);
+      this.leftPortraits.select(remapSideLevel(level, masterMax, leftMax));
+    }
   }
 
   /**
@@ -786,7 +891,12 @@ class SkinPresenter {
     if (this.disposed) return;
     if (!Number.isFinite(score)) return;
     const t = Math.min(1, Math.max(0, score));
-    this.portraits.select(t * dividerAxisMax(this.portraitsSources.length));
+    const masterMax = dividerAxisMax(this.portraitsSources.length);
+    this.portraits.select(t * masterMax);
+    if (this.dual && this.leftPortraits && this.leftPortraitsSources.length > 0) {
+      const leftMax = dividerAxisMax(this.leftPortraitsSources.length);
+      this.leftPortraits.select(remapSideLevel(t * masterMax, masterMax, leftMax));
+    }
   }
 
   /** Number of portrait frames currently staged for the active set (0 when none). */
@@ -837,6 +947,8 @@ class SkinPresenter {
     this.disposed = true;
     this.unsubscribe();
     this.portraits.dispose();
+    this.leftPortraits?.dispose();
+    this.leftPortraits = null;
     this.root.remove();
     document.body.removeAttribute("data-flash-skin");
     document.body.removeAttribute("data-flash-layout");
@@ -1501,6 +1613,140 @@ function PortraitSetRow({ scope, presenter, form, locale, t }: PortraitSetRowPro
   );
 }
 
+interface DualModeRowProps {
+  scope: PreferenceStore;
+  presenter: SkinPresenter;
+  t: (key: string) => string;
+}
+
+// 通用设置里的「左右双人物」开关行：与快捷面板的 DUAL_SWITCH 同源，读写都经
+// scope（持久化到 localStorage DUAL_KEY）。皮肤未启用时不显示。渲染为宿主原生
+// switch 语义按钮，样式沿用 .flash-appearance-binding 行布局。
+function DualModeRow({ scope, presenter, t }: DualModeRowProps) {
+  const snapshot = useSyncExternalStore(
+    (listener) => scope.subscribe(listener),
+    () => scope.getSnapshot(),
+  );
+  const [pending, setPending] = useState(false);
+  if (!snapshot.enabled) return null;
+
+  return (
+    <div
+      className="flash-appearance-binding flash-appearance-binding--dual"
+      data-plugin={PACKAGE_ID}
+    >
+      <span className="flash-appearance-binding__label">{t("dual")}</span>
+      <span
+        className="flash-dual-switch"
+        title={t("dualHint")}
+        aria-hidden="true"
+      >
+        <button
+          type="button"
+          role="switch"
+          aria-checked={snapshot.dual}
+          className={
+            snapshot.dual
+              ? "flash-dual-switch__track flash-dual-switch__track--on"
+              : "flash-dual-switch__track"
+          }
+          disabled={pending}
+          aria-label={t("dualHint")}
+          onClick={() => {
+            if (pending) return;
+            setPending(true);
+            const next = !snapshot.dual;
+            // 与快捷面板 DUAL_SWITCH 保持同一写路径：presenter 更新运行时（建/拆
+            // 左侧帧），scope 落 localStorage 持久化，二者独立、需同时调用。
+            presenter.setDual(next);
+            void scope.setDual(next).catch(() => undefined).finally(() => setPending(false));
+          }}
+        >
+          <span className="flash-dual-switch__thumb" />
+        </button>
+      </span>
+    </div>
+  );
+}
+
+interface LeftSetRowProps {
+  scope: PreferenceStore;
+  presenter: SkinPresenter;
+  /** flash-skin volatile 配置表单（可缺失/未就绪）。 */
+  form?: FlashSkinConfigForm<PortraitGroupsConfig> | null;
+  /** Host locale service — 渲染期读取活动语言以解析中英文名称。 */
+  locale?: LocaleFaceLike | null;
+  t: (key: string) => string;
+}
+
+// 通用设置里的「次人物（左侧）」选择行：结构同 PortraitSetRow，但绑定到左侧
+// 槽位。仅当皮肤启用且双人物开启时显示；选择经 presenter.setLeftSet + scope
+// 持久化（localStorage LEFT_SET_KEY），与快捷面板的 LEFT_SET 开关同源。
+function LeftSetRow({ scope, presenter, form, locale, t }: LeftSetRowProps) {
+  const snapshot = useSyncExternalStore(
+    (listener) => scope.subscribe(listener),
+    () => scope.getSnapshot(),
+  );
+  const groupsSnapshot = useSyncExternalStore(
+    (listener) => (form?.subscribe ? form.subscribe(listener) : () => undefined),
+    () => (form?.getSnapshot ? form.getSnapshot() : undefined),
+  );
+  const localeSnapshot = useSyncExternalStore(
+    (listener) => (locale?.subscribe ? locale.subscribe(listener) : () => undefined),
+    () => (locale?.getSnapshot ? locale.getSnapshot() : { active: "" }),
+  );
+  const [pending, setPending] = useState(false);
+  if (!snapshot.enabled || !snapshot.dual) return null;
+
+  const configured =
+    groupsSnapshot?.status === "ready"
+      ? ((groupsSnapshot.value as { portraitGroups?: readonly PortraitGroupConfig[] } | undefined)?.portraitGroups ?? [])
+      : [];
+  const sets = (configured.length > 0 ? configured : [DEFAULT_PORTRAIT_SET]).map((set) => ({
+    id: set.id,
+    label: setDisplayName(set, localeSnapshot.active),
+  }));
+
+  return (
+    <section className="flash-portrait-set" data-plugin={PACKAGE_ID}>
+      <div className="flash-portrait-set__label">{t("leftSet")}</div>
+      <div className="flash-appearance-sets" role="radiogroup" aria-label={t("leftSet")}>
+        {sets.map((set) => {
+          const selected = snapshot.leftSet === set.id;
+          return (
+            <button
+              type="button"
+              key={set.id}
+              role="radio"
+              aria-checked={selected}
+              className={
+                selected
+                  ? "flash-appearance-choice flash-appearance-choice--on"
+                  : "flash-appearance-choice"
+              }
+              disabled={pending}
+              onClick={() => {
+                if (pending) return;
+                setPending(true);
+                // 与快捷面板 LEFT_SET 开关同源：presenter 更新运行时左侧人物组，
+                // scope 落 localStorage 持久化，二者独立、需同时调用。
+                presenter.setLeftSet(set.id);
+                void scope.setLeftSet(set.id).catch(() => undefined)
+                  .finally(() => setPending(false));
+              }}
+            >
+              <span className="flash-appearance-choice__identity">
+                <span className="flash-appearance-choice__icon" aria-hidden="true">◈</span>
+                <span className="flash-appearance-choice__label">{set.label}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 export const inject = [
   "slots",
   "sessions",
@@ -1551,6 +1797,29 @@ function restoreLayout(): boolean {
     // storage may be unavailable
   }
   return true;
+}
+
+// Restore the secondary (left) portrait set id. Defaults to the fallback
+// identity; a dual-mode panel only renders it when a configured group exists.
+function restoreLeftSet(): string {
+  try {
+    const id = normalizeSetId(localStorage.getItem(LEFT_SET_KEY));
+    if (id) return id;
+  } catch {
+    // storage may be unavailable
+  }
+  return DEFAULT_PORTRAIT_SET.id;
+}
+
+// Restore the dual left+right mode gate. Default OFF so existing installs keep
+// the classic single (right) portrait unless explicitly enabled.
+function restoreDual(): boolean {
+  try {
+    return localStorage.getItem(DUAL_KEY) === "1";
+  } catch {
+    // storage may be unavailable
+  }
+  return false;
 }
 
 // Restore the text-background blend strength (%). Defaults to DEFAULT_TEXT_BG_STRENGTH;
@@ -1631,20 +1900,27 @@ function createPreferenceStore(initialSet: string): PreferenceStore {
   let snapshot: SkinSettings = {
     enabled: true,
     set: initialSet ? initialSet : DEFAULT_PORTRAIT_SET.id,
+    leftSet: restoreLeftSet(),
+    dual: restoreDual(),
     driver: restoreDriver(),
   };
   const listeners = new Set<() => void>();
   const onStorage = (event: StorageEvent) => {
-    if (event.key !== SET_KEY && event.key !== DRIVER_KEY) return;
+    if (event.key !== SET_KEY && event.key !== LEFT_SET_KEY && event.key !== DUAL_KEY && event.key !== DRIVER_KEY) return;
     const nextSetId = event.key === SET_KEY ? normalizeSetId(event.newValue) : undefined;
+    const nextLeftSetId = event.key === LEFT_SET_KEY ? normalizeSetId(event.newValue) : undefined;
     const next = {
       enabled: snapshot.enabled,
       set: event.key === SET_KEY ? (nextSetId ?? snapshot.set) : snapshot.set,
+      leftSet: event.key === LEFT_SET_KEY ? (nextLeftSetId ?? snapshot.leftSet) : snapshot.leftSet,
+      dual: event.key === DUAL_KEY ? event.newValue === "1" : snapshot.dual,
       driver: event.key === DRIVER_KEY && (event.newValue === "manual" || event.newValue === "composite")
         ? event.newValue
         : snapshot.driver,
     };
-    if (next.enabled === snapshot.enabled && next.set === snapshot.set && next.driver === snapshot.driver) return;
+    if (next.enabled === snapshot.enabled && next.set === snapshot.set
+      && next.leftSet === snapshot.leftSet && next.dual === snapshot.dual
+      && next.driver === snapshot.driver) return;
     snapshot = next;
     for (const listener of listeners) listener();
   };
@@ -1671,6 +1947,26 @@ function createPreferenceStore(initialSet: string): PreferenceStore {
         // storage may be unavailable
       }
       snapshot = { ...snapshot, set: setId };
+      notify();
+    },
+    async setLeftSet(setId) {
+      if (!setId || setId === snapshot.leftSet) return;
+      try {
+        localStorage.setItem(LEFT_SET_KEY, setId);
+      } catch {
+        // storage may be unavailable
+      }
+      snapshot = { ...snapshot, leftSet: setId };
+      notify();
+    },
+    async setDual(dual) {
+      if (dual === snapshot.dual) return;
+      try {
+        localStorage.setItem(DUAL_KEY, dual ? "1" : "0");
+      } catch {
+        // storage may be unavailable
+      }
+      snapshot = { ...snapshot, dual };
       notify();
     },
     async setDriver(driver) {
@@ -4232,6 +4528,12 @@ export function apply(ctx: ClientContext) {
         "appearance": "人物肖像",
         "flashSkin": "Flash 皮肤",
         "portraitSet": "人物肖像组",
+        "primarySet": "主角色（右侧）",
+        "primarySetHint": "主导角色显示在右侧，并作为整条强度轴的基准。",
+        "dual": "左右双人物",
+        "dualHint": "在左侧同时镜像显示一个次要人物，与右侧共用同一条强度轴、同步进退。",
+        "leftSet": "次人物（左侧）",
+        "leftSetHint": "启用左右双人物后，选择显示在左侧镜像位的人物组。",
         "portraitSwitch": "人物强度",
         "layout.title": "内容居左对齐",
         "textBg.title": "文字背景浓度",
@@ -4276,6 +4578,12 @@ export function apply(ctx: ClientContext) {
         "appearance": "Portrait group",
         "flashSkin": "Flash Skin",
         "portraitSet": "Portrait set",
+        "primarySet": "Primary character (right)",
+        "primarySetHint": "The primary character renders on the right and anchors the shared level axis.",
+        "dual": "Dual left+right characters",
+        "dualHint": "Mirror a secondary character on the left, advancing in step with the right on one shared level axis.",
+        "leftSet": "Secondary character (left)",
+        "leftSetHint": "With dual mode on, pick the portrait group shown on the mirrored left slot.",
         "portraitSwitch": "Person level",
         "layout.title": "Left-aligned layout",
         "textBg.title": "Text-chip opacity",
@@ -4337,6 +4645,28 @@ export function apply(ctx: ClientContext) {
     inject: () => ({ scope, presenter, form: configForm, locale: ctx.locale, t: setLabel }),
   }, PortraitSetRow));
 
+  // 左侧双人物开关行：与快捷面板 DUAL_SWITCH 同源，写入 scope（localStorage
+  // DUAL_KEY）；皮肤未启用时不显示。置于人物肖像行之下、强度驱动行之上。
+  ctx.slots.inject("settings.general.item", () => ctx.slots.register({
+    name: "settings.general.item",
+    id: "flash-dual-mode",
+    // Just below「人物肖像」(portrait set at 10.5); higher order = lower on screen.
+    order: 10.51,
+    locale: LOCALE_NAMESPACE,
+    inject: () => ({ scope, presenter, t: setLabel }),
+  }, DualModeRow));
+
+  // 左侧「次人物（左侧）」选择行：与快捷面板 LEFT_SET 开关同源，仅当皮肤启用
+  // 且双人物开启时显示；选择经 presenter.setLeftSet + scope 持久化（LEFT_SET_KEY）。
+  ctx.slots.inject("settings.general.item", () => ctx.slots.register({
+    name: "settings.general.item",
+    id: "flash-left-set",
+    // Below「左右双人物」(dual toggle at 10.51); higher order = lower on screen.
+    order: 10.53,
+    locale: LOCALE_NAMESPACE,
+    inject: () => ({ scope, presenter, form: configForm, locale: ctx.locale, t: setLabel }),
+  }, LeftSetRow));
+
   // ── Optional dsh-flash integration: quick-control switch ─────────────────
   // Action switch in dsh-flash's ⚡ panel that opens this plugin's detail page.
   // It lands in the built-in Workbench tab's Appearance group — rendered directly
@@ -4356,7 +4686,9 @@ export function apply(ctx: ClientContext) {
   const LAYOUT_SWITCH_ID = `${PACKAGE_ID}:layout-left`;
   const TEXT_BG_SWITCH_ID = `${PACKAGE_ID}:text-bg-strength`;
   const PORTRAIT_SIZE_SWITCH_ID = `${PACKAGE_ID}:portrait-size`;
-  // 这五个皮肤开关共享同一个簇字符串，宿主会把它们折叠成一张以
+  const DUAL_SWITCH_ID = `${PACKAGE_ID}:portrait-dual`;
+  const LEFT_SET_SWITCH_ID = `${PACKAGE_ID}:portrait-left-set`;
+  // 这些皮肤开关共享同一个簇字符串，宿主会把它们折叠成一张以
   // 「Flash 皮肤」为标题的卡片（首行控件常开、其余收进折叠体）。
   const FLASH_SKIN_CLUSTER = "flash-skin";
   let quickControl: {
@@ -4494,6 +4826,8 @@ export function apply(ctx: ClientContext) {
         quickControl?.notifyChange?.(OPEN_DETAILS_SWITCH_ID);
         quickControl?.notifyChange?.(PORTRAIT_SET_SWITCH_ID);
         quickControl?.notifyChange?.(PORTRAIT_SLIDER_SWITCH_ID);
+        quickControl?.notifyChange?.(DUAL_SWITCH_ID);
+        quickControl?.notifyChange?.(LEFT_SET_SWITCH_ID);
       }
       const driver = scope.getSnapshot().driver;
       if (driver !== lastDriver) {
@@ -4511,9 +4845,9 @@ export function apply(ctx: ClientContext) {
       // `select`, and that cluster is already closed with its two members.
       const setDispose = reg.registerSwitch?.({
         id: PORTRAIT_SET_SWITCH_ID,
-        // This row is the CLUSTER HEAD (lowest `order` of the five skin rows);
-        // the host renders its label as the fold card's title「Flash 皮肤」.
-        label: () => setLabel("flashSkin"),
+        // This row is the CLUSTER HEAD (lowest `order` of the skin rows);
+        // the host renders its clusterLabel as the fold card's title「Flash 皮肤」.
+        label: () => setLabel("primarySet"),
         clusterLabel: () => setLabel("flashSkin"),
         cluster: FLASH_SKIN_CLUSTER,
         icon: "palette",
@@ -4527,6 +4861,54 @@ export function apply(ctx: ClientContext) {
             .finally(() => quickControl?.notifyChange?.(PORTRAIT_SET_SWITCH_ID));
         },
         visible: () => presenter.isEnabled(),
+      });
+      // 「左右双人物」开关 (26.1, 紧贴在主导角色下拉之下)：一个布尔开关切换
+      // 左右双人物模式。开启后 presenter 会在左侧镜像位再挂一个从
+      // `leftSet` 配置的次要肖像帧；关闭则移除左侧帧、仅保留经典右侧单人物。
+      // 只作用于本皮肤自己的 `.flash-skin-backdrop` 子节点——无宿主耦合。
+      const dualDispose = reg.registerSwitch?.({
+        id: DUAL_SWITCH_ID,
+        label: () => setLabel("dual"),
+        cluster: FLASH_SKIN_CLUSTER,
+        // 用与主/次人物下拉相同的 palette 图标：宿主的 switch 图标词表里
+        // 没有 `users` 字形，会渲染成空白；palette 已被同簇其余行证明可用。
+        icon: "palette",
+        type: "toggle",
+        group: "appearance",
+        order: 26.1,
+        getValue: () => presenter.getDual(),
+        setValue: (value) => {
+          const dual = Boolean(value);
+          presenter.setDual(dual);
+          void scope.setDual(dual).catch(() => undefined)
+            .finally(() => {
+              quickControl?.notifyChange?.(DUAL_SWITCH_ID);
+              quickControl?.notifyChange?.(LEFT_SET_SWITCH_ID);
+            });
+        },
+        visible: () => presenter.isEnabled(),
+      });
+      // 「次人物（左侧）」下拉 (26.15, 紧跟在双人物开关之下)：与主导角色下拉
+      // 同款 select，但只在双人物开启并启用皮肤时可见；读写都经 presenter
+      // 并持久化到 localStorage LEFT_SET_KEY，切换后让左右两侧按各自帧数在
+      // 同一条共享强度轴上保持同步。
+      const leftSetDispose = reg.registerSwitch?.({
+        id: LEFT_SET_SWITCH_ID,
+        label: () => setLabel("leftSet"),
+        cluster: FLASH_SKIN_CLUSTER,
+        icon: "palette",
+        type: "select",
+        group: "appearance",
+        order: 26.15,
+        options: () => portraitSetOptions(),
+        getValue: () => presenter.getLeftSet().id,
+        setValue: (value) => {
+          const id = String(value);
+          presenter.setLeftSet(id);
+          void scope.setLeftSet(id).catch(() => undefined)
+            .finally(() => quickControl?.notifyChange?.(LEFT_SET_SWITCH_ID));
+        },
+        visible: () => presenter.isEnabled() && presenter.getDual(),
       });
       // 「强度驱动」dropdown directly UNDER the portrait-set dropdown
       // (26.25, between the select at 26 and the level slider at 26.5): the
@@ -4668,6 +5050,10 @@ export function apply(ctx: ClientContext) {
       return () => {
         if (typeof setDispose === "function") setDispose();
         else reg.unregisterSwitch?.(PORTRAIT_SET_SWITCH_ID);
+        if (typeof dualDispose === "function") dualDispose();
+        else reg.unregisterSwitch?.(DUAL_SWITCH_ID);
+        if (typeof leftSetDispose === "function") leftSetDispose();
+        else reg.unregisterSwitch?.(LEFT_SET_SWITCH_ID);
         if (typeof driverDispose === "function") driverDispose();
         else reg.unregisterSwitch?.(DRIVER_SWITCH_ID);
         if (typeof sliderDispose === "function") sliderDispose();

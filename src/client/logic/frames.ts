@@ -1,4 +1,5 @@
 import { MAX_LEVEL } from "./constants";
+import { dividerAxisMax } from "./effort";
 
 // -----------------------------------------------------------------------------
 // Portrait frame staging — a pure function of the configured image count.
@@ -99,4 +100,36 @@ export function frameIndexForScore(score: number, count: number): number {
   const dLo = position - lo;
   const dHi = hi - position;
   return dLo < dHi ? lo : hi;
+}
+
+/**
+ * Map a level expressed on a master (primary portrait set's) dynamic axis onto
+ * a secondary side's own dynamic axis, keeping the two sides aligned at the
+ * endpoints (0 → 0 and masterMax → sideMax) and tracking proportionally in
+ * between. This is what lets a left and a right portrait group of different
+ * frame counts advance in step along the ONE shared slider axis: the primary
+ * set defines the master axis (dividerAxisMax(primaryCount)); every other side
+ * slices its own frames over that same normalized level.
+ *
+ * Guards: unknown/NaN level and degenerate masters fall back to 0.
+ */
+export function remapSideLevel(level: number, masterCount: number, sideCount: number): number {
+  // Guards: unknown/NaN level, or a non-positive / non-finite side or master
+  // image count, all mean "no usable axis" (an absent/empty side renders nothing)
+  // and fall back to level 0. dividerAxisMax itself never yields <= 0 for any
+  // finite count (it floors at MAX_LEVEL), so the degeneracy must be tested on
+  // the count arguments rather than on the computed axis maxima.
+  if (!Number.isFinite(level)
+    || !Number.isFinite(masterCount) || masterCount <= 0
+    || !Number.isFinite(sideCount) || sideCount <= 0) {
+    return 0;
+  }
+  const masterMax = dividerAxisMax(masterCount);
+  const sideMax = dividerAxisMax(sideCount);
+  // Normalize against the MASTER axis first (clamping wayward inputs into the
+  // master's own 0..masterMax range), then scale by the side axis. Mapping the
+  // normalized fraction onto the side keeps both axes aligned at the endpoints
+  // (0 → 0, masterMax → sideMax) no matter which axis is wider.
+  const t = Math.min(1, Math.max(0, level / masterMax));
+  return t * sideMax;
 }

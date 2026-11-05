@@ -33,6 +33,19 @@ body[data-flash-skin="on"] .flash-skin-backdrop {
   transition: filter 180ms linear;
 }
 
+/* Mirrored left portrait for dual left+right mode. Anchored to the LEFT edge
+   (reversed fade so the face fades in from the screen center) and flipped
+   horizontally (scaleX(-1)) so the character looks inward across the stage.
+   Both frames share --flash-portrait-size / --flash-portrait-opacity and the
+   [data-media="sequence"] visibility gate below, so the generic frame rule
+   already reveals the left frame whenever the presenter attaches it. */
+.flash-skin-backdrop .flash-skin-sequence-frame--left {
+  right: auto;
+  left: 0;
+  transform: translateY(-50%) scaleX(-1);
+  mask-image: linear-gradient(270deg, transparent 0%, rgb(0 0 0 / 20%) 10%, black 30%, black 100%);
+}
+
 .flash-skin-backdrop img {
   display: none;
 }
@@ -1162,13 +1175,14 @@ body[data-flash-skin="on"][data-flash-layout="left"] [class*="_composerStack"] [
   margin-right: auto !important;
 }
 
-/* 6) 排队消息条（QueueDock，conversation.input.dock）与输入卡一起居左。
+/* 6) 排队消息条（待发消息条，QueueDock，conversation.input.dock）与输入卡一起居左。
  *    QueueDock 挂在 conversation.input.dock，与 TodoPanel 同处
  *    [class*="_composerStack"]，原生其 dock 容器 margin:0 auto 居中。
  *    与 todo 用同一个 margin-left 位移，让排队条左缘与输入卡/内容列左缘对齐。
- *    注：排队条 dock 与统计行/目标条同后缀 _dock，用精确类名 ._7yHdaG_dock。
+ *    注：排队条 dock 与统计行/目标条同后缀 _dock，用精确类名 .F07MqG_dock
+ *    （宿主每次构建会重排 hash，升级宿主后需同步核对，勿轻易改回旧 hash）。
  */
-body[data-flash-skin="on"][data-flash-layout="left"] ._7yHdaG_dock {
+body[data-flash-skin="on"][data-flash-layout="left"] .F07MqG_dock {
   margin-left: calc(
     var(--dsh-composer-side-clearance, 16px) + 16px
     + var(--dsh-flash-timeline-gutter, 50px)
@@ -1183,9 +1197,10 @@ body[data-flash-skin="on"][data-flash-layout="left"] ._7yHdaG_dock {
  *     导致目标条仍贴着视口中线，没跟着左移。这里先把 dock 从左钉死（去掉 auto
  *     居中，使公允左缘 = composerStack 原点），再给可见的 [class*="_bar"] 施加
  *     与 todo/排队条完全相同的 margin-left 基准，让白色目标条左缘与输入卡/内容列
- *     左缘落在同一根垂直线上。注：目标 dock 用精确类名 .nLMEza_dock。
+ *     左缘落在同一根垂直线上。注：目标 dock 用精确类名 .Gc24Bq_dock
+ *     （宿主每次构建会重排 hash，升级宿主后需同步核对）。
  */
-body[data-flash-skin="on"][data-flash-layout="left"] .nLMEza_dock {
+body[data-flash-skin="on"][data-flash-layout="left"] .Gc24Bq_dock {
   margin-left: 0 !important;
   margin-right: auto !important;
 }
@@ -1229,6 +1244,66 @@ body[data-flash-skin="on"][data-flash-layout="left"] [class*="_toBottomSlot"] {
   font-size: 13px;
   line-height: 18px;
   white-space: nowrap;
+}
+
+/* 通用设置里的「左右双人物」开关。以宿主原生语义 button[role=switch] 渲染，
+ * 外观沿用 --flash-accent / --flash-surface，明暗两套主题都可辨。 */
+.flash-appearance-binding--dual {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  margin: 2px 0;
+}
+
+.flash-appearance-binding--dual[data-plugin] {
+  min-width: 260px;
+}
+
+.flash-dual-switch {
+  display: inline-flex;
+  align-items: center;
+}
+
+.flash-dual-switch__track {
+  position: relative;
+  display: inline-flex;
+  width: 40px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  background: var(--dsw-alias-interactive-bg-hover, rgb(0 0 0 / 10%));
+  box-sizing: border-box;
+  cursor: pointer;
+  transition: background 180ms ease, border-color 180ms ease;
+}
+
+.flash-dual-switch__track--on {
+  background: var(--flash-accent, #4176e6);
+  border-color: var(--flash-accent, #4176e6);
+}
+
+.flash-dual-switch__thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--flash-page, #ffffff);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 30%);
+  transition: transform 180ms ease;
+}
+
+.flash-dual-switch__track--on .flash-dual-switch__thumb {
+  transform: translateX(18px);
+}
+
+.flash-dual-switch__track:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 /* 9) 综合加权实时仪表。加权模式下不显示滑杆，仅以 output 逐路显示

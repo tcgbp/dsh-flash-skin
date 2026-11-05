@@ -2244,6 +2244,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "zipTooFewImages": "图片不足：一个皮肤组至少需要 {min} 张图片（当前 {n} 张）",
     "zipImported": "已导入 {n} 张图片，创建了新的皮肤组",
     "zipImportedMeta": "，并按压缩包内元数据设置了标识、中英文名称与深浅切换点",
+    "zipSaveFailed": "皮肤组写入被拒绝：配置可能被本机补丁或命令行覆盖，无法保存，请先在通用设置中关闭覆盖或移除相关补丁",
     "zipManifestCountMismatch": "（清单声明 {manifest} 张，实际导入 {imported} 张，按实际导入为准）",
     "metaImported": "已按清单创建新组（{n} 张在线图片）",
     "importIdConflict": "标识（Set ID）「{id}」已被占用，请换一个唯一标识再导入",
@@ -2354,6 +2355,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "zipTooFewImages": "Too few images to import — a portrait group needs at least {min} (currently {n})",
     "zipImported": "Imported {n} images and created a new group",
     "zipImportedMeta": ", and set the id, Chinese/English names and light/dark threshold from the archive metadata",
+    "zipSaveFailed": "Config write was rejected: this namespace appears to be overridden by a home patch or command-line overlay, so the import could not be saved. Remove/relax the override in General settings and retry.",
     "zipManifestCountMismatch": "(the manifest declared {manifest} images but {imported} were imported — using the actual import)",
     "metaImported": "Created a new group from the manifest metadata with {n} image URLs",
     "importIdConflict": "Set ID \"{id}\" is already in use — pick a unique one before importing",
@@ -2873,6 +2875,11 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
     () => weights.getTuning(),
   );
   const [busy, setBusy] = useState(false);
+  // Serializes form.mutate calls without falling back on the shared `busy`
+  // state. `busy` doubles as the import/export spinner, and those flows set it
+  // BEFORE committing, so gating `commit` on `busy` would make every import a
+  // silent no-op (the success toast still shows, but the group never persists).
+  const commitInFlight = useRef(false);
   const [editing, setEditing] = useState<{
     kind: "id" | "zh" | "en" | "add" | "replace";
     groupIndex: number;
@@ -3173,17 +3180,23 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
   const ready = snapshot.status === "ready";
   const writable = snapshot.writable;
 
-  const commit = async (next: PortraitGroupsConfig, expectedRevision?: number) => {
-    if (busy) return;
+  const commit = async (next: PortraitGroupsConfig, expectedRevision?: number): Promise<boolean> => {
+    if (commitInFlight.current) return false;
+    commitInFlight.current = true;
     setBusy(true);
     try {
       await form.mutate(
         [{ op: "set", path: ["portraitGroups"], value: next }],
         expectedRevision ?? snapshot.revision,
       );
-    } catch {
-      // 传输失败：订阅会把 Host 镜像重新同步回来
+      return true;
+    } catch (error) {
+      // 传输失败：订阅会把 Host 镜像重新同步回来。把被吞掉的拒绝原因
+      // 也一并可见，便于排障（例如 Host 拒绝该命名空间的易变配置写入）。
+      console.error("[dsh-flash-skin] portrait-groups commit rejected:", error);
+      return false;
     } finally {
+      commitInFlight.current = false;
       setBusy(false);
       setEditing(null);
     }
@@ -3466,7 +3479,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
   // and archives without a manifest id get an auto-generated one. Imported
   // values are just seeded defaults — the group remains fully editable
   // afterwards like any other.
-  const insertImportedGroup = (images: string[], meta?: PortraitImportMeta) => {
+  const insertImportedGroup = async (images: string[], meta?: PortraitImportMeta): Promise<boolean> => {
     const defaultZh = CONFIG_TEXTS.zh.defaultGroup;
     const defaultEn = CONFIG_TEXTS.en.defaultGroup;
     const baseId = meta?.id && meta.id.length > 0 ? meta.id : newGroupId();
@@ -3485,7 +3498,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
       darkLevel: clampLevel(meta?.darkLevel ?? MAX_LEVEL - 1, dividerAxisMax(images.length)),
       images,
     }];
-    void commit(next);
+    return commit(next);
   };
 
   const onArchiveInputChange = async (event: ReactChangeEvent<HTMLInputElement>) => {
@@ -3611,8 +3624,14 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
           });
           return;
         }
-        insertImportedGroup(images, meta ?? undefined);
-        setFileError(notice);
+        if (await insertImportedGroup(images, meta ?? undefined)) {
+          setFileError(notice);
+        } else {
+          // The group data was parsed and uploaded, but the actual config write
+          // was rejected (e.g. Host refuses volatile writes for this namespace),
+          // so the list stays unchanged. Be explicit instead of implying success.
+          setFileError(t("zipSaveFailed"));
+        }
       } catch {
         setFileError(t("zipParseFailed"));
       } finally {
@@ -3728,7 +3747,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
     }
   };
 
-  const confirmImport = () => {
+  const confirmImport = async () => {
     if (!pendingImport) return;
     // Second gate: never import a group whose resolved frame list is below the
     // minimum, even when the pending import was seeded some other way.
@@ -3749,8 +3768,11 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
       return;
     }
     const meta: PortraitImportMeta = { ...pendingImport.meta, id: draftId };
-    insertImportedGroup(pendingImport.images, meta);
-    setFileError(pendingImport.notice);
+    if (await insertImportedGroup(pendingImport.images, meta)) {
+      setFileError(pendingImport.notice);
+    } else {
+      setFileError(t("zipSaveFailed"));
+    }
     setPendingImport(null);
   };
 

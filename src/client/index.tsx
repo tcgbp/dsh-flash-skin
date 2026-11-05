@@ -4914,8 +4914,8 @@ export function apply(ctx: ClientContext) {
       const setDispose = reg.registerSwitch?.({
         id: PORTRAIT_SET_SWITCH_ID,
         // This row is the CLUSTER HEAD (lowest `order` of the skin rows);
-        // the host renders its clusterLabel as the fold card's title「Flash 皮肤」.
-        label: () => setLabel("primarySet"),
+        // the host renders its label as the fold card's title「Flash 皮肤」.
+        label: () => setLabel("flashSkin"),
         clusterLabel: () => setLabel("flashSkin"),
         cluster: FLASH_SKIN_CLUSTER,
         icon: "palette",

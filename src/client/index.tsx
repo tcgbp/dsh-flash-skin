@@ -66,7 +66,6 @@ const LEFT_SET_KEY = "dsh-flash-skin.left-set";
 // Dual left+right portrait mode on/off ("1"/"0").
 const DUAL_KEY = "dsh-flash-skin.dual";
 const DRIVER_KEY = "dsh-flash-skin.driver";
-const LAYOUT_KEY = "dsh-flash-skin.layout-left";
 // Blend strength (%) of the translucent background chip behind chat text.
 // Persisted so the readability scrim keeps a user-tuned opacity across reloads,
 // consumed by skin.css via `--flash-text-bg-strength` on <body>.
@@ -522,9 +521,6 @@ class SkinPresenter {
   private enabled = true;
   private level = 0;
   private set: PortraitSet = DEFAULT_PORTRAIT_SET;
-  // Left-aligned layout gate (persisted). Drives `data-flash-layout` on
-  // <body>; the skin.css left-align rules activate only while this is ON.
-  private layout = restoreLayout();
   // Text-background blend strength (%) (persisted). Drives the
   // `--flash-text-bg-strength` custom property on <body>; skin.css feeds it
   // into the `color-mix` fill of the chat-text readability chip.
@@ -704,32 +700,18 @@ class SkinPresenter {
     return this.set;
   }
 
-  getLayout() {
-    return this.layout;
-  }
-
-  setLayout(left: boolean) {
-    if (this.disposed) return;
-    this.layout = left;
-    try {
-      if (left) localStorage.setItem(LAYOUT_KEY, "1");
-      else localStorage.setItem(LAYOUT_KEY, "0");
-    } catch {
-      // storage may be unavailable
-    }
-    this.applyLayout();
-  }
-
-  // Mirror the skin on/off body-attribute pattern: `data-flash-layout="left"`
-  // activates the gated left-align rules; removing it returns to native.
-  // The left-align rules in skin.css (timeline gutter, width handles, composer
-  // card, hero workspace, todo/queue docks) target this attribute directly and
-  // apply in every host, including desktop (Electron) — only ever our own CSS
-  // gate, no host coupling. A desktop top frame is offset separately via
-  // `data-dsh-desktop-mode` in skin.css and is unaffected.
+  // Body layout gate, now derived from dual mode: dual OFF keeps the requested
+  // left-aligned layout (the historical default), dual ON switches the content
+  // back to the native centered layout so the mirrored pair sits symmetric.
+  // `data-flash-layout="left"` activates the gated left-align rules in skin.css
+  // (timeline gutter, width handles, composer card, hero workspace, todo/queue
+  // docks); removing it returns to native. These rules target this attribute
+  // directly and apply in every host, including desktop (Electron) — only ever
+  // our own CSS gate, no host coupling. A desktop top frame is offset
+  // separately via `data-dsh-desktop-mode` in skin.css and is unaffected.
   private applyLayout() {
     if (this.disposed) return;
-    if (this.enabled && this.layout)
+    if (this.enabled && !this.dual)
       document.body.dataset.flashLayout = "left";
     else document.body.removeAttribute("data-flash-layout");
   }
@@ -865,6 +847,8 @@ class SkinPresenter {
     if (this.disposed || this.dual === dual) return;
     this.dual = dual;
     if (!this.enabled) return;
+    // Layout gate is derived from dual: toggling dual flips left-align↔center.
+    this.applyLayout();
     if (dual) {
       this.rebuildLeftPortraits();
     } else {
@@ -1865,18 +1849,6 @@ function restoreDriver(): DriverMode {
     // storage may be unavailable
   }
   return "composite";
-}
-
-// Restore the left-aligned layout gate. Default ON so existing installs keep
-// the requested left-aligned layout unchanged; only an explicit persisted "0"
-// returns to the native centered layout.
-function restoreLayout(): boolean {
-  try {
-    return localStorage.getItem(LAYOUT_KEY) !== "0";
-  } catch {
-    // storage may be unavailable
-  }
-  return true;
 }
 
 // Restore the secondary (left) portrait set id. Defaults to the fallback
@@ -4779,7 +4751,6 @@ export function apply(ctx: ClientContext) {
   const PORTRAIT_SET_SWITCH_ID = `${PACKAGE_ID}:portrait-set`;
   const PORTRAIT_SLIDER_SWITCH_ID = `${PACKAGE_ID}:portrait-slider`;
   const DRIVER_SWITCH_ID = `${PACKAGE_ID}:driver`;
-  const LAYOUT_SWITCH_ID = `${PACKAGE_ID}:layout-left`;
   const TEXT_BG_SWITCH_ID = `${PACKAGE_ID}:text-bg-strength`;
   const PORTRAIT_SIZE_SWITCH_ID = `${PACKAGE_ID}:portrait-size`;
   const SCRIM_STRENGTH_SWITCH_ID = `${PACKAGE_ID}:scrim-strength`;
@@ -5038,37 +5009,12 @@ export function apply(ctx: ClientContext) {
         },
         visible: () => presenter.isEnabled(),
       });
-      // Content left-alignment gate (26.7, just under the level slider at
-      // 26.5): a boolean on/off that toggles the whole left-align CSS rule set
-      // in skin.css via `data-flash-layout` on <body>. This bundles every prior
-      // left-shift layout override (timeline gutter, width handles, composer
-      // card, hero workspace, todo/queue docks) behind a single switch. It
-      // only ever touches this skin's own CSS gate — no host coupling.
-      const layoutDispose = reg.registerSwitch?.({
-        id: LAYOUT_SWITCH_ID,
-        label: () => setLabel("layout.title"),
-        cluster: FLASH_SKIN_CLUSTER,
-        icon: "rail",
-        type: "toggle",
-        group: "appearance",
-        order: 26.7,
-        getValue: () => presenter.getLayout(),
-        setValue: (value) => {
-          presenter.setLayout(Boolean(value));
-          quickControl?.notifyChange?.(LAYOUT_SWITCH_ID);
-        },
-        // Offered in every host, desktop included: the left-align gate is this
-        // skin's own CSS (`data-flash-layout`) and applies under the Electron
-        // shell too. The desktop top-frame offset is handled separately in
-        // skin.css via `data-dsh-desktop-mode` and is not affected.
-        visible: () => presenter.isEnabled(),
-      });
-      // Text-background blend strength (26.8, just under the layout gate at
-      // 26.7): a slider that tunes how strong the translucent readability chip
-      // behind chat text is (40–100%). Runs through the presenter
-      // (`presenter.setTextBg` persists via localStorage TEXT_BG_KEY) and
-      // applies live through the `--flash-text-bg-strength` custom property;
-      // skin.css feeds it into the `color-mix` fill of the text chips. Own
+      // Text-background blend strength (26.8): a slider that tunes how strong
+      // the translucent readability chip behind chat text is (40–100%). Runs
+      // through the presenter (`presenter.setTextBg` persists via localStorage
+      // TEXT_BG_KEY) and applies live through the `--flash-text-bg-strength`
+      // custom property; skin.css feeds it into the `color-mix` fill of the
+      // text chips. Own
       // CSS only — no host coupling.
       const textBgDispose = reg.registerSwitch?.({
         id: TEXT_BG_SWITCH_ID,
@@ -5184,8 +5130,6 @@ export function apply(ctx: ClientContext) {
         else reg.unregisterSwitch?.(PORTRAIT_SLIDER_SWITCH_ID);
         if (typeof openDispose === "function") openDispose();
         else reg.unregisterSwitch?.(OPEN_DETAILS_SWITCH_ID);
-        if (typeof layoutDispose === "function") layoutDispose();
-        else reg.unregisterSwitch?.(LAYOUT_SWITCH_ID);
         if (typeof textBgDispose === "function") textBgDispose();
         else reg.unregisterSwitch?.(TEXT_BG_SWITCH_ID);
         if (typeof portraitSizeDispose === "function") portraitSizeDispose();

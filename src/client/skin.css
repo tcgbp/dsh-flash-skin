@@ -1263,9 +1263,9 @@ body[data-flash-skin="on"][data-flash-layout="left"] [class*="_toBottomSlot"] {
 }
 
 /* 8) 强度驱动模式选择行（DriverRow）。
- *    手动 / 综合加权 的两段选择。自 dsh-client-ui-primitives 的宿主原生
- *    SegmentedControl 渲染（胶囊指示器滑动的 tablist），样式完全跟随宿主
- *    CSS-modules 与 --dsw-* 令牌，无需自绘按钮组。
+ *    手动 / 综合加权 的下拉选择。以原生 <select> 渲染，pick 自一个菜单
+ *    （与快捷面板的 DRIVER_SWITCH select 同源同过场），外观用宿主令牌上色，
+ *    避免自绘按钮组依赖宿主的 SegmentedControl CSS-modules。
  */
 .flash-appearance-binding--driver {
   display: flex;
@@ -1274,6 +1274,23 @@ body[data-flash-skin="on"][data-flash-layout="left"] [class*="_toBottomSlot"] {
   gap: 12px;
   width: 100%;
   margin: 2px 0;
+}
+
+.flash-driver-select {
+  min-width: 96px;
+  padding: 4px 20px 4px 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  background: var(--dsw-alias-surface, var(--flash-surface, #fff));
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.flash-driver-select:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .flash-appearance-binding__label {

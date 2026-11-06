@@ -8,7 +8,6 @@ import type {} from "@deepseek-ai/dsh-client-ui-model-selection/client";
 import type {} from "@deepseek-ai/dsh-client-ui-theme/client";
 import {
   IconChevronDownOutlineRegular,
-  SegmentedControl,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import styles from "./skin.css";
 import { createPortraitLoader } from "./portrait-loader";
@@ -1228,25 +1227,27 @@ function DriverRow({ scope, t }: DriverRowProps) {
   return (
     <div className="flash-appearance-binding flash-appearance-binding--driver" data-plugin={PACKAGE_ID}>
       <span className="flash-appearance-binding__label">{t("driver.title")}</span>
-      {/* Host-native segmented control (dsh-client-ui-primitives
-          `SegmentedControl`, a tablist with a sliding indicator): the
-          appearance panel renders it with the host's own tokens/CSS, so it
-          matches the rest of the settings surface instead of a hand-drawn
-          button group. */}
-      <SegmentedControl
+      {/* Native dropdown so the two driver modes are picked from a menu instead
+          of side-by-side segment buttons. The value is kept in step with the
+          quick-control DRIVER_SWITCH (same store), and reads of
+          `snapshot.driver` above re-render us whenever it changes there. */}
+      <select
+        className="flash-driver-select"
         id="flash-skin-driver"
-        value={snapshot.driver}
-        label={t("driver.title")}
+        aria-label={t("driver.title")}
         disabled={pending}
-        options={options.map(({ value, label }) => ({ value, label }))}
-        onChange={(value) => {
-          const driver: DriverMode =
-            value === "composite" ? "composite" : "manual";
+        value={snapshot.driver}
+        onChange={(event) => {
+          const driver = event.currentTarget.value as DriverMode;
           if (pending || snapshot.driver === driver) return;
           setPending(true);
           void scope.setDriver(driver).catch(() => undefined).finally(() => setPending(false));
         }}
-      />
+      >
+        {options.map(({ value, label }) => (
+          <option key={value} value={value}>{label}</option>
+        ))}
+      </select>
     </div>
   );
 }
@@ -5040,16 +5041,16 @@ export function apply(ctx: ClientContext) {
       // (26.25, between the select at 26 and the level slider at 26.5): the
       // same two-option driver selector as the settings row (manual /
       // composite), bound to the same store so both surfaces stay in step.
-      // A `buttongroup` (segmented control) so the two driver options sit as
-      // one-tap buttons side by side, matching the settings-row toggle style.
-      // `getValue`/`visible` read live at render time; the scope subscription
-      // above bumps the registry when the driver changes from the other row.
+      // A `select` (native dropdown) matching the portrait-set/left-set
+      // dropdowns above it; `getValue`/`visible` read live at render time,
+      // the scope subscription above bumps the registry when the driver
+      // changes from the other row.
       const driverDispose = reg.registerSwitch?.({
         id: DRIVER_SWITCH_ID,
         label: () => setLabel("driver.title"),
         cluster: FLASH_SKIN_CLUSTER,
         icon: "signal",
-        type: "buttongroup",
+        type: "select",
         group: "appearance",
         order: 26.25,
         options: () => [

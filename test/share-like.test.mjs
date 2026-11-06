@@ -452,8 +452,8 @@ describe("C2 community helper functions (community.js)", () => {
     });
   });
 
-  describe("readCommunityLikes (Feishu Bitable likes table)", () => {
-    const target = { provider: "feishu", appId: "app", appSecret: "s", appToken: "bitable", likesTableId: "tbl-likes" };
+  describe("readCommunityLikes (Feishu Bitable shares table)", () => {
+    const target = { provider: "feishu", appId: "app", appSecret: "s", appToken: "bitable", sharesTableId: "tbl-shares" };
     const fakeClient = (respond) => ({
       provider: COMMUNITY_PROVIDERS.feishu,
       tenantToken: async () => "tok",
@@ -467,11 +467,11 @@ describe("C2 community helper functions (community.js)", () => {
           code: 0,
           data: {
             items: [
-              { record_id: "r1", fields: { setId: "han-li", count: 3 } },
-              { record_id: "r2", fields: { setId: "a b", count: 2 } },
-              { record_id: "r3", fields: { setId: "neg", count: -3 } },
-              { record_id: "r4", fields: { setId: "frac", count: 2.9 } },
-              { record_id: "r5", fields: { setId: "x".repeat(200), count: 1 } },
+              { record_id: "r1", fields: { setId: "han-li", like_count: 3 } },
+              { record_id: "r2", fields: { setId: "a b", like_count: 2 } },
+              { record_id: "r3", fields: { setId: "neg", like_count: -3 } },
+              { record_id: "r4", fields: { setId: "frac", like_count: 2.9 } },
+              { record_id: "r5", fields: { setId: "x".repeat(200), like_count: 1 } },
             ],
             has_more: false,
           },
@@ -479,6 +479,7 @@ describe("C2 community helper functions (community.js)", () => {
       }));
       const res = await readCommunityLikes(client, target);
       expect(res.ok).toBe(true);
+      expect(res.error).toBeNull();
       expect(res.counts).toEqual({ "han-li": 3, frac: 2 });
     });
 
@@ -496,13 +497,13 @@ describe("C2 community helper functions (community.js)", () => {
       expect(netRes.error.code).toBe("network");
     });
 
-    it("short-circuits when the likes table is not configured", async () => {
+    it("short-circuits when the shares table is not configured", async () => {
       const res = await readCommunityLikes(fakeClient(async () => ({ status: 200, json: { code: 0 } })), {
         provider: "feishu",
         appId: "app",
         appSecret: "s",
         appToken: "bitable",
-        likesTableId: "",
+        sharesTableId: "",
       });
       expect(res.ok).toBe(true);
       expect(res.counts).toBeNull();
@@ -510,10 +511,10 @@ describe("C2 community helper functions (community.js)", () => {
     });
   });
 
-  describe("submitCommunityLikes (Feishu Bitable upsert)", () => {
-    const target = { provider: "feishu", appId: "app", appSecret: "s", appToken: "bitable", likesTableId: "tbl-likes" };
+  describe("submitCommunityLikes (Feishu Bitable shares update)", () => {
+    const target = { provider: "feishu", appId: "app", appSecret: "s", appToken: "bitable", sharesTableId: "tbl-shares" };
 
-    it("creates records for new groups and updates existing ones", async () => {
+    it("updates existing share rows and skips unshared groups", async () => {
       const calls = [];
       const base = {
         provider: COMMUNITY_PROVIDERS.feishu,
@@ -523,39 +524,37 @@ describe("C2 community helper functions (community.js)", () => {
           json: {
             code: 0,
             data: {
-              items: [{ record_id: "rec-old", fields: { setId: "han-li", count: 0 } }],
+              items: [{ record_id: "rec-old", fields: { setId: "han-li", like_count: 0 } }],
               has_more: false,
             },
           },
         }),
-        createRecord: async (appToken, tableId, token, fields) => { calls.push(["create", null, fields]); return { status: 200, json: { code: 0 } }; },
-        updateRecord: async (appToken, tableId, token, recordId, fields) => { calls.push(["update", recordId, fields]); return { status: 200, json: { code: 0 } }; },
-        deleteRecord: async (appToken, tableId, token, recordId) => { calls.push(["delete", recordId]); return { status: 200, json: { code: 0 } }; },
+        updateRecord: async (appToken, tableId, token, recordId, fields) => { calls.push([appToken, tableId, token, recordId, fields]); return { status: 200, json: { code: 0 } }; },
       };
+      // "han-li" is shared → its row is updated. "jiu-gong", "bad id", "neg",
+      // "zero" have no share row → skipped client-side entirely.
       const res = await submitCommunityLikes(base, target, { counts: { "han-li": 5, "jiu-gong": 2, "bad id": 3, neg: -1, zero: 0 } });
       expect(res.ok).toBe(true);
-      expect(res.updated).toBe(2);
-      expect(calls.some(([k, , f]) => k === "update" && f.count === 5)).toBe(true);
-      expect(calls.some(([k, , f]) => k === "create" && f.setId === "jiu-gong")).toBe(true);
-      // "bad id" invalid key dropped; neg/zero dropped before write.
-      expect(calls.filter(([k]) => k === "create").length).toBe(1);
+      expect(res.updated).toBe(1);
+      expect(res.cleared).toBe(0);
+      expect(calls.length).toBe(1);
+      expect(calls[0][1]).toBe("tbl-shares");
+      expect(calls[0][4]).toEqual({ like_count: 5 });
     });
 
-    it("fails cleanly when the likes table is unconfigured", async () => {
+    it("fails cleanly when the shares table is unconfigured", async () => {
       const client = {
         provider: COMMUNITY_PROVIDERS.feishu,
         tenantToken: async () => "tok",
         listRecords: async () => ({ status: 200, json: { code: 0, data: { items: [], has_more: false } } }),
-        createRecord: async () => ({ status: 200, json: { code: 0 } }),
         updateRecord: async () => ({ status: 200, json: { code: 0 } }),
-        deleteRecord: async () => ({ status: 200, json: { code: 0 } }),
       };
-      const res = await submitCommunityLikes(client, { provider: "feishu", appId: "a", appSecret: "s", appToken: "t", likesTableId: "" }, { counts: { a: 1 } });
+      const res = await submitCommunityLikes(client, { provider: "feishu", appId: "a", appSecret: "s", appToken: "t", sharesTableId: "" }, { counts: { a: 1 } });
       expect(res.ok).toBe(false);
       expect(res.error.code).toBe("not-configured");
     });
 
-    it("deletes table rows for groups explicitly removed back to 0", async () => {
+    it("zeroes rows for groups explicitly removed back to 0", async () => {
       const calls = [];
       const base = {
         provider: COMMUNITY_PROVIDERS.feishu,
@@ -566,46 +565,42 @@ describe("C2 community helper functions (community.js)", () => {
             code: 0,
             data: {
               items: [
-                { record_id: "rec-gone", fields: { setId: "gone", count: 3 } },
-                { record_id: "rec-reliked", fields: { setId: "reliked", count: 4 } },
-                { record_id: "rec-untouched", fields: { setId: "other-host", count: 7 } },
+                { record_id: "rec-gone", fields: { setId: "gone", likeCount: 3 } },
+                { record_id: "rec-reliked", fields: { setId: "reliked", likeCount: 4 } },
+                { record_id: "rec-untouched", fields: { setId: "other-host", likeCount: 7 } },
               ],
               has_more: false,
             },
           },
         }),
-        createRecord: async () => ({ status: 200, json: { code: 0 } }),
-        updateRecord: async (appToken, tableId, token, recordId, fields) => { calls.push(["update", recordId, fields]); return { status: 200, json: { code: 0 } }; },
-        deleteRecord: async (appToken, tableId, token, recordId) => { calls.push(["delete", recordId]); return { status: 200, json: { code: 0 } }; },
+        updateRecord: async (appToken, tableId, token, recordId, fields) => { calls.push([recordId, fields]); return { status: 200, json: { code: 0 } }; },
       };
-      // "gone" and "reliked" are in the removal list, but "reliked" is still
-      // counted in `counts` → it must be upserted, not deleted. "gone" has no
-      // positive count → only its row is deleted. "other-host" is absent from
-      // removal entirely → untouched (never owned by this host).
+      // "gone" is removed and not counted → zeroed. "reliked" is removed but
+      // still counted → updated, not zeroed. "other-host" untouched. "unknown"
+      // has no row → untouched.
       const res = await submitCommunityLikes(base, target, {
         counts: { "reliked": 6 },
         removed: ["gone", "reliked", "unknown"],
       });
       expect(res.ok).toBe(true);
       expect(res.updated).toBe(1);
-      expect(res.deleted).toBe(1);
-      const deletes = calls.filter(([k]) => k === "delete").map(([, rid]) => rid);
-      expect(deletes).toEqual(["rec-gone"]);
-      expect(calls.some(([k, rid, f]) => k === "update" && rid === "rec-reliked" && f.count === 6)).toBe(true);
+      expect(res.cleared).toBe(1);
+      expect(calls.some(([rid, f]) => rid === "rec-gone" && f.like_count === 0)).toBe(true);
+      expect(calls.some(([rid, f]) => rid === "rec-reliked" && f.like_count === 6)).toBe(true);
+      expect(calls.some(([rid]) => rid === "rec-untouched")).toBe(false);
     });
 
     it("maps backend errors like exists", async () => {
       const client = {
         provider: COMMUNITY_PROVIDERS.feishu,
         tenantToken: async () => "tok",
-        listRecords: async () => ({ status: 200, json: { code: 0, data: { items: [], has_more: false } } }),
-        createRecord: async () => ({ status: 200, json: { code: 1254003 } }),
-        updateRecord: async () => ({ status: 200, json: { code: 0 } }),
-        deleteRecord: async () => ({ status: 200, json: { code: 0 } }),
+        listRecords: async () => ({ status: 200, json: { code: 0, data: { items: [{ record_id: "rec-ok", fields: { setId: "ok" } }], has_more: false } } }),
+        updateRecord: async () => ({ status: 200, json: { code: 1254003 } }),
       };
       const res = await submitCommunityLikes(client, target, { counts: { ok: 1 } });
       expect(res.ok).toBe(true);
       expect(res.updated).toBe(0);
+      expect(res.cleared).toBe(0);
     });
   });
 });

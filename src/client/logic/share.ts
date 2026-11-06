@@ -110,6 +110,10 @@ export interface CommunityEntry {
   md5?: string;
   /** Self-declared author name ("" / undefined for anonymous or legacy entries). */
   author?: string;
+  /** Aggregated like tally stored on the shares row (0 when absent/legacy). */
+  likeCount?: number;
+  /** Number of community-panel imports of this shared archive (0 when absent/legacy). */
+  importCount?: number;
 }
 
 /** Inverse of buildShareText; null when the text is not a valid share. */

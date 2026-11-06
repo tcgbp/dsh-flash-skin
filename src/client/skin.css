@@ -162,6 +162,34 @@ body[data-flash-skin="on"] [class*="_column"]
   background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent) !important;
 }
 
+/* 已编辑文件面板并入同一浓度控制：宿主 [data-changed-files] 卡片原本自带实心
+ * 底（.card → bg-layer-1、.header → --changes-fill，含 hover 的 --changes-hover），
+ * 导致不跟随“文字背景浓度”；这里把卡片与头条改成与正文/代码块同款的半透明灰底。
+ * 行内 _row/_tile 本就是透明的，由卡片这一层承担底色，不双叠。仅居中内容列命中，
+ * 右侧栏保持其不透明白（.rightbarCol 规则），引用/公式照旧保留各自底色。 */
+body[data-flash-skin="on"] [class*="_column"] [data-changed-files],
+body[data-flash-skin="on"] [class*="_column"] [data-changed-files] [class*="_header"] {
+  background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent) !important;
+}
+
+/* 用户消息气泡与助手工具卡片并入同一浓度控制：
+ * - 用户气泡宿主为 MessageItem 的 _userRow > _userStack（右对齐），气泡表面
+ *   _bubble 自带实心底（--dsw-specific-bubble），导致不跟随“文字背景浓度”；
+ *   这里把气泡表面、以及同款 pending/steering/echo 气泡统一换成同款半透明灰底。
+ *   选择器只用宿主的稳定 CSS 类后缀（_userRow/_userStack/_bubble），哈希前缀
+ *   随构建变化可免，与上方 _column 约定一致；不依赖 dsh-flash。
+ * - 助手工具卡片宿主为 tool 插件的 [data-tool] 行（present 卡片同为 data-tool），
+ *   其表面自带实心底（ToolRow 的 _root/_header），一并换为同款半透明灰底，
+ *   使工具卡片跟随浓度控制。仅居中内容列命中，右侧栏保持的不透明（.rightbarCol）。
+ * - 已在各容器内的正文/代码块规则不与之双叠：气泡/卡片只吃这一层半透明底。 */
+body[data-flash-skin="on"] [class*="_column"] [class*="_userRow"] [class*="_userStack"] [class*="_bubble"] {
+  background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent) !important;
+}
+body[data-flash-skin="on"] [class*="_column"] [data-tool] [class*="_root"],
+body[data-flash-skin="on"] [class*="_column"] [data-tool] [class*="_header"] {
+  background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent) !important;
+}
+
 /* Desktop (Electron) specifics — the port is what lets the z-index:-1
  * backdrop show through the native host frame, mirroring the predecessor
  * skin on the same host. Transparent here only: no token tinting. */
@@ -1386,6 +1414,54 @@ body[data-flash-skin="on"][data-flash-layout="left"] [class*="_toBottomSlot"] {
 .flash-level-control__bonus {
   color: var(--flash-accent, #4176e6);
   font-weight: 800;
+}
+
+/* 压缩脉冲激活时,整段「压缩加分」作为高亮加分块凸显:浅色强调底 + 圆角胶囊 +
+ * 弹入动效。该块在 index.tsx 里以脉冲时间戳为 key,每次新的压缩事件都会重新
+ * 挂载并重播动画,把只持续几秒的加分凸显得更醒眼;平时整体隐藏不占位。 */
+.flash-level-control__pulse {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  padding: 1px 7px 1px 8px;
+  margin: -1px 0;
+  border-radius: 999px;
+  /* color-mix 前的实色回退,旧浏览器至少保留强调色而非透明消失。 */
+  background: rgba(98, 126, 233, 0.16);
+  background: color-mix(in srgb, var(--flash-accent, #4176e6) 16%, transparent);
+  outline: 1px solid rgba(98, 126, 233, 0.4);
+  outline: 1px solid color-mix(in srgb, var(--flash-accent, #4176e6) 40%, transparent);
+  animation: flash-pulse-pop 0.45s ease-out;
+}
+
+.flash-level-control__pop {
+  display: inline-flex;
+  align-items: center;
+}
+
+.flash-level-control__pulse .flash-level-control__term--bonus b,
+.flash-level-control__pulse .flash-level-control__bonus {
+  color: var(--flash-accent, #4176e6);
+}
+
+.flash-level-control__pulse .flash-level-control__bonus {
+  font-size: 12px;
+  padding-left: 2px;
+}
+
+@keyframes flash-pulse-pop {
+  0% {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+  55% {
+    transform: scale(1.12);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 
 .flash-level-control__plus {

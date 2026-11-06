@@ -7,7 +7,6 @@ import { z as zod } from "zod";
 import { parseSingleRange } from "./range.js";
 import { installLikeRoutes } from "./likes.js";
 import { COMMUNITY_PROVIDERS, createCommunityClient, DEFAULT_COMMUNITY_TARGET, installCommunityRoutes, readCommunityLikes, submitCommunityLikes } from "./community.js";
-
 export { parseSingleRange } from "./range.js";
 
 export const PACKAGE_ID = "dsh-flash-skin";
@@ -322,11 +321,12 @@ export const Config = z.object({
       /** Table id of the shares table (one record per shared set). */
       sharesTableId: z.string().min(1),
       /**
-       * Optional table id of the likes table (one record per group: groupId ->
-       * count). When present, the like route batches incremental local likes
-       * and periodically upserts them into this table. When absent (or the
-       * whole communityDirectory is unset) likes gracefully fall back to the
-       * local T1/T3 ledger only — standalone-safe, no credentials required.
+       * Legacy table id of a dedicated likes table. Accepted-but-ignored: like
+       * tallies now live on the shares-table rows themselves (`like_count` per
+       * shared set), so no separate likes table is required. Kept in the schema
+       * for backward compatibility with existing deployments. When the whole
+       * communityDirectory is unset, likes gracefully fall back to the local
+       * T1/T3 ledger only — standalone-safe, no credentials required.
        */
       likesTableId: z.string().min(1),
     })
@@ -656,11 +656,13 @@ export function apply(ctx, config) {
         likesTableId: pick("likesTableId"),
       };
     };
-    // The C2 like channel needs the server-held Feishu app credentials plus a
-    // configured likes table to proxy reads/writes. Nothing user-supplied.
+    // Like counts live on the shares-table rows themselves (per shared set), so
+    // the C2 like channel needs the server-held Feishu app credentials plus a
+    // configured shares table to proxy reads/writes. `likesTableId` remains in
+    // the config schema but is accepted-and-ignored for backward compatibility.
     const getLikesEnabled = () => {
       const target = getCommunityTarget();
-      return !!(target && target.appId && target.appSecret && target.appToken && target.likesTableId);
+      return !!(target && target.appId && target.appSecret && target.appToken && target.sharesTableId);
     };
     const {
       likeRoute, likesRoute, flushCommunityLikes, communityDispose,
@@ -677,7 +679,7 @@ export function apply(ctx, config) {
         debounceMs: 30_000,
       },
     });
-    const { directoryRoute, submitRoute } = installCommunityRoutes(ctx, { getTarget: getCommunityTarget, client: communityRoutesClient });
+    const { directoryRoute, submitRoute, importRoute } = installCommunityRoutes(ctx, { getTarget: getCommunityTarget, client: communityRoutesClient });
     return () => {
       uploadRoute();
       serveRoute();
@@ -688,6 +690,7 @@ export function apply(ctx, config) {
       likesRoute();
       directoryRoute();
       submitRoute();
+      importRoute();
     };
   }, "flash-skin: attachment import & serve routes");
 }

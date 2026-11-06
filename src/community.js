@@ -33,6 +33,8 @@ import { readBody, sendJson } from "./likes.js";
 export const COMMUNITY_PATH = "/plugins/dsh-flash-skin/community";
 /** Exact-match route for POST share submissions. */
 export const COMMUNITY_SUBMIT_PATH = "/plugins/dsh-flash-skin/community/submit";
+/** Exact-match route for POST import-count recording (community-panel import). */
+export const COMMUNITY_IMPORT_PATH = "/plugins/dsh-flash-skin/community/import";
 
 const FEISHU_OPEN_API = "https://open.feishu.cn/open-apis";
 const FEISHU_TOKEN_PATH = "/auth/v3/tenant_access_token/internal";
@@ -50,9 +52,20 @@ export const COMMUNITY_URL_MAX = 2048;
 export const MAX_SUBMIT_BODY_BYTES = 256 * 1024;
 /** Max length of a self-declared author name after normalization. */
 export const COMMUNITY_AUTHOR_MAX = 40;
-/** Field-name mapping for the Feishu Bitable shares/likes tables. */
-export const SHARES_FIELDS = { entryId: "entryId", setId: "setId", url: "url", md5: "md5", author: "author" };
-export const LIKES_FIELDS = { setId: "setId", count: "count" };
+/** Field-name mapping for the Feishu Bitable shares table. Counts are stored
+ *  on the shares rows themselves (per shared set): `like_count` for the
+ *  aggregated like tally and `import_count` for community-panel imports. The
+ *  standalone likes table is retired; only `likesTableId` config stays
+ *  accepted-but-ignored for backward compatibility. */
+export const SHARES_FIELDS = {
+  entryId: "entryId",
+  setId: "setId",
+  url: "url",
+  md5: "md5",
+  author: "author",
+  likeCount: "like_count",
+  importCount: "import_count",
+};
 
 const SET_ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 
@@ -365,7 +378,6 @@ export function createCommunityClient(provider = FEISHU_PROVIDER, fetchImpl = gl
 }
 
 const configuredShares = (target) => !!(target && target.sharesTableId);
-const configuredLikes = (target) => !!(target && target.likesTableId);
 
 /** List every record of a Bitable table (paginated, capped by guard loop). */
 async function listAllRecords(client, target, tableId) {
@@ -400,6 +412,10 @@ export async function readCommunityDirectory(client, target) {
     return { ok: true, configured: true, entries: [], error: { code } };
   }
   const entries = [];
+  const nonNegCount = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+  };
   for (const rec of listed.records) {
     const f = rec.fields || {};
     const setId = typeof f[SHARES_FIELDS.setId] === "string" ? f[SHARES_FIELDS.setId].trim() : "";
@@ -414,7 +430,17 @@ export async function readCommunityDirectory(client, target) {
     // Carry the stored MD5 fingerprint only when present; legacy records (and
     // non-fingerprinted backends) omit it so the directory shape stays clean:
     // the absence of a fingerprint is exactly the "cannot verify" signal.
-    const entry = { entryId, setId: cleanSetId, url: cleanUrl };
+    const entry = {
+      entryId,
+      setId: cleanSetId,
+      url: cleanUrl,
+    };
+    // Only positive counts are registered; a zero/absent server value stays a
+    // missing key so the client can seed from its local ledger untouched.
+    const likeCount = nonNegCount(f[SHARES_FIELDS.likeCount]);
+    if (likeCount > 0) entry.likeCount = likeCount;
+    const importCount = nonNegCount(f[SHARES_FIELDS.importCount]);
+    if (importCount > 0) entry.importCount = importCount;
     if (md5) entry.md5 = md5;
     if (author) entry.author = author;
     entries.push(entry);
@@ -478,78 +504,120 @@ export async function submitCommunityShare(client, target, { setId, url, author 
 }
 
 /** Read remote like counts (likes table) into a floored group->count map. */
+/**
+ * Read like tallies from the shares table rows (each shared set stores its own
+ * `like_count`). Returns a map of { setId: likeCount } with only counts > 0, so
+ * the client can seed its per-device like ledger from the server.
+ */
 export async function readCommunityLikes(client, target) {
-  if (!configuredLikes(target)) return { ok: true, counts: null, error: { code: "not-configured" } };
+  if (!configuredShares(target)) return { ok: true, counts: null, error: { code: "not-configured" } };
   const token = await client.tenantToken(target);
   if (!token) return { ok: true, counts: null, error: { code: "auth" } };
-  const listed = await listAllRecords(client, target, target.likesTableId);
+  const listed = await listAllRecords(client, target, target.sharesTableId);
   if (!listed.ok) return { ok: true, counts: null, error: listed.error };
   const counts = {};
   for (const rec of listed.records) {
     const f = rec.fields || {};
-    const setId = typeof f[LIKES_FIELDS.setId] === "string" ? f[LIKES_FIELDS.setId].trim() : "";
-    if (!setId || setId.length > 128 || /[\s\u007f]/.test(setId)) continue;
-    const n = Number(f[LIKES_FIELDS.count]);
+    const setId = typeof f[SHARES_FIELDS.setId] === "string" ? f[SHARES_FIELDS.setId].trim() : "";
+    if (!setId || setId.length > COMMUNITY_SET_ID_MAX || /[\s\u007f]/.test(setId)) continue;
+    const n = Number(f[SHARES_FIELDS.likeCount]);
     if (Number.isFinite(n) && n > 0) counts[setId] = Math.floor(n);
   }
   return { ok: true, counts, error: null };
 }
 
-/** Upsert aggregated like counts into the likes table (server-side write). */
+/**
+ * Write aggregated like counts back onto the shares table rows (server-side
+ * write). Only setIds that already have a share row are touched — unshared
+ * groups keep their like state purely client-side. Rows explicitly listed in
+ * `removed` and not present in the positive set are zeroed (not deleted, since
+ * the row is the directory entry itself).
+ */
 export async function submitCommunityLikes(client, target, { counts, removed } = {}) {
-  if (!configuredLikes(target)) {
-    return { ok: false, error: { code: "not-configured", message: "Community likes table is not configured." } };
+  if (!configuredShares(target)) {
+    return { ok: false, error: { code: "not-configured", message: "Community directory is not configured." } };
   }
+
   const token = await client.tenantToken(target);
-  if (!token) return { ok: false, error: { code: "auth", message: "Feishu app credentials invalid or missing." } };
+  if (!token) {
+    return { ok: false, error: { code: "auth", message: "Feishu app credentials invalid or missing." } };
+  }
 
   const normalized = {};
   if (counts && typeof counts === "object" && !Array.isArray(counts)) {
     for (const [key, value] of Object.entries(counts)) {
-      if (typeof key !== "string" || key.length === 0 || key.length > 128 || /[\s\u007f]/.test(key)) continue;
+      if (typeof key !== "string" || key.length === 0 || key.length > COMMUNITY_SET_ID_MAX || /[\s\u007f]/.test(key)) continue;
       const n = Number(value);
       if (Number.isFinite(n) && n > 0) normalized[key] = Math.floor(n);
     }
   }
 
-  // Explicitly-removed groups: every row in the table whose setId is in this
-  // list *and* is no longer present in the normalized (positive) set must be
-  // deleted, so a group unliked back to 0 stops lingering in the table. Only
-  // setIds named here are ever deleted — absence from `counts` alone (e.g. a
-  // group another host wrote that this host never saw) is never treated as a
-  // delete, which keeps the write-back scoped to the groups this host manages.
+  // Explicitly-removed groups: setIds named here that are no longer liked are
+  // zeroed back to 0 so a group unliked on this host stops lingering on the
+  // server. Absence from `counts` alone is never treated as a zero-out, which
+  // keeps the write-back scoped to the groups this host manages.
   const removalSet = new Set(
     Array.isArray(removed) ? removed.filter((id) => typeof id === "string" && id.length > 0) : [],
   );
 
-  const listed = await listAllRecords(client, target, target.likesTableId);
+  const listed = await listAllRecords(client, target, target.sharesTableId);
   if (!listed.ok) return { ok: false, error: listed.error };
   const recordBySetId = new Map();
   for (const rec of listed.records) {
     const f = rec.fields || {};
-    const s = typeof f[LIKES_FIELDS.setId] === "string" ? f[LIKES_FIELDS.setId].trim() : "";
+    const s = typeof f[SHARES_FIELDS.setId] === "string" ? f[SHARES_FIELDS.setId].trim() : "";
     if (s) recordBySetId.set(s, rec.recordId);
   }
 
   let updated = 0;
   for (const [setId, count] of Object.entries(normalized)) {
-    const fields = { [LIKES_FIELDS.setId]: setId, [LIKES_FIELDS.count]: count };
     const recordId = recordBySetId.get(setId);
-    const res = recordId
-      ? await client.updateRecord(target.appToken, target.likesTableId, token, recordId, fields)
-      : await client.createRecord(target.appToken, target.likesTableId, token, fields);
+    if (!recordId) continue; // unshared group → keep like state client-side
+    const res = await client.updateRecord(target.appToken, target.sharesTableId, token, recordId, { [SHARES_FIELDS.likeCount]: count });
     if (client.provider.ok(res && res.json)) updated++;
   }
 
-  let deleted = 0;
+  let cleared = 0;
   for (const setId of removalSet) {
-    if (normalized[setId] !== undefined) continue; // still liked → never delete
+    if (normalized[setId] !== undefined) continue; // still liked → never zero
     const recordId = recordBySetId.get(setId);
-    if (!recordId) continue; // no lingering row to remove
-    const res = await client.deleteRecord(target.appToken, target.likesTableId, token, recordId);
-    if (client.provider.ok(res && res.json)) deleted++;
+    if (!recordId) continue; // no share row to touch
+    const res = await client.updateRecord(target.appToken, target.sharesTableId, token, recordId, { [SHARES_FIELDS.likeCount]: 0 });
+    if (client.provider.ok(res && res.json)) cleared++;
   }
-  return { ok: true, updated, deleted };
+  return { ok: true, updated, cleared };
+}
+
+/**
+ * Increment the import counter on a shares row (server-side write). Called only
+ * after a *successful verified* community-panel import lets the client confirm
+ * the archive, so the tally reflects real imports of the shared archive.
+ */
+export async function bumpCommunityShareImport(client, target, setId) {
+  if (!configuredShares(target)) {
+    return { ok: false, error: { code: "not-configured", message: "Community directory is not configured." } };
+  }
+  const cleanSetId = normalizeCommunitySetId(setId);
+  if (!cleanSetId) return { ok: false, error: { code: "bad-set-id", message: "Invalid set id." } };
+
+  const token = await client.tenantToken(target);
+  if (!token) return { ok: false, error: { code: "auth", message: "Feishu app credentials invalid or missing." } };
+
+  const listed = await listAllRecords(client, target, target.sharesTableId);
+  if (!listed.ok) return { ok: false, error: listed.error };
+  for (const rec of listed.records) {
+    const f = rec.fields || {};
+    const s = typeof f[SHARES_FIELDS.setId] === "string" ? f[SHARES_FIELDS.setId].trim() : "";
+    if (s !== cleanSetId) continue;
+    const n = Number(f[SHARES_FIELDS.importCount]);
+    const current = Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+    const res = await client.updateRecord(target.appToken, target.sharesTableId, token, rec.recordId, { [SHARES_FIELDS.importCount]: current + 1 });
+    if (!client.provider.ok(res && res.json)) {
+      return { ok: false, error: { code: "write-failed", message: "Failed to update import count." } };
+    }
+    return { ok: true, setId: cleanSetId, count: current + 1 };
+  }
+  return { ok: false, error: { code: "not-found", message: "Share entry not found." } };
 }
 
 /**
@@ -610,9 +678,44 @@ export function installCommunityRoutes(ctx, opts = {}) {
     }
   };
 
+  const recordImport = async (req, res) => {
+    try {
+      if ((req.method ?? "GET") !== "POST") {
+        sendJson(res, 405, { ok: false, error: { code: "method", message: "POST only." } });
+        return;
+      }
+      const body = await readBody(req, MAX_SUBMIT_BODY_BYTES);
+      if (body === null) {
+        res.writeHead(413, { "X-Content-Type-Options": "nosniff" });
+        res.end();
+        return;
+      }
+      let envelope = null;
+      try {
+        envelope = JSON.parse(String(body));
+      } catch {
+        envelope = null;
+      }
+      const setId = envelope && typeof envelope.setId === "string" ? envelope.setId : "";
+      const result = await bumpCommunityShareImport(client, getTarget(), setId);
+      res.writeHead(result.ok ? 200 : 404, {
+        "Content-Type": "application/json; charset=utf-8",
+        "X-Content-Type-Options": "nosniff",
+      });
+      res.end(JSON.stringify(result));
+    } catch {
+      res.writeHead(500, {
+        "Content-Type": "application/json; charset=utf-8",
+        "X-Content-Type-Options": "nosniff",
+      });
+      res.end(JSON.stringify({ ok: false, error: { code: "internal", message: "Unexpected error." } }));
+    }
+  };
+
   return {
     client,
     directoryRoute: ctx.webServer.register({ kind: "exact", path: COMMUNITY_PATH, handler: directory }),
     submitRoute: ctx.webServer.register({ kind: "exact", path: COMMUNITY_SUBMIT_PATH, handler: submit }),
+    importRoute: ctx.webServer.register({ kind: "exact", path: COMMUNITY_IMPORT_PATH, handler: recordImport }),
   };
 }

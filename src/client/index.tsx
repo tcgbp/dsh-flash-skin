@@ -153,6 +153,7 @@ const LIKE_PATH = `/plugins/${PACKAGE_ID}/like`;
 const LIKES_PATH = `/plugins/${PACKAGE_ID}/likes`;
 const COMMUNITY_PATH = `/plugins/${PACKAGE_ID}/community`;
 const COMMUNITY_SUBMIT_PATH = `/plugins/${PACKAGE_ID}/community/submit`;
+const COMMUNITY_IMPORT_PATH = `/plugins/${PACKAGE_ID}/community/import`;
 // Max length of the optional self-declared author (mirrors server-side cap).
 const COMMUNITY_AUTHOR_MAX = 40;
 // Per-device like bookkeeping, keyed by group id ({ [groupId]: boolean }). Not
@@ -1549,13 +1550,24 @@ function CompositeLevelControl({
           {compActive && (
             <Fragment>
               <i className="flash-level-control__plus">+</i>
-              <span className="flash-level-control__term flash-level-control__term--bonus" title={`压缩加分 = 加分系数 ${fmt(COMPACTION_SCORE_BONUS)} × 压缩脉冲 ${fmt(compactionF)} = ${fmt(compBonus)}`}>
-                <b>{t ? t("weights.compactionShort") : "压缩"}</b>
+              {/* 脉冲激活时整段作为高亮「加分块」凸显,并以脉冲的时间戳为 key:
+               * 每次新的压缩事件都会重新挂载,重播弹入动效,让转瞬即逝的加分
+               * 更容易被注意到;平时(无脉冲)这一项整体隐藏,保持公式精简。 */}
+              <span
+                key={`pulse-${compactionPulseAtRef.current ?? 0}`}
+                className="flash-level-control__pulse"
+                title={`压缩脉冲激活:加权 ${fmt(wBase)} + 压缩加分 ${fmt(compBonus)} = 最终得分 ${fmt(displayScore)}`}
+              >
+                <span className="flash-level-control__pop">
+                  <span className="flash-level-control__term flash-level-control__term--bonus" title={`压缩加分 = 加分系数 ${fmt(COMPACTION_SCORE_BONUS)} × 压缩脉冲 ${fmt(compactionF)} = ${fmt(compBonus)}`}>
+                    <b>{t ? t("weights.compactionShort") : "压缩"}</b>
+                    <i className="flash-level-control__eq">=</i>
+                    <span className="flash-level-control__bonus">{fmt(compBonus)}</span>
+                  </span>
+                </span>
                 <i className="flash-level-control__eq">=</i>
-                <span className="flash-level-control__bonus">{fmt(compBonus)}</span>
+                <span className="flash-level-control__sum" title={`最终得分 = 加权 ${fmt(wBase)} + 压缩 ${fmt(compBonus)} = ${fmt(displayScore)} (0..1)`}>{fmt(displayScore)}</span>
               </span>
-              <i className="flash-level-control__eq">=</i>
-              <span className="flash-level-control__sum" title={`最终得分 = 加权 ${fmt(wBase)} + 压缩 ${fmt(compBonus)} = ${fmt(displayScore)} (0..1)`}>{fmt(displayScore)}</span>
             </Fragment>
           )}
           {/* 落帧映射的最终结果:只显示当前帧位,不再展示「加权得分 × 帧数」的中间算式。 */}
@@ -3091,6 +3103,18 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
   const [submitPhase, setSubmitPhase] = useState<"idle" | "submitting" | "done" | "error">("idle");
   const [submitMessage, setSubmitMessage] = useState<string | null>(null);
 
+  // Reports a successful verified community import so the server can increment
+  // the shared set's import_count on its shares row. Best-effort: a failure
+  // never surfaces an error — the client-side import already succeeded.
+  const reportCommunityImport = async (setId: string, _md5: string) => {
+    if (!setId) return;
+    await fetch(COMMUNITY_IMPORT_PATH, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ setId }),
+    });
+  };
+
   const fetchCommunity = async () => {
     setCommunityPhase("loading");
     setCommunityError(null);
@@ -3129,8 +3153,16 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [communityOpen, communityPhase]);
 
-  const importCommunityEntry = (entry: CommunityEntry) => {
-    void importFromUrl(entry.url, (entry.md5 ?? "").trim() || undefined);
+  const importCommunityEntry = async (entry: CommunityEntry) => {
+    const md5 = (entry.md5 ?? "").trim();
+    // Only community-panel imports report an import count, and only after a
+    // successful *verified* import (an MD5 fingerprint was present and matched
+    // against the archived bytes). Legacy entries without a fingerprint are never
+    // verified, so they never bump the counter.
+    const done = await importFromUrl(entry.url, md5 || undefined);
+    if (done && md5) {
+      void reportCommunityImport(entry.setId, md5).catch(() => {});
+    }
   };
 
   const submitCommunityShare = async (groupIndex: number) => {
@@ -3647,12 +3679,12 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
   // hosting site's CORS policy never blocks the request; both paths sink into
   // the same engine as a local pick. Read-only, so imports work even when the
   // document is not writable — the group is staged for a later save.
-  const importFromUrl = async (rawUrl: string, expectedMd5?: string) => {
-    if (!writable || busy) return;
+  const importFromUrl = async (rawUrl: string, expectedMd5?: string): Promise<boolean> => {
+    if (!writable || busy) return false;
     const trimmed = rawUrl.trim();
     if (!trimmed) {
       setFileError(t("netEmpty"));
-      return;
+      return false;
     }
     // A C1 share line carries the whole archive inline; rebuild from its bytes
     // instead of fetching anything. Guarded here (not in the UI) so both the
@@ -3668,28 +3700,29 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
         const buffer = new ArrayBuffer(zipBytes.byteLength);
         new Uint8Array(buffer).set(zipBytes);
         await runArchiveImport(name, buffer, share.manifest);
+        return true;
       } catch {
         setFileError(t("zipParseFailed"));
+        return false;
       } finally {
         setBusy(false);
       }
-      return;
     }
     let name: string;
     try {
       const parsed = new URL(trimmed);
       if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
         setFileError(t("zipBadLink"));
-        return;
+        return false;
       }
       name = decodeURIComponent(parsed.pathname.split("/").filter(Boolean).pop() ?? "");
     } catch {
       setFileError(t("zipBadLink"));
-      return;
+      return false;
     }
     if (!ARCHIVE_EXT_RE.test(name)) {
       setFileError(t("zipBadLink"));
-      return;
+      return false;
     }
     setFileError(null);
     setBusy(true);
@@ -3705,13 +3738,16 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
         const actual = response.headers.get("X-Archive-Md5") ?? "";
         if (actual !== expectedMd5) {
           setFileError(t("communityTampered"));
-          return;
+          return false;
         }
       }
       const buffer = await response.arrayBuffer();
       await runArchiveImport(name, buffer);
+      // Only a fully-imported, verified URL contributes a community import count.
+      return !!expectedMd5;
     } catch {
       setFileError(t("zipParseFailed"));
+      return false;
     } finally {
       setBusy(false);
     }
@@ -4264,7 +4300,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
                             onClick={() => void importCommunityEntry(entry)}
                             title={t("communityImportTitle")}
                           >
-                            {t("communityImport")}
+                            {t("communityImport")}{typeof entry.importCount === "number" && entry.importCount > 0 ? ` (${entry.importCount})` : ""}
                           </button>
                         </div>
                       </td>

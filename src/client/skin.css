@@ -1214,10 +1214,11 @@ body[data-flash-skin="on"][data-flash-layout="left"] [class*="_composerStack"] [
  *    QueueDock 挂在 conversation.input.dock，与 TodoPanel 同处
  *    [class*="_composerStack"]，原生其 dock 容器 margin:0 auto 居中。
  *    与 todo 用同一个 margin-left 位移，让排队条左缘与输入卡/内容列左缘对齐。
- *    注：排队条 dock 与统计行/目标条同后缀 _dock，用精确类名 .F07MqG_dock
- *    （宿主每次构建会重排 hash，升级宿主后需同步核对，勿轻易改回旧 hash）。
+ *    注：排队条 dock 根同时带稳定的 data-queue-dock 属性，据此定位，
+ *    不依赖每次构建会重排哈希的精确类名（旧写法 .F07MqG_dock 在宿主
+ *    重建哈希后失效，是排队条不随居左的根因）。
  */
-body[data-flash-skin="on"][data-flash-layout="left"] .F07MqG_dock {
+body[data-flash-skin="on"][data-flash-layout="left"] [class*="_composerStack"] [data-queue-dock] {
   margin-left: calc(
     var(--dsh-composer-side-clearance, 16px) + 16px
     + var(--dsh-flash-timeline-gutter, 50px)
@@ -1232,14 +1233,15 @@ body[data-flash-skin="on"][data-flash-layout="left"] .F07MqG_dock {
  *     导致目标条仍贴着视口中线，没跟着左移。这里先把 dock 从左钉死（去掉 auto
  *     居中，使公允左缘 = composerStack 原点），再给可见的 [class*="_bar"] 施加
  *     与 todo/排队条完全相同的 margin-left 基准，让白色目标条左缘与输入卡/内容列
- *     左缘落在同一根垂直线上。注：目标 dock 用精确类名 .Gc24Bq_dock
- *     （宿主每次构建会重排 hash，升级宿主后需同步核对）。
+ *     左缘落在同一根垂直线上。注：目标条 dock 根同时带稳定的 data-goal-bar 属性，
+ *     据此定位，不依赖每次构建会重排哈希的精确类名（旧写法 .Gc24Bq_dock 在宿主
+ *     重建哈希后失效，与排队条同样需同步修正）。
  */
-body[data-flash-skin="on"][data-flash-layout="left"] .Gc24Bq_dock {
+body[data-flash-skin="on"][data-flash-layout="left"] [class*="_composerStack"] [data-goal-bar] {
   margin-left: 0 !important;
   margin-right: auto !important;
 }
-body[data-flash-skin="on"][data-flash-layout="left"] [class*="_bar"] {
+body[data-flash-skin="on"][data-flash-layout="left"] [class*="_composerStack"] [data-goal-bar] [class*="_bar"] {
   margin-left: calc(
     var(--dsh-composer-side-clearance, 16px) + 16px
     + var(--dsh-flash-timeline-gutter, 50px)

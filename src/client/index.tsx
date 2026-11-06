@@ -2316,6 +2316,8 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "communitySubmitFailed": "提交失败：{message}",
     "communityUrlMissing": "请输入压缩包 URL",
     "communityTampered": "导入已拒绝：该链接指向的压缩包内容与分享时不一致，可能已被改动。",
+    "feedbackWriteFailed": "反馈记录未同步（追加被服务器拒绝）。本地操作已完成，不影响使用。",
+    "feedbackWriteNotConfigured": "反馈记录未同步（反馈表未配置）。本地操作已完成，不影响使用。",
   },
   en: {
     "loading": "Loading…",
@@ -2427,6 +2429,8 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "communitySubmitFailed": "Submit failed: {message}",
     "communityUrlMissing": "Please enter an archive URL",
     "communityTampered": "Import refused: the archive behind this link differs from what was shared and may have been altered.",
+    "feedbackWriteFailed": "Feedback record not synced (the server rejected the append). Your local action already completed and is unaffected.",
+    "feedbackWriteNotConfigured": "Feedback record not synced (the feedback table is not configured). Your local action already completed and is unaffected.",
     "exportGroup": "Export archive",
     "exportGroupTitle": "Pack all frames plus this group's metadata (id, Chinese/English names, light/dark threshold) into a downloadable .zip that imports straight back",
     "exportNoImages": "This group has no images — nothing to export",
@@ -2997,7 +3001,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
         setCommunityLikes((prev) => ({ ...prev, [setId]: payload.count as number }));
       }
       // Append a feedback record for the now-active state of this toggle.
-      void reportCommunityFeedback(setId, next ? "like" : "unlike").catch(() => {});
+      void reportFeedbackSafe(setId, next ? "like" : "unlike").catch(() => {});
     } catch {
       setLikesError(t("likeSyncFailed"));
     }
@@ -3107,6 +3111,21 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
   const [submitPhase, setSubmitPhase] = useState<"idle" | "submitting" | "done" | "error">("idle");
   const [submitMessage, setSubmitMessage] = useState<string | null>(null);
 
+  // Transient, sanitized notice for best-effort feedback-record failures. Kept
+  // separate from communityError so it never hides the entry list; auto-clears
+  // after a few seconds. Only a generic, status-derived reason is ever shown —
+  // never the raw server body, tokens, ids, or the like.
+  const [feedbackError, setFeedbackError] = useState<string | null>(null);
+  const feedbackErrorTimer = useRef<number | null>(null);
+  const showFeedbackError = (message: string | null) => {
+    setFeedbackError(message);
+    if (feedbackErrorTimer.current !== null) window.clearTimeout(feedbackErrorTimer.current);
+    feedbackErrorTimer.current = null;
+    if (message) {
+      feedbackErrorTimer.current = window.setTimeout(() => setFeedbackError(null), 6000);
+    }
+  };
+
   // Reports a successful verified community import so the server can increment
   // the shared set's import_count on its shares row. Best-effort: a failure
   // never surfaces an error — the client-side import already succeeded.
@@ -3121,15 +3140,38 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
 
   // Appends one record to the community feedback table for a per-user action
   // (`like` | `unlike` | `import`). This is an append-only log — the server
-  // stamps created_at and never merges rows. Fire-and-forget and best-effort:
-  // recording failures are invisible and never block the UI action itself.
+  // stamps created_at and never merges rows. Network/4xx/5xx do not throw
+  // here (feedback stays best-effort and never blocks the UI action), but they
+  // ARE reported via `ok` so callers can surface a sanitized notice.
   const reportCommunityFeedback = async (setId: string, action: "like" | "unlike" | "import") => {
-    if (!setId) return;
-    await fetch(COMMUNITY_FEEDBACK_PATH, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ setId, action }),
-    });
+    if (!setId) return { ok: true };
+    let response: Response;
+    try {
+      response = await fetch(COMMUNITY_FEEDBACK_PATH, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ setId, action }),
+      });
+    } catch {
+      // Network-level failure: nothing sensitive, but the append did not happen.
+      return { ok: false, reason: "flaky" };
+    }
+    if (!response.ok) {
+      // The append was rejected. The reason is derived from the status alone;
+      // the response body (which could reference internal ids/table tokens) is
+      // intentionally never inspected or shown.
+      return { ok: false, reason: response.status === 404 ? "not-configured" : "write-failed" };
+    }
+    return { ok: true };
+  };
+
+  // Best-effort feedback write that surfaces only a sanitized, i18n message on
+  // failure — never any secret material — and auto-clears it after a few s.
+  const reportFeedbackSafe = async (setId: string, action: "like" | "unlike" | "import") => {
+    const res = await reportCommunityFeedback(setId, action);
+    if (!res.ok) {
+      showFeedbackError(t(res.reason === "not-configured" ? "feedbackWriteNotConfigured" : "feedbackWriteFailed"));
+    }
   };
 
   const fetchCommunity = async () => {
@@ -3182,7 +3224,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
     }
     if (done) {
       // Append a feedback record for this successful import (verified or not).
-      void reportCommunityFeedback(entry.setId, "import").catch(() => {});
+      void reportFeedbackSafe(entry.setId, "import").catch(() => {});
     }
   };
 
@@ -4263,6 +4305,11 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
           </header>
           {communityPhase === "loading" && (
             <p className="flash-portrait-groups__notice" role="status">{t("communityLoading")}</p>
+          )}
+          {feedbackError && (
+            <p className="flash-portrait-groups__notice flash-portrait-groups__notice--error" role="alert">
+              {feedbackError}
+            </p>
           )}
           {communityPhase === "ready" && communityError && (
             <p className="flash-portrait-groups__notice flash-portrait-groups__notice--error" role="alert">

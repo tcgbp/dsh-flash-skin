@@ -81,7 +81,7 @@ dsh --profile web --dump-config | grep -B1 -A2 flash-skin
 - **忠实指纹（防篡改）**：分享提交时，服务端**下载该 url 当前指向的压缩包并计算 MD5**（`computeUrlMd5`，失败即拒绝本次分享），随记录写入 `md5` 列；`readCommunityDirectory` 把该指纹带进目录条目。分享者之后若改挂 url 指向另一份 zip，导入者拿到的文件指纹会与表内不一致。
 - **导入核对**：从社区面板导入某条分享时，前端把该条目的 `md5` 作为期望指纹传给 `/archive` 代理；服务端下载后在 `X-Archive-Md5` 响应头回传实际指纹，前端比对——**不一致则拒绝导入并提示「内容可能被改动」**。地址栏直接粘贴 url（无期望指纹可核）则跳过该校验。
 - 服务端持有飞书应用凭据，换取并缓存短时效的 `tenant_access_token`（提前 60s 刷新）用于每次 Bitable 调用——**凭据绝不下发到客户端 bundle**，匿名访问者零凭据、zero-dependency（standalone 安全）。
-- 目录目标配置（插件设置的 `communityDirectory`）：`{ provider?, appId, appSecret, appToken, sharesTableId, likesTableId? }`。`appToken` 是 Bitable base 的 (bitable_token)；`sharesTableId`/`likesTableId` 分别是对应表的 table_id。
+- 目录目标配置（插件设置的 `communityDirectory`）：`{ provider?, appId, appSecret, appToken, sharesTableId }`。`appToken` 是 Bitable base 的 (bitable_token)；`sharesTableId` 是对应表的 table_id。点赞与导入计数（`like_count`/`import_count`）直接存在分享记录行上，不再需要独立点赞表。
 
 ### 点赞记账（三档渐进）
 

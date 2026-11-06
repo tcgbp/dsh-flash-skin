@@ -306,10 +306,10 @@ export function installLikeRoutes(ctx, opts = {}) {
   }
 
   // ── Optional Feishu Bitable community sync (aggregated like counts) ────────
-  // When `opts.community` is present and a likes table is configured, the like
+  // When `opts.community` is present and a shares table is configured, the like
   // route batches incremental local likes into a snapshot and eventually
-  // persists it through the Bitable likes-table upsert channel. When
-  // disabled/absent the like channels stay purely local (T1 + optional T3
+  // persists it back onto the shares-table rows (`like_count` per shared set).
+  // When disabled/absent the like channels stay purely local (T1 + optional T3
   // mirror) — standalone-safe.
   //
   // Design:
@@ -317,7 +317,7 @@ export function installLikeRoutes(ctx, opts = {}) {
   //     holds the Feishu app credentials (appId/appSecret) and proxies every
   //     Bitable call with its own tenant_access_token. Likes are triggered by
   //     anonymous visitors and carry no user credential.
-  //   - On install we opportunistically read the remote likes table and seed the
+  //   - On install we opportunistically read the remote counts and seed the
   //     ledger, so local tallies already include other hosts' known counts.
   //   - Toggles schedule a debounced, coalesced flush (one upsert window) rather
   //     than one write per like. Any failure just disables the channel and the
@@ -328,9 +328,9 @@ export function installLikeRoutes(ctx, opts = {}) {
   let communityInFlight = false;
   let communityFailed = false;
   // groupIds this host explicitly unliked back to 0 (or otherwise removed from
-  // T1). They are folded into the community flush so the Bitable likes table
-  // deletes any lingering row instead of keeping a stale positive count. Only
-  // ids recorded here are ever deleted from the table.
+  // T1). They are folded into the community flush so the shares-table row is
+  // zeroed instead of keeping a stale positive count. Only ids recorded here
+  // are ever zeroed on the shares row.
   const communityRemoved = new Set();
 
   const communityEnabled = () =>
@@ -341,7 +341,7 @@ export function installLikeRoutes(ctx, opts = {}) {
     typeof community.readCommunityLikes === "function" &&
     typeof community.submitCommunityLikes === "function";
 
-  /** The C2 like channel is enabled when the Feishu backend + likes table are configured. */
+  /** The C2 like channel is enabled when the Feishu backend + a configured shares table are present. */
   const communityLikesOn = () => {
     try {
       return community ? !!community.getLikesEnabled() : false;

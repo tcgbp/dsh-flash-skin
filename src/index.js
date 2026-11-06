@@ -321,14 +321,11 @@ export const Config = z.object({
       /** Table id of the shares table (one record per shared set). */
       sharesTableId: z.string().min(1),
       /**
-       * Legacy table id of a dedicated likes table. Accepted-but-ignored: like
-       * tallies now live on the shares-table rows themselves (`like_count` per
-       * shared set), so no separate likes table is required. Kept in the schema
-       * for backward compatibility with existing deployments. When the whole
-       * communityDirectory is unset, likes gracefully fall back to the local
-       * T1/T3 ledger only — standalone-safe, no credentials required.
+       * Optional table id of the feedback table (one record per per-user
+       * like/unlike/import action — an append log, never merged). When unset,
+       * feedback recording simply no-ops; nothing else in the channel changes.
        */
-      likesTableId: z.string().min(1),
+      feedbackTableId: z.string().min(1),
     })
     // Object fields are optional unless `.required()`, so an absent top-level
     // `communityDirectory` validates as `{}` instead of failing activation;
@@ -602,8 +599,8 @@ export function apply(ctx, config) {
     const exampleRoute = ctx.webServer.register({ kind: "prefixes", path: EXAMPLES_PATH, handler: example });
     const remoteRoute = ctx.webServer.register({ kind: "exact", path: REMOTE_ARCHIVE_PATH, handler: remote });
     // Community share + like channels. Likes stay T1-in-memory (+ optional T3
-    // durable mirror when a storage backend is present and an optional Feishu
-    // Bitable sync when a likes table is configured); the community-directory
+    // durable mirror when a storage backend is present, plus an optional Feishu
+    // Bitable sync back onto the shares-table rows); the community-directory
     // target resolves at request time from the configured Feishu app, else
     // inert. Built lazily so the provider (feishu) always matches the current
     // config value; every operation resolves its own fresh client. Falls back
@@ -653,13 +650,12 @@ export function apply(ctx, config) {
         appSecret: pick("appSecret"),
         appToken: pick("appToken"),
         sharesTableId: pick("sharesTableId"),
-        likesTableId: pick("likesTableId"),
+        feedbackTableId: pick("feedbackTableId"),
       };
     };
     // Like counts live on the shares-table rows themselves (per shared set), so
     // the C2 like channel needs the server-held Feishu app credentials plus a
-    // configured shares table to proxy reads/writes. `likesTableId` remains in
-    // the config schema but is accepted-and-ignored for backward compatibility.
+    // configured shares table to proxy reads/writes.
     const getLikesEnabled = () => {
       const target = getCommunityTarget();
       return !!(target && target.appId && target.appSecret && target.appToken && target.sharesTableId);
@@ -667,7 +663,8 @@ export function apply(ctx, config) {
     const {
       likeRoute, likesRoute, flushCommunityLikes, communityDispose,
     } = installLikeRoutes(ctx, {
-      // Server-proxied Bitable like aggregation: reads the likes table once to
+      // Server-proxied Bitable like aggregation: reads the like tallies back
+      // from the shares-table rows once to
       // seed the ledger, then debounced-flushes the merged snapshot through a
       // single upsert channel. Absent/disabled → pure local T1 (+optional T3).
       community: {
@@ -679,7 +676,7 @@ export function apply(ctx, config) {
         debounceMs: 30_000,
       },
     });
-    const { directoryRoute, submitRoute, importRoute } = installCommunityRoutes(ctx, { getTarget: getCommunityTarget, client: communityRoutesClient });
+    const { directoryRoute, submitRoute, importRoute, feedbackRoute } = installCommunityRoutes(ctx, { getTarget: getCommunityTarget, client: communityRoutesClient });
     return () => {
       uploadRoute();
       serveRoute();
@@ -691,6 +688,7 @@ export function apply(ctx, config) {
       directoryRoute();
       submitRoute();
       importRoute();
+      feedbackRoute();
     };
   }, "flash-skin: attachment import & serve routes");
 }

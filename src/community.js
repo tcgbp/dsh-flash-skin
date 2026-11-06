@@ -5,7 +5,7 @@
 //   - The community directory lives in a Feishu Bitable base that the *plugin
 //     owner* designates through the `communityDirectory` config.
 //       shares table: one record per shared set -> text fields { entryId, setId, url }
-//       likes  table: one record per group    -> fields { groupId, count }
+//                 plus per-row count fields { like_count, import_count }.
 //   - Sharers keep custody of their archive URL: the table stores only the
 //     text pointer (url), never archive bytes (hard user constraint).
 //   - The plugin *server* holds the Feishu app credentials (app_id + app_secret)
@@ -13,9 +13,9 @@
 //     every Bitable call. No credential ever reaches the client bundle: the
 //     browser reads/writes only through this plugin's own routes (/community,
 //     /community/submit) which the server-side proxy handles.
-//   - READING lists the shares table (directory) and the likes table (counts).
+//   - READING lists the shares table (directory) and per-row like/import counts.
 //   - WRITING creates a shares record for a submitted URL (409 when the same
-//     set id already exists) and upserts likes records.
+//     set id already exists) and updates like/import counts on shares rows.
 //
 // "Pluggable backend": the provider seam (provider object + createCommunityClient)
 // isolates every host/API divergence so a future backend can be swapped in by
@@ -27,7 +27,7 @@
 // structured Chinese notices and fall back to empty/zero values.
 
 import { createHash } from "node:crypto";
-import { readBody, sendJson } from "./likes.js";
+import { readBody, sendJson, PEER_HEADER, peerFromRemote } from "./likes.js";
 
 /** Exact-match route for GET community-directory snapshots. */
 export const COMMUNITY_PATH = "/plugins/dsh-flash-skin/community";
@@ -35,6 +35,19 @@ export const COMMUNITY_PATH = "/plugins/dsh-flash-skin/community";
 export const COMMUNITY_SUBMIT_PATH = "/plugins/dsh-flash-skin/community/submit";
 /** Exact-match route for POST import-count recording (community-panel import). */
 export const COMMUNITY_IMPORT_PATH = "/plugins/dsh-flash-skin/community/import";
+/** Exact-match route for community feedback (per-(peer, setId) upsert:
+ *  one row per peer + set, latest action wins, never an unbounded log). */
+export const COMMUNITY_FEEDBACK_PATH = "/plugins/dsh-flash-skin/community/feedback";
+/** Accepted feedback actions, mirroring the client's per-performer events. */
+export const FEEDBACK_ACTIONS = Object.freeze(["like", "unlike", "import"]);
+/** Field-name mapping for the Feishu Bitable feedback table (upsert per
+ *  peer + setId: one row per key, latest action wins). */
+export const FEEDBACK_FIELDS = Object.freeze({
+  peer: "peer",
+  setId: "setId",
+  action: "action",
+  createdAt: "created_at",
+});
 
 const FEISHU_OPEN_API = "https://open.feishu.cn/open-apis";
 const FEISHU_TOKEN_PATH = "/auth/v3/tenant_access_token/internal";
@@ -54,9 +67,7 @@ export const MAX_SUBMIT_BODY_BYTES = 256 * 1024;
 export const COMMUNITY_AUTHOR_MAX = 40;
 /** Field-name mapping for the Feishu Bitable shares table. Counts are stored
  *  on the shares rows themselves (per shared set): `like_count` for the
- *  aggregated like tally and `import_count` for community-panel imports. The
- *  standalone likes table is retired; only `likesTableId` config stays
- *  accepted-but-ignored for backward compatibility. */
+ *  aggregated like tally and `import_count` for community-panel imports. */
 export const SHARES_FIELDS = {
   entryId: "entryId",
   setId: "setId",
@@ -120,7 +131,7 @@ export const DEFAULT_COMMUNITY_TARGET = Object.freeze({
   appSecret: "Qn6UEZOK6IK5aiMGCB5Szf1FYNG3DFEh",
   appToken: "MxS6bh9M3a9IZUscyBbce2Dhn5b",
   sharesTableId: "tblgfZGkYEn2wSLD",
-  likesTableId: "tblIk4f5YBYrGDqc",
+  feedbackTableId: "tblDNBFbfhYcjJI7",
 });
 
 /**
@@ -503,7 +514,7 @@ export async function submitCommunityShare(client, target, { setId, url, author 
   return { ok: true, entry, recordId };
 }
 
-/** Read remote like counts (likes table) into a floored group->count map. */
+/** Read remote like counts into a floored group->count map. */
 /**
  * Read like tallies from the shares table rows (each shared set stores its own
  * `like_count`). Returns a map of { setId: likeCount } with only counts > 0, so
@@ -621,6 +632,79 @@ export async function bumpCommunityShareImport(client, target, setId) {
 }
 
 /**
+ * Record one feedback entry for the community table as a **per-(peer, setId)
+ * upsert**: at most one row exists for a given peer + set, so hammering the
+ * like/unlike toggle or repeatedly importing/deleting the same set can never
+ * grow an unbounded append log. When a row already matches the peer + set, its
+ * `action` column is updated in place with the newest action and any extra
+ * duplicate rows (left over from older append-log builds) are pruned so the
+ * table converges to exactly one row per key. If none exists, a row is created.
+ * `created_at` is a Feishu auto-fill (type 5) date field and is therefore never
+ * sent (an ISO string is rejected with DatetimeFieldConvFail). The peer is
+ * supplied by the caller (header → hashed remote fallback). Gated on the
+ * feedback table being configured; otherwise it degrades to a no-op success.
+ */
+export async function recordCommunityFeedback(client, target, { peer, setId, action }) {
+  if (!target || !target.feedbackTableId) {
+    return { ok: false, error: { code: "not-configured", message: "Feedback table is not configured." } };
+  }
+  const cleanSetId = normalizeCommunitySetId(setId);
+  if (!cleanSetId) return { ok: false, error: { code: "bad-set-id", message: "Invalid set id." } };
+  if (!FEEDBACK_ACTIONS.includes(action)) {
+    return { ok: false, error: { code: "bad-action", message: "Invalid feedback action." } };
+  }
+  const token = await client.tenantToken(target);
+  if (!token) return { ok: false, error: { code: "auth", message: "Feishu app credentials invalid or missing." } };
+  const peerKey = typeof peer === "string" && peer ? peer : "";
+
+  // Scan the feedback table for our key (peer + set). Listing rather than
+  // blind-append is what lets us dedupe; the table is small in practice.
+  const listed = await listAllRecords(client, target, target.feedbackTableId);
+  let match = null;
+  const extras = [];
+  if (listed.ok && Array.isArray(listed.records)) {
+    for (const rec of listed.records) {
+      const f = rec.fields || {};
+      const fPeer = typeof f[FEEDBACK_FIELDS.peer] === "string" ? f[FEEDBACK_FIELDS.peer] : "";
+      const fSetId = typeof f[FEEDBACK_FIELDS.setId] === "string" ? f[FEEDBACK_FIELDS.setId].trim() : "";
+      if (fPeer === peerKey && fSetId === cleanSetId) {
+        if (match) extras.push(rec);
+        else match = rec;
+      }
+    }
+  }
+
+  if (match) {
+    // Row already exists: flip it to the newest action and prune leftover dups.
+    const upd = await client.updateRecord(target.appToken, target.feedbackTableId, token, match.recordId, {
+      [FEEDBACK_FIELDS.action]: action,
+    });
+    if (!client.provider.ok(upd && upd.json)) {
+      return { ok: false, error: { code: "write-failed", message: "Failed to record feedback." } };
+    }
+    for (const rec of extras) {
+      try {
+        await client.deleteRecord(target.appToken, target.feedbackTableId, token, rec.recordId);
+      } catch {
+        // Pruning is best-effort; a failed delete must not fail the update.
+      }
+    }
+    return { ok: true, setId: cleanSetId, action };
+  }
+
+  const fields = {
+    [FEEDBACK_FIELDS.peer]: peerKey,
+    [FEEDBACK_FIELDS.setId]: cleanSetId,
+    [FEEDBACK_FIELDS.action]: action,
+  };
+  const res = await client.createRecord(target.appToken, target.feedbackTableId, token, fields);
+  if (!client.provider.ok(res && res.json)) {
+    return { ok: false, error: { code: "write-failed", message: "Failed to record feedback." } };
+  }
+  return { ok: true, setId: cleanSetId, action };
+}
+
+/**
  * Register the community-directory routes. getTarget resolves the pluggable
  * backend target at request time; `client` is the C2 backend client (defaults
  * to the feishu provider client). Returns disposers grouped by route kind.
@@ -712,10 +796,48 @@ export function installCommunityRoutes(ctx, opts = {}) {
     }
   };
 
+  const recordFeedback = async (req, res) => {
+    try {
+      if ((req.method ?? "GET") !== "POST") {
+        sendJson(res, 405, { ok: false, error: { code: "method", message: "POST only." } });
+        return;
+      }
+      const body = await readBody(req, MAX_SUBMIT_BODY_BYTES);
+      if (body === null) {
+        res.writeHead(413, { "X-Content-Type-Options": "nosniff" });
+        res.end();
+        return;
+      }
+      let envelope = null;
+      try {
+        envelope = JSON.parse(String(body));
+      } catch {
+        envelope = null;
+      }
+      const setId = envelope && typeof envelope.setId === "string" ? envelope.setId : "";
+      const action = envelope && typeof envelope.action === "string" ? envelope.action : "";
+      const remote = req.socket && typeof req.socket.remoteAddress === "string" ? req.socket.remoteAddress : "";
+      const peer = String(req.headers[PEER_HEADER] ?? "") || peerFromRemote(remote);
+      const result = await recordCommunityFeedback(client, getTarget(), { peer, setId, action });
+      res.writeHead(result.ok ? 200 : 400, {
+        "Content-Type": "application/json; charset=utf-8",
+        "X-Content-Type-Options": "nosniff",
+      });
+      res.end(JSON.stringify(result));
+    } catch {
+      res.writeHead(500, {
+        "Content-Type": "application/json; charset=utf-8",
+        "X-Content-Type-Options": "nosniff",
+      });
+      res.end(JSON.stringify({ ok: false, error: { code: "internal", message: "Unexpected error." } }));
+    }
+  };
+
   return {
     client,
     directoryRoute: ctx.webServer.register({ kind: "exact", path: COMMUNITY_PATH, handler: directory }),
     submitRoute: ctx.webServer.register({ kind: "exact", path: COMMUNITY_SUBMIT_PATH, handler: submit }),
     importRoute: ctx.webServer.register({ kind: "exact", path: COMMUNITY_IMPORT_PATH, handler: recordImport }),
+    feedbackRoute: ctx.webServer.register({ kind: "exact", path: COMMUNITY_FEEDBACK_PATH, handler: recordFeedback }),
   };
 }

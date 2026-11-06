@@ -47,7 +47,7 @@ describe("Config schema (plugin activation contract)", () => {
     });
   });
 
-  it("honours an explicit provider and likes table override", () => {
+  it("honours an explicit provider override", () => {
     const out = Config({
       communityDirectory: {
         provider: "feishu",
@@ -55,13 +55,11 @@ describe("Config schema (plugin activation contract)", () => {
         appSecret: "sec",
         appToken: "bitable",
         sharesTableId: "sh",
-        likesTableId: "li",
       },
     });
     expect(out.communityDirectory).toMatchObject({
       provider: "feishu",
       sharesTableId: "sh",
-      likesTableId: "li",
     });
   });
 

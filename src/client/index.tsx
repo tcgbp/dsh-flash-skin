@@ -153,6 +153,7 @@ const LIKES_PATH = `/plugins/${PACKAGE_ID}/likes`;
 const COMMUNITY_PATH = `/plugins/${PACKAGE_ID}/community`;
 const COMMUNITY_SUBMIT_PATH = `/plugins/${PACKAGE_ID}/community/submit`;
 const COMMUNITY_IMPORT_PATH = `/plugins/${PACKAGE_ID}/community/import`;
+const COMMUNITY_FEEDBACK_PATH = `/plugins/${PACKAGE_ID}/community/feedback`;
 // Max length of the optional self-declared author (mirrors server-side cap).
 const COMMUNITY_AUTHOR_MAX = 40;
 // Per-device like bookkeeping, keyed by group id ({ [groupId]: boolean }). Not
@@ -2995,6 +2996,8 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
       if (payload && typeof payload === "object" && typeof payload.count === "number") {
         setCommunityLikes((prev) => ({ ...prev, [setId]: payload.count as number }));
       }
+      // Append a feedback record for the now-active state of this toggle.
+      void reportCommunityFeedback(setId, next ? "like" : "unlike").catch(() => {});
     } catch {
       setLikesError(t("likeSyncFailed"));
     }
@@ -3116,6 +3119,19 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
     });
   };
 
+  // Appends one record to the community feedback table for a per-user action
+  // (`like` | `unlike` | `import`). This is an append-only log — the server
+  // stamps created_at and never merges rows. Fire-and-forget and best-effort:
+  // recording failures are invisible and never block the UI action itself.
+  const reportCommunityFeedback = async (setId: string, action: "like" | "unlike" | "import") => {
+    if (!setId) return;
+    await fetch(COMMUNITY_FEEDBACK_PATH, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ setId, action }),
+    });
+  };
+
   const fetchCommunity = async () => {
     setCommunityPhase("loading");
     setCommunityError(null);
@@ -3163,6 +3179,10 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
     const done = await importFromUrl(entry.url, md5 || undefined);
     if (done && md5) {
       void reportCommunityImport(entry.setId, md5).catch(() => {});
+    }
+    if (done) {
+      // Append a feedback record for this successful import (verified or not).
+      void reportCommunityFeedback(entry.setId, "import").catch(() => {});
     }
   };
 
@@ -4904,7 +4924,10 @@ export function apply(ctx: ClientContext) {
         const index = Math.min(c - 1, Math.max(0, Math.round(Number(value) || 0)));
         return `${index + 1}/${c}`;
       },
-      visible: () => presenter.isEnabled() && presenter.getPortraitCount() >= 2,
+      visible: () =>
+        presenter.isEnabled() &&
+        scope.getSnapshot().driver === "manual" &&
+        presenter.getPortraitCount() >= 2,
     };
   };
 
@@ -4960,6 +4983,9 @@ export function apply(ctx: ClientContext) {
       if (driver !== lastDriver) {
         lastDriver = driver;
         quickControl?.notifyChange?.(DRIVER_SWITCH_ID);
+        // 强度驱动切到「综合加权」时隐藏手动的人物强度滑杆（只有 manual 才显示），
+        // 切回「手动」再让它出现 —— 面板只在 registry bump 后重跑 visible()。
+        quickControl?.notifyChange?.(PORTRAIT_SLIDER_SWITCH_ID);
       }
     });
 

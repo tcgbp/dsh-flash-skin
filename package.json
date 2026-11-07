@@ -8,6 +8,7 @@
   },
   "homepage": "https://github.com/tcgbp/dsh-flash-skin#readme",
   "bugs": "https://github.com/tcgbp/dsh-flash-skin/issues",
+  "license": "Apache-2.0",
   "type": "module",
   "main": "./src/index.js",
   "exports": {
@@ -18,7 +19,6 @@
   },
   "files": [
     "cordis.patch.yml",
-    "./src/index.js",
     "lib/client.js",
     "lib/client.js.map",
     "locale/zh.json",
@@ -28,6 +28,7 @@
     "src/likes.js",
     "src/community.js",
     "icon.svg",
+    "LICENSE",
     "README.md",
     "examples/portrait-archives",
     "examples/portrait-manifest/README.md"
@@ -35,6 +36,7 @@
   "icon": "./icon.svg",
   "packageManager": "pnpm@12.11.2",
   "engines": {
+    "dsh": ">=0.2.2-0 <0.3.0",
     "node": "^22.19.0 || >=24.0.0"
   },
   "scripts": {
@@ -42,6 +44,15 @@
     "test": "vitest run"
   },
   "dsh": {
+    "capabilities": [
+      "network:egress",
+      "network:ingress",
+      "sessions:read",
+      "credentials:list"
+    ],
+    "labels": [
+      "remote-access"
+    ],
     "bundle": {
       "patch": "./cordis.patch.yml"
     },

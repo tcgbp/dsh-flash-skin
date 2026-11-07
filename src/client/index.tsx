@@ -633,6 +633,22 @@ class SkinPresenter {
   private leftPortraitsSources: readonly PortraitSource[] = [];
   private disposed = false;
   private unsubscribe: () => void;
+  // Appearance-field subscribers (text-bg / portrait-size / scrim strength):
+  // keeps the general-settings rows and the dsh-flash quick-panel switches in
+  // step when either surface changes the persisted strength. Same lightweight
+  // snapshot-store shape the other rows use via useSyncExternalStore.
+  private changeListeners = new Set<() => void>();
+
+  /** Subscribe to appearance-field changes; returns an unsubscribe function. */
+  subscribe(listener: () => void): () => void {
+    this.changeListeners.add(listener);
+    return () => this.changeListeners.delete(listener);
+  }
+
+  private emitChange() {
+    if (this.disposed) return;
+    for (const listener of this.changeListeners) listener();
+  }
 
   private darkLevelForCurrentSet(): number {
     const value = this.groupConfigs[this.set.id]?.darkLevel;
@@ -817,6 +833,7 @@ class SkinPresenter {
       // storage may be unavailable
     }
     this.applyTextBg();
+    this.emitChange();
   }
 
   // Mirror the palette body-variable pattern: `--flash-text-bg-strength`
@@ -842,6 +859,7 @@ class SkinPresenter {
       // storage may be unavailable
     }
     this.applyPortraitSize();
+    this.emitChange();
   }
 
   // Mirror the palette body-variable pattern: `--flash-portrait-size` carries the
@@ -869,6 +887,7 @@ class SkinPresenter {
       // storage may be unavailable
     }
     this.applyScrim();
+    this.emitChange();
   }
 
   // Mirror the palette body-variable pattern: `--flash-scrim-strength`
@@ -1097,6 +1116,7 @@ class SkinPresenter {
     if (this.disposed) return;
     this.disposed = true;
     this.unsubscribe();
+    this.changeListeners.clear();
     this.portraits.dispose();
     this.leftPortraits?.dispose();
     this.leftPortraits = null;
@@ -1947,6 +1967,124 @@ function LeftSetRow({ scope, presenter, form, locale, t }: LeftSetRowProps) {
         })}
       </div>
     </section>
+  );
+}
+
+interface AppearanceSliderRowProps {
+  scope: PreferenceStore;
+  presenter: SkinPresenter;
+  t: (key: string) => string;
+  titleKey: string;
+  min: number;
+  max: number;
+  /** Live-read of the persisted strength from the presenter (single source). */
+  get: () => number;
+  /** Persist + apply a new strength through the presenter (same path as the
+   *  dsh-flash quick-panel switches). */
+  set: (value: number) => void;
+  format: (value: number) => string;
+}
+
+// 通用设置里的浓度/大小滑杆行（文字背景浓度、人物显示大小、幕布强度）：与快捷面板
+// 对应的 dsh-flash 开关同源——presenter 更新运行时（CSS 变量）并落 localStorage 持久
+// 化。订阅 scope 以在皮肤关闭/重开时隐藏；另外订阅 presenter 的外观变更，确保在快捷
+// 面板调整后本行也跟着刷新（外观字段不在 scope 内，故需单独监听）。
+function AppearanceSliderRow({
+  scope,
+  presenter,
+  t,
+  titleKey,
+  min,
+  max,
+  get,
+  set,
+  format,
+}: AppearanceSliderRowProps) {
+  const snapshot = useSyncExternalStore(
+    (listener) => scope.subscribe(listener),
+    () => scope.getSnapshot(),
+  );
+  // 用 state 计数驱动重渲染：presenter 的 localStorage 外观字段变化时无 scope 通知，
+  // 通过 presenter.subscribe 收到后 bump 版本即可就地刷新取值。
+  const [, setVersion] = useState(0);
+  // presenter.subscribe 返回取消函数，交给 useEffect 清理即可。
+  useEffect(() => presenter.subscribe(() => setVersion((version) => version + 1)), [presenter]);
+  if (!snapshot.enabled) return null;
+
+  const value = Math.min(max, Math.max(min, Math.round(get())));
+  const title = t(titleKey);
+
+  return (
+    <div
+      className="flash-appearance-binding flash-appearance-binding--slider"
+      data-plugin={PACKAGE_ID}
+    >
+      <div className="flash-appearance-binding__row">
+        <span className="flash-appearance-binding__label">{title}</span>
+        <output className="flash-appearance-binding__value">{format(value)}</output>
+      </div>
+      <input
+        className="flash-appearance-binding__range"
+        type="range"
+        min={min}
+        max={max}
+        step={1}
+        value={value}
+        aria-label={title}
+        aria-valuetext={format(value)}
+        onInput={(event) => {
+          set(Number(event.currentTarget.value));
+        }}
+        onChange={(event) => {
+          set(Number(event.currentTarget.value));
+        }}
+      />
+    </div>
+  );
+}
+
+// 通用设置里的「文字背景浓度」行：绑定 presenter.textBg 读写（TEXT_BG_KEY）。
+function TextBgRow(props: Omit<AppearanceSliderRowProps, "titleKey" | "min" | "max" | "get" | "set" | "format">) {
+  return (
+    <AppearanceSliderRow
+      {...props}
+      titleKey="textBg.title"
+      min={TEXT_BG_MIN}
+      max={TEXT_BG_MAX}
+      get={() => props.presenter.getTextBg()}
+      set={(value) => props.presenter.setTextBg(value)}
+      format={(value) => `${value}%`}
+    />
+  );
+}
+
+// 通用设置里的「人物显示大小」行：绑定 presenter.portraitSize 读写（PORTRAIT_SIZE_KEY）。
+function PortraitSizeRow(props: Omit<AppearanceSliderRowProps, "titleKey" | "min" | "max" | "get" | "set" | "format">) {
+  return (
+    <AppearanceSliderRow
+      {...props}
+      titleKey="portraitSize.title"
+      min={PORTRAIT_SIZE_MIN}
+      max={PORTRAIT_SIZE_MAX}
+      get={() => props.presenter.getPortraitSize()}
+      set={(value) => props.presenter.setPortraitSize(value)}
+      format={(value) => `${value}%`}
+    />
+  );
+}
+
+// 通用设置里的「幕布强度」行：绑定 presenter.scrimStrength 读写（SCRIM_STRENGTH_KEY）。
+function ScrimStrengthRow(props: Omit<AppearanceSliderRowProps, "titleKey" | "min" | "max" | "get" | "set" | "format">) {
+  return (
+    <AppearanceSliderRow
+      {...props}
+      titleKey="scrimStrength.title"
+      min={SCRIM_STRENGTH_MIN}
+      max={SCRIM_STRENGTH_MAX}
+      get={() => props.presenter.getScrimStrength()}
+      set={(value) => props.presenter.setScrimStrength(value)}
+      format={(value) => `${value}%`}
+    />
   );
 }
 
@@ -5303,6 +5441,36 @@ export function apply(ctx: ClientContext) {
     locale: LOCALE_NAMESPACE,
     inject: () => ({ scope, presenter, form: configForm, locale: ctx.locale, t: setLabel }),
   }, LeftSetRow));
+
+  // ── 与快捷面板同源的通用设置行 ──────────────────────────────────────────
+  // 以下三门外观控件只存在于 dsh-flash（⚡）面板的开关里：文字背景浓度、幕布
+  // 强度、人物显示大小。「通用设置」页也应能直接调节，故补成同源的
+  // settings.general.item 行。三者读写在 presenter 内完成（localStorage 持久化 +
+  // CSS 变量生效，不依赖 dsh-flash），皮肤未启用时不显示。
+  ctx.slots.inject("settings.general.item", () => ctx.slots.register({
+    name: "settings.general.item",
+    id: "flash-text-bg",
+    // Below「次人物（左侧）」(left-set at 10.53); higher order = lower on screen.
+    order: 10.55,
+    locale: LOCALE_NAMESPACE,
+    inject: () => ({ scope, presenter, t: setLabel }),
+  }, TextBgRow));
+
+  ctx.slots.inject("settings.general.item", () => ctx.slots.register({
+    name: "settings.general.item",
+    id: "flash-scrim-strength",
+    order: 10.57,
+    locale: LOCALE_NAMESPACE,
+    inject: () => ({ scope, presenter, t: setLabel }),
+  }, ScrimStrengthRow));
+
+  ctx.slots.inject("settings.general.item", () => ctx.slots.register({
+    name: "settings.general.item",
+    id: "flash-portrait-size",
+    order: 10.59,
+    locale: LOCALE_NAMESPACE,
+    inject: () => ({ scope, presenter, t: setLabel }),
+  }, PortraitSizeRow));
 
   // ── Optional dsh-flash integration: quick-control switch ─────────────────
   // Action switch in dsh-flash's ⚡ panel that opens this plugin's detail page.

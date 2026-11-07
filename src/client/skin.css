@@ -1300,6 +1300,79 @@ body[data-flash-skin="on"][data-flash-layout="left"] [class*="_toBottomSlot"] {
   white-space: nowrap;
 }
 
+/* 通用设置里的浓度/大小滑杆行（文字背景、幕布强度、人物显示大小）。
+ * 与上面的 flex 布局不同，本行纵向堆叠：上一行左侧标题 + 右侧当前值，下一行
+ * 为原生 <input type="range">。滑杆沿用 flash-level-control 的配色令牌，明暗
+ * 两套主题都可辨；皮肤未启用时整行由组件 return null 隐藏。
+ */
+.flash-appearance-binding--slider {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 6px;
+}
+
+.flash-appearance-binding__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.flash-appearance-binding__value {
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+  min-width: 40px;
+  text-align: right;
+}
+
+.flash-appearance-binding__range {
+  width: 100%;
+  height: 20px;
+  cursor: ew-resize;
+  appearance: none;
+  background: transparent;
+  touch-action: pan-y;
+}
+
+.flash-appearance-binding__range::-webkit-slider-runnable-track {
+  height: 5px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--flash-accent, #4176e6), var(--flash-ink, #191b1e));
+}
+
+.flash-appearance-binding__range::-webkit-slider-thumb {
+  width: 13px;
+  height: 13px;
+  margin-top: -4px;
+  border: 2px solid var(--flash-accent, #4176e6);
+  border-radius: 50%;
+  appearance: none;
+  background: #fff;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 20%);
+}
+
+.flash-appearance-binding__range::-moz-range-track {
+  height: 5px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--flash-accent, #4176e6), var(--flash-ink, #191b1e));
+}
+
+.flash-appearance-binding__range::-moz-range-thumb {
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--flash-accent, #4176e6);
+  border-radius: 50%;
+  background: #fff;
+}
+
+.flash-appearance-binding__range:focus-visible {
+  outline: none;
+}
+
+
 /* 通用设置里的「左右双人物」开关。以宿主原生语义 button[role=switch] 渲染，
  * 外观沿用 --flash-accent / --flash-surface，明暗两套主题都可辨。 */
 .flash-appearance-binding--dual {

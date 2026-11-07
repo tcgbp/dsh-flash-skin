@@ -57,6 +57,21 @@ export const COMPACTION_DROP_RATIO = 0.7;
  * `weightedBase + COMPACTION_SCORE_BONUS * compactionFactor`.
  */
 export const COMPACTION_SCORE_BONUS = 0.25;
+
+/** Peak skill factor (0..1) applied right after a 技能 (skill-usage) event fires. */
+export const SKILL_PULSE_BASE = 0.9;
+/** How long a skill pulse holds at full strength before it starts fading. */
+export const SKILL_GRACE_MS = 1500;
+/** How long the skill pulse takes to fade from full strength to 0. */
+export const SKILL_FADE_MS = 3500;
+/**
+ * Direct fraction (0..1) added onto the weighted composite score while a fresh
+ * 技能 pulse is active — a sibling bonus to COMPACTION_SCORE_BONUS, so a skill
+ * use nudges the flash portrait up just like a compaction does. Final score is
+ * `weightedBase + COMPACTION_SCORE_BONUS * compactionFactor + SKILL_SCORE_BONUS
+ * * skillFactor`.
+ */
+export const SKILL_SCORE_BONUS = 0.25;
 export interface CompositeWeights {
   /** share of produced tokens (sat at USAGE_FULL). */
   usage: number;
@@ -92,6 +107,8 @@ export interface CompositeSignals {
   decodeMs?: number;
   /** ms timestamp of the most recent context-compaction event (compaction factor). */
   compactionAtMs?: number;
+  /** ms timestamp of the most recent skill-usage event (skill factor). */
+  skillAtMs?: number;
   /** current wall-clock ms used to age the compaction pulse; 0/absent → 0. */
   nowMs?: number;
 }
@@ -203,6 +220,25 @@ export function contextCompactionFactor(pulseAtMs: number | null, nowMs: number)
   );
 }
 
+/**
+ * Decaying "skill" factor, the sibling of {@link contextCompactionFactor}: right
+ * after a 技能 (skill-usage) event the gauge jumps to SKILL_PULSE_BASE and then
+ * relaxes to 0 over a few seconds. Identical staleness semantics — `pulseAtMs`
+ * is the ms timestamp of the most recent event (null when none ever fired, or
+ * when the clock is bogus, which then reads as 0). On a host without the skill
+ * projection the caller passes null and this returns 0, so an untouched install
+ * keeps the flat/normal portrait (graceful degradation).
+ */
+export function contextSkillFactor(pulseAtMs: number | null, nowMs: number): number {
+  if (pulseAtMs === null || !Number.isFinite(pulseAtMs) || !Number.isFinite(nowMs)) return 0;
+  if (nowMs < pulseAtMs) return 0;
+  return SKILL_PULSE_BASE * freshnessDecay(
+    nowMs - pulseAtMs,
+    SKILL_GRACE_MS,
+    SKILL_FADE_MS,
+  );
+}
+
 /** Clamp an individual 0..1 factor, guarding against bad projections. */
 function clampFactor(factor: number | undefined): number {
   return Math.min(1, Math.max(0, Number.isFinite(factor) ? factor : 0));
@@ -243,13 +279,20 @@ export function compositeLevel(
     effort: reasoningEffortFactor(signals.committedLevel ?? 0),
     speed: tokenSpeedFactor(signals.decodeTokens ?? 0, signals.decodeMs ?? 0),
   });
-  // The 压缩 bonus lands directly on top of the weighted score, and the two
-  // together form the value the level is derived from; the summed value is
+  // The 压缩 / 技能 bonuses land directly on top of the weighted score, and
+  // together they form the value the level is derived from; the summed value is
   // rounded (then clamped) to keep it an integer 0..MAX_LEVEL grip.
   const compaction = clampFactor(
     contextCompactionFactor(signals.compactionAtMs ?? null, signals.nowMs ?? 0),
   );
+  const skill = clampFactor(
+    contextSkillFactor(signals.skillAtMs ?? null, signals.nowMs ?? 0),
+  );
   return clampLevel(
-    Math.round(weighted + COMPACTION_SCORE_BONUS * compaction * MAX_LEVEL),
+    Math.round(
+      weighted
+      + COMPACTION_SCORE_BONUS * compaction * MAX_LEVEL
+      + SKILL_SCORE_BONUS * skill * MAX_LEVEL,
+    ),
   );
 }

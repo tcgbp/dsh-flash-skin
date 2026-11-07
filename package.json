@@ -36,7 +36,7 @@
   "icon": "./icon.svg",
   "packageManager": "pnpm@12.11.2",
   "engines": {
-    "dsh": ">=0.2.2-0 <0.3.0",
+    "dsh": ">=0.2.0-rc.1 <0.3.0",
     "node": "^22.19.0 || >=24.0.0"
   },
   "scripts": {

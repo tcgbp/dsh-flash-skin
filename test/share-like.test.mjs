@@ -17,7 +17,9 @@ import {
   providerFor,
   readCommunityDirectory,
   readCommunityLikes,
+  readCommunityDislikes,
   submitCommunityLikes,
+  submitCommunityDislikes,
   submitCommunityShare,
 } from "../src/community.js";
 
@@ -508,6 +510,158 @@ describe("C2 community helper functions (community.js)", () => {
       expect(res.ok).toBe(true);
       expect(res.counts).toBeNull();
       expect(res.error.code).toBe("not-configured");
+    });
+  });
+
+  describe("readCommunityDislikes (Feishu Bitable shares table)", () => {
+    const target = { provider: "feishu", appId: "app", appSecret: "s", appToken: "bitable", sharesTableId: "tbl-shares" };
+    const fakeClient = (respond) => ({
+      provider: COMMUNITY_PROVIDERS.feishu,
+      tenantToken: async () => "tok",
+      listRecords: respond,
+    });
+
+    it("returns floored counts from dislike_count and drops invalid keys", async () => {
+      const client = fakeClient(async () => ({
+        status: 200,
+        json: {
+          code: 0,
+          data: {
+            items: [
+              { record_id: "r1", fields: { setId: "han-li", dislike_count: 4 } },
+              { record_id: "r2", fields: { setId: "a b", dislike_count: 2 } },
+              { record_id: "r3", fields: { setId: "neg", dislike_count: -3 } },
+              { record_id: "r4", fields: { setId: "frac", dislike_count: 2.9 } },
+              { record_id: "r5", fields: { setId: "x".repeat(200), dislike_count: 1 } },
+            ],
+            has_more: false,
+          },
+        },
+      }));
+      const res = await readCommunityDislikes(client, target);
+      expect(res.ok).toBe(true);
+      expect(res.error).toBeNull();
+      expect(res.counts).toEqual({ "han-li": 4, frac: 2 });
+    });
+
+    it("reports auth/unavailable without throwing", async () => {
+      const authClient = fakeClient(async () => ({ status: 200, json: { code: 99991663 } }));
+      const authRes = await readCommunityDislikes(authClient, target);
+      expect(authRes.ok).toBe(true);
+      expect(authRes.counts).toBeNull();
+      expect(authRes.error.code).toBe("auth");
+
+      const netClient = fakeClient(async () => ({ status: 0, json: null }));
+      const netRes = await readCommunityDislikes(netClient, target);
+      expect(netRes.ok).toBe(true);
+      expect(netRes.counts).toBeNull();
+      expect(netRes.error.code).toBe("network");
+    });
+
+    it("short-circuits when the shares table is not configured", async () => {
+      const res = await readCommunityDislikes(fakeClient(async () => ({ status: 200, json: { code: 0 } })), {
+        provider: "feishu",
+        appId: "app",
+        appSecret: "s",
+        appToken: "bitable",
+        sharesTableId: "",
+      });
+      expect(res.ok).toBe(true);
+      expect(res.counts).toBeNull();
+      expect(res.error.code).toBe("not-configured");
+    });
+  });
+
+  describe("submitCommunityDislikes (Feishu Bitable shares update)", () => {
+    const target = { provider: "feishu", appId: "app", appSecret: "s", appToken: "bitable", sharesTableId: "tbl-shares" };
+
+    it("updates existing share rows and skips unshared groups", async () => {
+      const calls = [];
+      const base = {
+        provider: COMMUNITY_PROVIDERS.feishu,
+        tenantToken: async () => "tok",
+        listRecords: async () => ({
+          status: 200,
+          json: {
+            code: 0,
+            data: {
+              items: [{ record_id: "rec-old", fields: { setId: "han-li", dislike_count: 0 } }],
+              has_more: false,
+            },
+          },
+        }),
+        updateRecord: async (appToken, tableId, token, recordId, fields) => { calls.push([appToken, tableId, token, recordId, fields]); return { status: 200, json: { code: 0 } }; },
+      };
+      // "han-li" is shared → its row is updated. "jiu-gong", "bad id", "neg",
+      // "zero" have no share row → skipped client-side entirely.
+      const res = await submitCommunityDislikes(base, target, { counts: { "han-li": 5, "jiu-gong": 2, "bad id": 3, neg: -1, zero: 0 } });
+      expect(res.ok).toBe(true);
+      expect(res.updated).toBe(1);
+      expect(res.cleared).toBe(0);
+      expect(calls.length).toBe(1);
+      expect(calls[0][1]).toBe("tbl-shares");
+      expect(calls[0][4]).toEqual({ dislike_count: 5 });
+    });
+
+    it("fails cleanly when the shares table is unconfigured", async () => {
+      const client = {
+        provider: COMMUNITY_PROVIDERS.feishu,
+        tenantToken: async () => "tok",
+        listRecords: async () => ({ status: 200, json: { code: 0, data: { items: [], has_more: false } } }),
+        updateRecord: async () => ({ status: 200, json: { code: 0 } }),
+      };
+      const res = await submitCommunityDislikes(client, { provider: "feishu", appId: "a", appSecret: "s", appToken: "t", sharesTableId: "" }, { counts: { a: 1 } });
+      expect(res.ok).toBe(false);
+      expect(res.error.code).toBe("not-configured");
+    });
+
+    it("zeroes rows for groups explicitly removed back to 0", async () => {
+      const calls = [];
+      const base = {
+        provider: COMMUNITY_PROVIDERS.feishu,
+        tenantToken: async () => "tok",
+        listRecords: async () => ({
+          status: 200,
+          json: {
+            code: 0,
+            data: {
+              items: [
+                { record_id: "rec-gone", fields: { setId: "gone", dislikeCount: 3 } },
+                { record_id: "rec-redisliked", fields: { setId: "redisliked", dislikeCount: 4 } },
+                { record_id: "rec-untouched", fields: { setId: "other-host", dislikeCount: 7 } },
+              ],
+              has_more: false,
+            },
+          },
+        }),
+        updateRecord: async (appToken, tableId, token, recordId, fields) => { calls.push([recordId, fields]); return { status: 200, json: { code: 0 } }; },
+      };
+      // "gone" is removed and not counted → zeroed. "redisliked" is removed but
+      // still counted → updated, not zeroed. "other-host" untouched. "unknown"
+      // has no row → untouched.
+      const res = await submitCommunityDislikes(base, target, {
+        counts: { "redisliked": 6 },
+        removed: ["gone", "redisliked", "unknown"],
+      });
+      expect(res.ok).toBe(true);
+      expect(res.updated).toBe(1);
+      expect(res.cleared).toBe(1);
+      expect(calls.some(([rid, f]) => rid === "rec-gone" && f.dislike_count === 0)).toBe(true);
+      expect(calls.some(([rid, f]) => rid === "rec-redisliked" && f.dislike_count === 6)).toBe(true);
+      expect(calls.some(([rid]) => rid === "rec-untouched")).toBe(false);
+    });
+
+    it("maps backend errors like exists", async () => {
+      const client = {
+        provider: COMMUNITY_PROVIDERS.feishu,
+        tenantToken: async () => "tok",
+        listRecords: async () => ({ status: 200, json: { code: 0, data: { items: [{ record_id: "rec-ok", fields: { setId: "ok" } }], has_more: false } } }),
+        updateRecord: async () => ({ status: 200, json: { code: 1254003 } }),
+      };
+      const res = await submitCommunityDislikes(client, target, { counts: { ok: 1 } });
+      expect(res.ok).toBe(true);
+      expect(res.updated).toBe(0);
+      expect(res.cleared).toBe(0);
     });
   });
 

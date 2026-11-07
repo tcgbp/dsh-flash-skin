@@ -75,6 +75,7 @@ export const SHARES_FIELDS = {
   md5: "md5",
   author: "author",
   likeCount: "like_count",
+  dislikeCount: "dislike_count",
   importCount: "import_count",
 };
 
@@ -512,6 +513,92 @@ export async function submitCommunityShare(client, target, { setId, url, author 
   const entry = { entryId, setId: cleanedId, md5 };
   if (cleanAuthor) entry.author = cleanAuthor;
   return { ok: true, entry, recordId };
+}
+
+/**
+ * Read dislike tallies from the shares table rows (each shared set stores its
+ * own `dislike_count`). Returns a map of { setId: dislikeCount } with only
+ * counts > 0, so the client can seed its per-device dislike ledger from the
+ * server. This uses the shares `dislike_count` column directly — deliberately
+ * separate from the like tally on the same rows (`like_count`).
+ */
+export async function readCommunityDislikes(client, target) {
+  if (!configuredShares(target)) return { ok: true, counts: null, error: { code: "not-configured" } };
+  const token = await client.tenantToken(target);
+  if (!token) return { ok: true, counts: null, error: { code: "auth" } };
+  const listed = await listAllRecords(client, target, target.sharesTableId);
+  if (!listed.ok) return { ok: true, counts: null, error: listed.error };
+  const counts = {};
+  for (const rec of listed.records) {
+    const f = rec.fields || {};
+    const setId = typeof f[SHARES_FIELDS.setId] === "string" ? f[SHARES_FIELDS.setId].trim() : "";
+    if (!setId || setId.length > COMMUNITY_SET_ID_MAX || /[\s\u007f]/.test(setId)) continue;
+    const n = Number(f[SHARES_FIELDS.dislikeCount]);
+    if (Number.isFinite(n) && n > 0) counts[setId] = Math.floor(n);
+  }
+  return { ok: true, counts, error: null };
+}
+
+/**
+ * Write aggregated dislike counts back onto the shares-table rows (server-side
+ * write). Only setIds that already have a share row are touched — unshared
+ * groups keep their dislike state purely client-side. Rows explicitly listed in
+ * `removed` and not present in the positive set are zeroed (not deleted, since
+ * the row is the directory entry itself).
+ */
+export async function submitCommunityDislikes(client, target, { counts, removed } = {}) {
+  if (!configuredShares(target)) {
+    return { ok: false, error: { code: "not-configured", message: "Community directory is not configured." } };
+  }
+
+  const token = await client.tenantToken(target);
+  if (!token) {
+    return { ok: false, error: { code: "auth", message: "Feishu app credentials invalid or missing." } };
+  }
+
+  const normalized = {};
+  if (counts && typeof counts === "object" && !Array.isArray(counts)) {
+    for (const [key, value] of Object.entries(counts)) {
+      if (typeof key !== "string" || key.length === 0 || key.length > COMMUNITY_SET_ID_MAX || /[\s\u007f]/.test(key)) continue;
+      const n = Number(value);
+      if (Number.isFinite(n) && n > 0) normalized[key] = Math.floor(n);
+    }
+  }
+
+  // Explicitly-removed groups: setIds named here that are no longer disliked are
+  // zeroed back to 0 so a group un-disliked on this host stops lingering on the
+  // server. Absence from `counts` alone is never treated as a zero-out, which
+  // keeps the write-back scoped to the groups this host manages.
+  const removalSet = new Set(
+    Array.isArray(removed) ? removed.filter((id) => typeof id === "string" && id.length > 0) : [],
+  );
+
+  const listed = await listAllRecords(client, target, target.sharesTableId);
+  if (!listed.ok) return { ok: false, error: listed.error };
+  const recordBySetId = new Map();
+  for (const rec of listed.records) {
+    const f = rec.fields || {};
+    const s = typeof f[SHARES_FIELDS.setId] === "string" ? f[SHARES_FIELDS.setId].trim() : "";
+    if (s) recordBySetId.set(s, rec.recordId);
+  }
+
+  let updated = 0;
+  for (const [setId, count] of Object.entries(normalized)) {
+    const recordId = recordBySetId.get(setId);
+    if (!recordId) continue; // unshared group → keep dislike state client-side
+    const res = await client.updateRecord(target.appToken, target.sharesTableId, token, recordId, { [SHARES_FIELDS.dislikeCount]: count });
+    if (client.provider.ok(res && res.json)) updated++;
+  }
+
+  let cleared = 0;
+  for (const setId of removalSet) {
+    if (normalized[setId] !== undefined) continue; // still disliked → never zero
+    const recordId = recordBySetId.get(setId);
+    if (!recordId) continue; // no share row to touch
+    const res = await client.updateRecord(target.appToken, target.sharesTableId, token, recordId, { [SHARES_FIELDS.dislikeCount]: 0 });
+    if (client.provider.ok(res && res.json)) cleared++;
+  }
+  return { ok: true, updated, cleared };
 }
 
 /** Read remote like counts into a floored group->count map. */

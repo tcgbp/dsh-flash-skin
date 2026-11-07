@@ -23,6 +23,7 @@ import {
   compositeLevel,
   contextCompactionFactor,
   contextPressureFactor,
+  contextSkillFactor,
   dividerStepFor,
   dividerAxisMax,
   frameIndexForLevel,
@@ -37,6 +38,7 @@ import {
   reasoningEffortFactor,
   remapSideLevel,
   selectedEffortIndex,
+  SKILL_SCORE_BONUS,
   stagedFrames,
   tokenSpeedFactor,
   usageFactor,
@@ -115,6 +117,29 @@ function ThumbsUp({ filled }: { filled: boolean }) {
   );
 }
 
+// Community "dislike" thumbs-down icon, mirroring ThumbsUp for the 点踩 action.
+// Inverted (filled/outlined) state marks the local disliked state; its count
+// comes from the community feedback table (per-peer "unlike" rows), merged with
+// the local disliked flag — fully separate from the like count.
+function ThumbsDown({ filled }: { filled: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="14"
+      height="14"
+      aria-hidden="true"
+      style={{ verticalAlign: "-2px", marginRight: 4, transform: "scaleY(-1)" }}
+      fill={filled ? "currentColor" : "none"}
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3" />
+    </svg>
+  );
+}
+
 // Desktop-host detection. The desktop version is a real Electron app (its
 // resources ship as app.asar + Electron PE/runtime DLLs), while the web GUI
 // runs in a normal browser. Signals, most reliable first:
@@ -150,6 +175,8 @@ const REMOTE_ARCHIVE_PATH = `/plugins/${PACKAGE_ID}/archive`;
 // routes mirror src/likes.js and src/community.js path exports.
 const LIKE_PATH = `/plugins/${PACKAGE_ID}/like`;
 const LIKES_PATH = `/plugins/${PACKAGE_ID}/likes`;
+const DISLIKE_PATH = `/plugins/${PACKAGE_ID}/dislike`;
+const DISLIKES_PATH = `/plugins/${PACKAGE_ID}/dislikes`;
 const COMMUNITY_PATH = `/plugins/${PACKAGE_ID}/community`;
 const COMMUNITY_SUBMIT_PATH = `/plugins/${PACKAGE_ID}/community/submit`;
 const COMMUNITY_IMPORT_PATH = `/plugins/${PACKAGE_ID}/community/import`;
@@ -159,6 +186,7 @@ const COMMUNITY_AUTHOR_MAX = 40;
 // Per-device like bookkeeping, keyed by group id ({ [groupId]: boolean }). Not
 // part of the persisted config document, so liking never dirties the patch.
 const FLASH_SKIN_LIKED_KEY = "flash-skin:liked-by-id";
+const FLASH_SKIN_DISLIKED_KEY = "flash-skin:disliked-by-id";
 // Archives bundled into the package (whitelisted in package.json `files`) and
 // offered as one-tap quick imports. Labels are shown in both languages so the
 // picker is usable regardless of the current UI language.
@@ -205,6 +233,32 @@ function readLikedStore(): Record<string, boolean> {
 function writeLikedStore(next: Record<string, boolean>): Record<string, boolean> {
   try {
     localStorage.setItem(FLASH_SKIN_LIKED_KEY, JSON.stringify(next));
+  } catch {
+    // localStorage 不可用时仅本次会话生效。
+  }
+  return next;
+}
+
+// Dislike bookkeeping: the mirror of the like store, persisted per device under
+// FLASH_SKIN_DISLIKED_KEY (group id → boolean) with the same guarded semantics.
+function readDislikedStore(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(FLASH_SKIN_DISLIKED_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const out: Record<string, boolean> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === "boolean") out[key] = value;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writeDislikedStore(next: Record<string, boolean>): Record<string, boolean> {
+  try {
+    localStorage.setItem(FLASH_SKIN_DISLIKED_KEY, JSON.stringify(next));
   } catch {
     // localStorage 不可用时仅本次会话生效。
   }
@@ -292,6 +346,25 @@ function normalizeSetId(id: string | null | undefined): string | undefined {
   if (!id) return undefined;
   const mapped = LEGACY_SET_IDS[id];
   return mapped !== undefined ? mapped : id;
+}
+
+/**
+ * Derive a unique, safe community-set id from a freely-entered archive URL.
+ * The community directory keys each share by `setId`; because a share is any
+ * URL the user hosts (unconnected to a local group), we build the key from the
+ * URL's hostname plus a short random suffix so it is readable yet collision-free
+ * (the server also runs its own normalizeCommunitySetId on top of this).
+ */
+function buildCommunitySetId(url: string): string {
+  let host = "";
+  try {
+    host = new URL(url).hostname.replace(/^www\./i, "");
+  } catch {
+    host = "";
+  }
+  const base = host.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase() || "share";
+  const rand = Math.random().toString(36).slice(2, 7);
+  return `${base.slice(0, 24)}-${rand}`;
 }
 
 // Resolve a portrait set's display name against the active locale at render
@@ -465,6 +538,20 @@ interface FlashSkinCompactionProjection {
   seq?: number;
   atWallMs?: number;
   model?: string;
+}
+
+/**
+ * Real-event skill-usage clock from the host's `sessionProjections` seam
+ * (key `flash-skin-skill`, registered by this skin's server side). DSH has no
+ * dedicated `skill/used` session event, so the server derives "a skill was
+ * used" from the `<skill_content name="X">` block in a user/tool message's
+ * content (the same signal ctx-mon uses). `seq`/`atWallMs` move once per skill
+ * use; `skill` names the skill for display. Absent on hosts without the seam.
+ */
+interface FlashSkinSkillProjection {
+  seq?: number;
+  atWallMs?: number;
+  skill?: string;
 }
 
 interface DriverRowProps {
@@ -1292,6 +1379,7 @@ function CompositeLevelControl({
   const tokenUsage = useProjection("tokenUsage") as TokenUsageProjection | null | undefined;
   const contextPressure = useProjection("contextPressure") as ContextPressureProjection | null | undefined;
   const compactionProj = useProjection("flash-skin-compaction") as FlashSkinCompactionProjection | null | undefined;
+  const skillProj = useProjection("flash-skin-skill") as FlashSkinSkillProjection | null | undefined;
 
   const outputTokens = tokenUsage?.outputTokens;
   const pressureTokens = contextPressure?.projectedTokens ?? contextPressure?.pressureTokens;
@@ -1406,6 +1494,38 @@ function CompositeLevelControl({
     }
   }, [enabled, pressureTokens, compactionProj]);
   const compactionF = contextCompactionFactor(compactionPulseAtRef.current, now);
+  // Skill (技能) pulse: reuses the exact real-event clock shape as compaction,
+  // but there is deliberately NO heuristic fallback — skill usage has no cheap
+  // analogue in the standard projections, and fabricating one would violate the
+  // "real signal OR nothing, never a crash" rule. When the host has no
+  // `flash-skin-skill` projection (no seam) the stamp stays null and
+  // SKILL_SCORE_BONUS contributes 0, so an untouched install reads the flat
+  // level — graceful degradation. Each fresh seq from the server folds one
+  // skill-usage pulse, stamped on the same `now` render clock it decays over.
+  const skillPulseAtRef = useRef<number | null>(null);
+  const lastSkillSeqRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!enabled) {
+      skillPulseAtRef.current = null;
+      lastSkillSeqRef.current = null;
+      return;
+    }
+    const hasProjection =
+      skillProj !== null && skillProj !== undefined && typeof skillProj === "object";
+    if (!hasProjection) return;
+    const seq = skillProj.seq;
+    const atWallMs = skillProj.atWallMs;
+    const fresh =
+      seq !== null && seq !== undefined && Number.isInteger(seq) && seq >= 0
+      && atWallMs !== null && atWallMs !== undefined
+      && Number.isFinite(atWallMs) && atWallMs > 0
+      && lastSkillSeqRef.current !== seq;
+    if (fresh) {
+      lastSkillSeqRef.current = seq;
+      skillPulseAtRef.current = Math.min(atWallMs, Date.now());
+    }
+  }, [enabled, skillProj]);
+  const skillF = contextSkillFactor(skillPulseAtRef.current, now);
   // Compaction bonus: 压缩 is NOT a configurable weight. It lands as a separate
   // direct add-on on top of the weighted score, and only while a fresh pulse is
   // live (compactionF > 0): contribution = COMPACTION_SCORE_BONUS × pulse.
@@ -1416,7 +1536,12 @@ function CompositeLevelControl({
     + normalized.effort * effortF
     + normalized.speed * speedF;
   const compBonus = COMPACTION_SCORE_BONUS * compactionF;
-  const combined = wBase + compBonus;
+  // Skill bonus: like compaction, 技能 is NOT a configurable weight — it is a
+  // separate direct add-on (加分项) landing on top of the weighted score only
+  // while a fresh pulse is live (skillF > 0): contribution = SKILL_SCORE_BONUS
+  // × pulse. Both bonuses ride the same held `combined` value.
+  const skillBonus = SKILL_SCORE_BONUS * skillF;
+  const combined = wBase + compBonus + skillBonus;
   const compActive = compactionF > 0;
   // Idle-score hold: the host only surfaces projections for the *active*
   // conversation, so switching to a stopped/idle session re-feeds no real
@@ -1832,6 +1957,13 @@ export const inject = [
   "locale",
   "theme",
   "configForms",
+  // Grant the Host Remote service (and its account namespace) so we can read
+  // the signed-in DeepSeek account display name for the community share author.
+  // `remote` is provided by the host, not by dsh-flash — declaring it here is
+  // the same pattern dsh-client-ui-settings-account uses. Missing here is what
+  // made `ctx.remote` throw "cannot get property ... without inject".
+  "remote",
+  "remote.account",
 ];
 
 // The active portrait set must survive both a full client (re)boot and any
@@ -2188,6 +2320,21 @@ interface FlashSkinConfigForm<T> {
   ): Promise<boolean>;
 }
 
+type RemoteAccountMount = {
+  account?: {
+    getProfile?: (meta: {
+      version: string;
+      locale: string;
+      timezoneOffsetSeconds: number;
+    }) => Promise<{
+      ok?: boolean;
+      value?:
+        | { status?: string; value?: { name?: string | null; contact?: string | null } | null }
+        | null;
+    } | null>;
+  };
+};
+
 interface FlashSkinConfigCardProps {
   /** 由插件管理页传入的槽位视图。 */
   view?: string;
@@ -2197,6 +2344,14 @@ interface FlashSkinConfigCardProps {
   weights: WeightsStore;
   /** 由插件管理页提供、已绑定到本插件语言命名空间的读取器。 */
   t?: (key: string) => string;
+  /**
+   * Host Remote 服务（经上面的 `inject` 声明授予的 `ctx.remote`）。可选；用于读取
+   * 当前登录 DeepSeek 账号的展示名，自动预填社区分享的「作者」。缺失/失败时静默降级，
+   * 保持原有手填行为 —— 不依赖 dsh-flash。
+   */
+  remote?: RemoteAccountMount;
+  /** Host locale 服务（`ctx.locale`），用于构造账号读取的平台语言。可选。 */
+  locale?: unknown;
 }
 
 const CONFIG_TEXTS: Record<string, Record<string, string>> = {
@@ -2275,6 +2430,8 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "likeTitle": "为这组肖像点赞",
     "likeCount": "本组获赞 {n} 次",
     "likeSyncFailed": "点赞未同步到社区，已在本机记录",
+    "dislike": "点踩",
+    "dislikeTitle": "给这组肖像点踩（写入反馈的 unlike 动作）",
     "shareGroup": "分享",
     "shareGroupTitle": "把本组图片连同标识、名称、深浅切换点打包成一段自包含文本，可粘贴给任何人直接导入",
     "shareNoImages": "该组没有图片，无可分享",
@@ -2298,11 +2455,12 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "communityImport": "导入",
     "communityImportTitle": "从该链接导入为一个新组",
     "communityJoin": "分享到社区",
-    "communitySubmitTitle": "把本组的文本指针提交进社区目录，供所有人浏览导入",
+    "communityPublishTitle": "分享一个网络安装包到社区",
+    "communitySubmitTitle": "把你托管在任意公开地址的网络安装包提交进社区目录，供所有人浏览导入",
     "communityFormUrlLabel": "压缩包 URL",
     "communityFormUrlHint": "该压缩包由你自己托管（任意公开 URL）；社区只存这一行文本指针。",
     "communityFormAuthorLabel": "作者 / 昵称（可选）",
-    "communityFormAuthorHint": "留空则以「匿名」展示；仅作展示用途，不影响分享文本与校验。",
+    "communityFormAuthorHint": "默认填当前登录的 DeepSeek 账号名（可自行修改）；留空则以「匿名」展示，仅作展示用途，不影响分享文本与校验。",
     "communityFormAuthorPlaceholder": "匿名",
     "communityAnonymous": "匿名",
     "communityColIndex": "序号",
@@ -2388,6 +2546,8 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "likeTitle": "Like this portrait group",
     "likeCount": "This group has {n} likes",
     "likeSyncFailed": "Like not synced to the community; recorded on this device",
+    "dislike": "Dislike",
+    "dislikeTitle": "Dislike this portrait group (writes the feedback table's unlike action)",
     "shareGroup": "Share",
     "shareGroupTitle": "Package this group's images plus id, names and dark level into a self-contained text anyone can import",
     "shareNoImages": "This group has no images to share",
@@ -2411,11 +2571,12 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "communityImport": "Import",
     "communityImportTitle": "Import from this link as a new group",
     "communityJoin": "Share to community",
-    "communitySubmitTitle": "Submit this group's text pointer into the community directory for everyone to browse and import",
+    "communityPublishTitle": "Share a hosted archive to the community",
+    "communitySubmitTitle": "Submit a hosted archive's URL into the community directory for everyone to browse and import",
     "communityFormUrlLabel": "Archive URL",
     "communityFormUrlHint": "Host this zip yourself (any public URL); the community only stores this one-line text pointer.",
     "communityFormAuthorLabel": "Author / nickname (optional)",
-    "communityFormAuthorHint": "Leave empty to show as “Anonymous”; display-only, does not affect the share text or integrity checks.",
+    "communityFormAuthorHint": "Defaults to the signed-in DeepSeek account name (editable); leave blank to show as “Anonymous”. Display-only, does not affect the share text or integrity checks.",
     "communityFormAuthorPlaceholder": "Anonymous",
     "communityAnonymous": "Anonymous",
     "communityColIndex": "#",
@@ -2879,7 +3040,7 @@ function boundaryForDarkLevel(count: number, level: number): number {
 // entry) and auto-expands + scrolls into view exactly once, then clears it.
 let expandConfigOnNextMount = false;
 
-function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardProps) {
+function FlashSkinConfigCard({ form, weights, t: localeT, remote, locale }: FlashSkinConfigCardProps) {
   const snapshot = useSyncExternalStore(
     (listener) => form.subscribe(listener),
     () => form.getSnapshot(),
@@ -2952,16 +3113,37 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
     }
   };
 
-  // ── Likes ─────────────────────────────────────────────────────────────────
-  // Per-device like bookkeeping reconciled with the server's community totals
-  // as max(local, community) — a group we liked shows ≥1 even while offline or
-  // before the like round-trips. This route is read-only w.r.t. the config
-  // document, so liking is allowed even when it is not writable.
+  // ── Likes & dislikes ─────────────────────────────────────────────────────
+  // Two separate per-device toggles (点赞 / 点踩) reconciled with the server's
+  // community like totals as max(local, community) — a group we liked shows ≥1
+  // even while offline or before the like round-trips. They are mutually
+  // exclusive per group: clicking one clears the other. Both routes are
+  // read-only w.r.t. the config document, so they are allowed even when the
+  // document is not writable.
   const [likedById, setLikedById] = useState<Record<string, boolean>>(() => readLikedStore());
+  const [dislikedById, setDislikedById] = useState<Record<string, boolean>>(() => readDislikedStore());
   const [communityLikes, setCommunityLikes] = useState<Record<string, number>>({});
+  const [communityDislikes, setCommunityDislikes] = useState<Record<string, number>>({});
   const [likesError, setLikesError] = useState<string | null>(null);
+  // Throttle against rapid-fire clicking of the like/dislike buttons: a second
+  // toggle within this window (either direction, any group) is ignored, so a
+  // spam of clicks can't flip the server ledger several times in a row or
+  // hammer the vote routes / feedback table.
+  const VOTE_COOLDOWN_MS = 600;
+  const lastVoteAtRef = useRef<number>(0);
+  const isThrottledVote = () => {
+    const now = Date.now();
+    if (now - lastVoteAtRef.current < VOTE_COOLDOWN_MS) return true;
+    lastVoteAtRef.current = now;
+    return false;
+  };
   const isLikedById = (setId: string) => !!likedById[setId];
+  const isDislikedById = (setId: string) => !!dislikedById[setId];
   const likeCountFor = (setId: string) => mergeLikeCount(isLikedById(setId), communityLikes[setId]);
+  // Dislikes use their own community total (the shares table's `dislike_count`
+  // column), kept separate from the like count per the "点赞 / 点踩 计数分离"
+  // requirement.
+  const dislikeCountFor = (setId: string) => mergeLikeCount(isDislikedById(setId), communityDislikes[setId]);
 
   // One-shot best-effort fetch of community like totals on mount.
   useEffect(() => {
@@ -2985,11 +3167,63 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
     return () => { cancelled = true; };
   }, []);
 
-  const toggleLike = async (setId: string) => {
-    if (!setId || busy) return;
-    const next = !likedById[setId];
-    setLikedById((prev) => writeLikedStore({ ...prev, [setId]: next }));
-    setLikesError(null);
+  // One-shot best-effort fetch of community dislike totals on mount.
+  useEffect(() => {
+    let cancelled = false;
+    fetch(DISLIKES_PATH)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((payload: unknown) => {
+        if (cancelled || !payload || typeof payload !== "object") return;
+        const counts = (payload as { counts?: unknown }).counts;
+        if (counts && typeof counts === "object") {
+          const normalized: Record<string, number> = {};
+          for (const [key, value] of Object.entries(counts)) {
+            if (typeof value === "number" && Number.isFinite(value) && value > 0) normalized[key] = value;
+          }
+          setCommunityDislikes(normalized);
+        }
+      })
+      .catch(() => {
+        // Offline / first run: local bookkeeping stays authoritative, never throw.
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  /**
+   * Switch a dislike off locally (used when a group gets liked). If the user
+   * actually had a dislike active we also drop this peer from the dislike
+   * ledger on the server and re-sync the displayed dislike count from the
+   * response, so cancelling it updates the tally immediately instead of
+   * leaving the old number visible until a refresh.
+   */
+  const clearDislike = async (setId: string) => {
+    const wasDisliked = !!dislikedById[setId];
+    setDislikedById((prev) => writeDislikedStore({ ...prev, [setId]: false }));
+    if (!wasDisliked) return;
+    try {
+      const response = await fetch(DISLIKE_PATH, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ setId }),
+      });
+      const payload = (await response.json().catch(() => null)) as { count?: unknown } | null;
+      if (payload && typeof payload === "object" && typeof payload.count === "number") {
+        setCommunityDislikes((prev) => ({ ...prev, [setId]: payload.count as number }));
+      }
+    } catch {
+      // Offline: the local removal stands; the tally re-syncs on the next refresh.
+    }
+  };
+
+  /**
+   * Switch a like off locally (used when a group gets disliked). Mirrors
+   * clearDislike: drop this peer from the like ledger server-side and re-sync
+   * the displayed like count from the response so cancelling updates at once.
+   */
+  const clearLike = async (setId: string) => {
+    const wasLiked = !!likedById[setId];
+    setLikedById((prev) => writeLikedStore({ ...prev, [setId]: false }));
+    if (!wasLiked) return;
     try {
       const response = await fetch(LIKE_PATH, {
         method: "POST",
@@ -3000,8 +3234,60 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
       if (payload && typeof payload === "object" && typeof payload.count === "number") {
         setCommunityLikes((prev) => ({ ...prev, [setId]: payload.count as number }));
       }
-      // Append a feedback record for the now-active state of this toggle.
-      void reportFeedbackSafe(setId, next ? "like" : "unlike").catch(() => {});
+    } catch {
+      // Offline: the local removal stands; the tally re-syncs on the next refresh.
+    }
+  };
+
+  const toggleLike = async (setId: string) => {
+    if (!setId || busy || isThrottledVote()) return;
+    const next = !likedById[setId];
+    setLikedById((prev) => writeLikedStore({ ...prev, [setId]: next }));
+    setLikesError(null);
+    if (next) {
+      // Liking takes precedence: clear any dislike on the group.
+      clearDislike(setId);
+    }
+    try {
+      const response = await fetch(LIKE_PATH, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ setId }),
+      });
+      const payload = (await response.json().catch(() => null)) as { count?: unknown } | null;
+      if (payload && typeof payload === "object" && typeof payload.count === "number") {
+        setCommunityLikes((prev) => ({ ...prev, [setId]: payload.count as number }));
+      }
+      // Record the feedback action only for the "点赞" button's active state.
+      if (next) void reportFeedbackSafe(setId, "like").catch(() => {});
+    } catch {
+      setLikesError(t("likeSyncFailed"));
+    }
+  };
+
+  const toggleDislike = async (setId: string) => {
+    if (!setId || busy || isThrottledVote()) return;
+    const next = !dislikedById[setId];
+    setDislikedById((prev) => writeDislikedStore({ ...prev, [setId]: next }));
+    setLikesError(null);
+    if (next) {
+      // 点踩 takes precedence: clear any like on the group (and its ledger).
+      if (isLikedById(setId)) clearLike(setId);
+    }
+    try {
+      // Persist the dislike toggle to the server's dislike channel, which
+      // stores the aggregate count on the shares row's `dislike_count` column.
+      const response = await fetch(DISLIKE_PATH, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ setId }),
+      });
+      const payload = (await response.json().catch(() => null)) as { count?: unknown } | null;
+      if (payload && typeof payload === "object" && typeof payload.count === "number") {
+        setCommunityDislikes((prev) => ({ ...prev, [setId]: payload.count as number }));
+      }
+      // Record the feedback action only for the "点踩" button's active state.
+      if (next) void reportFeedbackSafe(setId, "unlike").catch(() => {});
     } catch {
       setLikesError(t("likeSyncFailed"));
     }
@@ -3110,6 +3396,85 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
   const [submitAuthor, setSubmitAuthor] = useState("");
   const [submitPhase, setSubmitPhase] = useState<"idle" | "submitting" | "done" | "error">("idle");
   const [submitMessage, setSubmitMessage] = useState<string | null>(null);
+  // Publish-to-community is a separate, dedicated overlay from the text-share
+  // panel: it takes an externally-hosted archive URL + author (the URL is a
+  // free-form pointer to any zip the user hosts — it is NOT tied to a local
+  // portrait group, so no group selection is required) and submits a row to the
+  // community directory. The directory only needs a stable setId key, which we
+  // generate automatically on submit. Kept independent so the two intents stay
+  // clear and publishing never couples to the open config's groups.
+  const [communityShareFor, setCommunityShareFor] = useState<boolean>(false);
+
+  const openCommunityShare = () => {
+    setCommunityShareFor(true);
+    setSubmitPhase("idle");
+    setSubmitMessage(null);
+    // Deliberately NOT resetting submitAuthor: it is prefilled with the signed-in
+    // account name (or left blank →「匿名»), so reopening keeps the user's edit.
+  };
+
+  // ── C2b: current DeepSeek account display name ────────────────────────────
+  // Reads the logged-in account's display name through the host Remote service
+  // (`ctx.remote.account.getProfile`) so the community share author defaults to
+  // the real login name instead of「匿名」. Everything is optional + best-effort:
+  // if Remote is absent, the account isn't signed in, or the read fails, we
+  // silently keep the legacy manual field (no dependency on dsh-flash).
+  const [accountName, setAccountName] = useState<string | null>(null);
+  const authorTouched = useRef(false);
+
+  useEffect(() => {
+    let alive = true;
+    // The `remote` service and its `account` namespace are granted by the bundle's
+    // declared `inject` list (see `export const inject`), the same pattern the
+    // account settings screen uses. Still best-effort + fully guarded so the config
+    // card can never crash: if the host doesn't expose the account, the user isn't
+    // signed in, or the read fails, we silently keep the legacy manual field
+    // (no dependency on dsh-flash).
+    let remoteAccount: RemoteAccountMount["account"] | undefined;
+    try {
+      remoteAccount = remote?.account;
+    } catch {
+      remoteAccount = undefined;
+    }
+    const getProfile = remoteAccount?.getProfile;
+    if (typeof getProfile !== "function") return;
+    // Best-effort client metadata, mirroring the account screen: active locale +
+    // UTC offset. Version is informational only (never a token/secret).
+    const localeService = locale as
+      | { getSnapshot?: () => { active?: string } }
+      | undefined;
+    const localeValue = localeService?.getSnapshot?.()?.active;
+    const activeLocale = (typeof localeValue === "string" && localeValue) || "zh-CN";
+    const meta = {
+      version: "dsh-flash-skin",
+      locale: activeLocale,
+      timezoneOffsetSeconds: -new Date().getTimezoneOffset() * 60,
+    };
+    Promise.resolve()
+      .then(() => getProfile(meta))
+      .then((result) => {
+        const profile = result?.value;
+        if (!alive) return;
+        if (profile && profile.status === "ready" && profile.value) {
+          const name = String(profile.value.name ?? profile.value.contact ?? "").trim();
+          if (name) setAccountName(name);
+        }
+      })
+      .catch(() => {
+        // Account unavailable / not signed in / network — degrade silently.
+      });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Prefill the share author with the login name unless the user has edited the
+  // field (respect their explicit choice — including intentionally leaving the
+  // author blank to stay「匿名」).
+  useEffect(() => {
+    if (accountName && !authorTouched.current) setSubmitAuthor(accountName);
+  }, [accountName]);
 
   // Transient, sanitized notice for best-effort feedback-record failures. Kept
   // separate from communityError so it never hides the entry list; auto-clears
@@ -3127,15 +3492,32 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
   };
 
   // Reports a successful verified community import so the server can increment
-  // the shared set's import_count on its shares row. Best-effort: a failure
-  // never surfaces an error — the client-side import already succeeded.
-  const reportCommunityImport = async (setId: string, _md5: string) => {
-    if (!setId) return;
-    await fetch(COMMUNITY_IMPORT_PATH, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ setId }),
-    });
+  // the shared set's import_count on its shares row. Returns whether the report
+  // landed; a network/4xx/5xx failure returns false (the client-side import
+  // already succeeded, so this is only about keeping the counter truthful).
+  const reportCommunityImport = async (setId: string): Promise<boolean> => {
+    if (!setId) return false;
+    try {
+      const res = await fetch(COMMUNITY_IMPORT_PATH, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ setId }),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  };
+
+  // Optimistically increments the on-screen import tally for a set after its
+  // verified import was reported to the server, so the directory reflects the
+  // bump immediately instead of only after a manual refresh.
+  const bumpImportCount = (setId: string) => {
+    setCommunityEntries((prev) =>
+      prev.map((entry) =>
+        entry.setId === setId ? { ...entry, importCount: (entry.importCount ?? 0) + 1 } : entry,
+      ),
+    );
   };
 
   // Appends one record to the community feedback table for a per-user action
@@ -3220,7 +3602,13 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
     // verified, so they never bump the counter.
     const done = await importFromUrl(entry.url, md5 || undefined);
     if (done && md5) {
-      void reportCommunityImport(entry.setId, md5).catch(() => {});
+      // Await the server report and, only when it landed, bump the on-screen
+      // tally immediately so the directory reflects the increment without a
+      // manual refresh. (The counter is never incremented for unverified or
+      // failed reports.)
+      if (await reportCommunityImport(entry.setId)) {
+        bumpImportCount(entry.setId);
+      }
     }
     if (done) {
       // Append a feedback record for this successful import (verified or not).
@@ -3228,11 +3616,9 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
     }
   };
 
-  const submitCommunityShare = async (groupIndex: number) => {
-    const group = groups[groupIndex];
+  const submitCommunityShare = async () => {
     const url = submitUrl.trim();
     const author = submitAuthor.trim();
-    if (!group) return;
     if (!url) {
       setSubmitPhase("error");
       setSubmitMessage(t("communityUrlMissing"));
@@ -3241,18 +3627,26 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
     setSubmitPhase("submitting");
     setSubmitMessage(null);
     try {
+      // The directory is keyed by setId. Since a share is just a URL the user
+      // hosts (freely entered, unconnected to any local group), we generate a
+      // unique, stable-enough slug ourselves: the URL hostname + a short random
+      // suffix. The random suffix keeps it collision-free across submissions.
+      const setId = buildCommunitySetId(url);
       const response = await fetch(COMMUNITY_SUBMIT_PATH, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ setId: group.id, url, author }),
+        body: JSON.stringify({ setId, url, author }),
       });
       const payload = (await response.json().catch(() => null)) as
         | { ok?: unknown; entry?: { setId?: unknown }; error?: { code?: string; message?: string } }
         | null;
       if (payload && payload.ok) {
-        const setId = payload.entry && typeof payload.entry.setId === "string" ? payload.entry.setId : group.id;
+        const returnedId = payload.entry && typeof payload.entry.setId === "string" ? payload.entry.setId : setId;
         setSubmitPhase("done");
-        setSubmitMessage(t("communitySubmitDone").replace("{set}", setId));
+        setSubmitMessage(t("communitySubmitDone").replace("{set}", returnedId));
+        // Refresh the directory right away so the newly-submitted entry (with
+        // its author) shows up on the share page without a manual refresh.
+        void fetchCommunity();
       } else {
         const code = payload?.error?.code;
         const message = payload?.error?.message;
@@ -4295,6 +4689,14 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
             <h3 className="flash-community__title">{t("communityTitle")}</h3>
             <button
               type="button"
+              className="flash-community__share"
+              title={t("communityJoin")}
+              onClick={() => openCommunityShare()}
+            >
+              {t("communityJoin")}
+            </button>
+            <button
+              type="button"
               className="flash-community__refresh"
               disabled={communityPhase === "loading"}
               onClick={() => void fetchCommunity()}
@@ -4360,6 +4762,19 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
                             onClick={() => void toggleLike(entry.setId)}
                           >
                             {<ThumbsUp filled={isLikedById(entry.setId)} />}{likeCountFor(entry.setId)}
+                          </button>
+                          <button
+                            type="button"
+                            className={isDislikedById(entry.setId) ? "flash-community__dislike flash-community__dislike--on" : "flash-community__dislike"}
+                            title={t("dislikeTitle")}
+                            aria-pressed={isDislikedById(entry.setId)}
+                            // 点踩 records the feedback-table "unlike" action; its
+                            // community count comes from those rows, kept separate
+                            // from the like count.
+                            disabled={busy}
+                            onClick={() => void toggleDislike(entry.setId)}
+                          >
+                            {<ThumbsDown filled={isDislikedById(entry.setId)} />}{dislikeCountFor(entry.setId)}
                           </button>
                           <button
                             type="button"
@@ -4610,58 +5025,86 @@ function FlashSkinConfigCard({ form, weights, t: localeT }: FlashSkinConfigCardP
                 {shareNotice}
               </p>
             )}
+          </div>
+        </div>
+      )}
 
-            <section className="flash-share__community">
-              <h4 className="flash-share__community-title">{t("communityJoin")}</h4>
-              <p className="flash-portrait-groups__hint">{t("communitySubmitTitle")}</p>
-              <label className="flash-community__field">
-                <span className="flash-community__field-label">{t("communityFormUrlLabel")}</span>
-                <input
-                  type="text"
-                  className="flash-weights__input"
-                  autoComplete="off"
-                  autoCorrect="off"
-                  spellCheck={false}
-                  value={submitUrl}
-                  onChange={(event) => setSubmitUrl(event.currentTarget.value)}
-                  placeholder="https://…/group.zip"
-                />
-                <em className="flash-community__field-hint">{t("communityFormUrlHint")}</em>
-              </label>
-              <label className="flash-community__field">
-                <span className="flash-community__field-label">{t("communityFormAuthorLabel")}</span>
-                <input
-                  type="text"
-                  className="flash-weights__input"
-                  autoComplete="off"
-                  autoCorrect="off"
-                  spellCheck={false}
-                  maxLength={COMMUNITY_AUTHOR_MAX}
-                  value={submitAuthor}
-                  onChange={(event) => setSubmitAuthor(event.currentTarget.value)}
-                  placeholder={t("communityFormAuthorPlaceholder")}
-                />
-                <em className="flash-community__field-hint">{t("communityFormAuthorHint")}</em>
-              </label>
-              <div className="flash-share__actions">
-                <button
-                  type="button"
-                  className="flash-community__submit"
-                  disabled={submitPhase === "submitting" || submitUrl.trim() === ""}
-                  onClick={() => void submitCommunityShare(shareFor.index)}
-                >
-                  {submitPhase === "submitting" ? t("communitySubmitting") : t("communitySubmit")}
-                </button>
-              </div>
-              {submitPhase === "done" && submitMessage && (
-                <p className="flash-portrait-groups__notice" role="status">{submitMessage}</p>
-              )}
-              {submitPhase === "error" && submitMessage && (
-                <p className="flash-portrait-groups__notice flash-portrait-groups__notice--error" role="alert">
-                  {submitMessage}
-                </p>
-              )}
-            </section>
+      {communityShareFor && (
+        <div
+          className="flash-share"
+          role="dialog"
+          aria-modal="true"
+          aria-label={t("communityPublishTitle")}
+          onClick={() => setCommunityShareFor(false)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") setCommunityShareFor(false);
+          }}
+        >
+          <div className="flash-share__box" onClick={(event) => event.stopPropagation()}>
+            <header className="flash-share__head">
+              <h3 className="flash-share__title">{t("communityPublishTitle")}</h3>
+              <button
+                type="button"
+                className="flash-lightbox__close"
+                onClick={() => setCommunityShareFor(false)}
+                title={t("shareClose")}
+                aria-label={t("shareClose")}
+              >
+                ✕
+              </button>
+            </header>
+
+            <p className="flash-portrait-groups__hint">{t("communitySubmitTitle")}</p>
+            <label className="flash-community__field">
+              <span className="flash-community__field-label">{t("communityFormUrlLabel")}</span>
+              <input
+                type="text"
+                className="flash-weights__input"
+                autoComplete="off"
+                autoCorrect="off"
+                spellCheck={false}
+                value={submitUrl}
+                onChange={(event) => setSubmitUrl(event.currentTarget.value)}
+                placeholder="https://…/group.zip"
+              />
+              <em className="flash-community__field-hint">{t("communityFormUrlHint")}</em>
+            </label>
+            <label className="flash-community__field">
+              <span className="flash-community__field-label">{t("communityFormAuthorLabel")}</span>
+              <input
+                type="text"
+                className="flash-weights__input"
+                autoComplete="off"
+                autoCorrect="off"
+                spellCheck={false}
+                maxLength={COMMUNITY_AUTHOR_MAX}
+                value={submitAuthor}
+                onChange={(event) => {
+                  authorTouched.current = true;
+                  setSubmitAuthor(event.currentTarget.value);
+                }}
+                placeholder={t("communityFormAuthorPlaceholder")}
+              />
+              <em className="flash-community__field-hint">{t("communityFormAuthorHint")}</em>
+            </label>
+            <div className="flash-share__actions">
+              <button
+                type="button"
+                className="flash-community__submit"
+                disabled={submitPhase === "submitting" || submitUrl.trim() === ""}
+                onClick={() => void submitCommunityShare()}
+              >
+                {submitPhase === "submitting" ? t("communitySubmitting") : t("communitySubmit")}
+              </button>
+            </div>
+            {submitPhase === "done" && submitMessage && (
+              <p className="flash-portrait-groups__notice" role="status">{submitMessage}</p>
+            )}
+            {submitPhase === "error" && submitMessage && (
+              <p className="flash-portrait-groups__notice flash-portrait-groups__notice--error" role="alert">
+                {submitMessage}
+              </p>
+            )}
           </div>
         </div>
       )}
@@ -5329,7 +5772,7 @@ export function apply(ctx: ClientContext) {
     key: PACKAGE_ID,
     order: 10,
     locale: LOCALE_NAMESPACE,
-    inject: () => ({ form: configForm, weights, t: setLabel }),
+    inject: () => ({ form: configForm, weights, t: setLabel, remote: ctx.remote, locale: ctx.locale }),
   }, FlashSkinConfigCard));
 
   ctx.slots.inject("settings.general.item", () => ctx.slots.register({

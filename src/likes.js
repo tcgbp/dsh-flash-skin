@@ -23,6 +23,10 @@ export const MAX_LIKE_BODY_BYTES = 32 * 1024;
 export const LIKE_PATH = "/plugins/dsh-flash-skin/like";
 /** Exact-match route for GET full like-count snapshots. */
 export const LIKES_PATH = "/plugins/dsh-flash-skin/likes";
+/** Exact-match route for POST dislike toggles. */
+export const DISLIKE_PATH = "/plugins/dsh-flash-skin/dislike";
+/** Exact-match route for GET full dislike-count snapshots. */
+export const DISLIKES_PATH = "/plugins/dsh-flash-skin/dislikes";
 /** Peer id header. */
 export const PEER_HEADER = "x-flash-skin-peer";
 
@@ -162,7 +166,7 @@ export function createLikeLedger({ log = () => {} } = {}) {
  * process lifetime. Writes are serialized behind a single promise chain; a
  * no-op open or a disabled mirror never stalls the like route (fire-and-forget).
  */
-export function createLikeMirror(provider) {
+export function createLikeMirror(provider, table = "likes") {
   let unit = null;
   let state = "idle"; // idle | opening | ready | disabled
   let opening = null;
@@ -197,7 +201,7 @@ export function createLikeMirror(provider) {
           version: 1,
           global: null,
           tables: {
-            likes: {
+            [table]: {
               schema: {
                 groupId: { type: "string" },
                 count: { type: "number" },
@@ -284,14 +288,63 @@ function defaultFacilityAccessor(ctx) {
 }
 
 /**
- * Register the like routes against the host webServer. Folds the optional T3
- * mirror in and warms T1 from durable state. Returns the two disposers (the
- * caller folds them into its route effect's teardown).
+ * Register the "like" vote channel (点赞) against the host webServer. Shares the
+ * same tiered channel as dislikes: a process-local T1 ledger, an optional T3
+ * durable mirror, and an optional Feishu Bitable sync that persists the
+ * aggregate onto the shared set's `like_count` row. Returns the two disposers
+ * (the caller folds them into its route effect's teardown).
  */
 export function installLikeRoutes(ctx, opts = {}) {
-  const ledger = opts.ledger || createLikeLedger({ log: ctx?.logger ? (m) => ctx.logger.debug(m) : () => {} });
-  const salt = opts.peerSalt || "flash-skin-v1";
-  const mirror = createLikeMirror(opts.facility || defaultFacilityAccessor(ctx));
+  const r = installVoteRoutes(ctx, {
+    togglePath: opts.togglePath || LIKE_PATH,
+    countsPath: opts.countsPath || LIKES_PATH,
+    mirrorTable: opts.mirrorTable || "likes",
+    activeKey: "liked",
+    ledger: opts.ledger,
+    peerSalt: opts.peerSalt,
+    facility: opts.facility,
+    community: opts.community,
+  });
+  return {
+    likes: r.votes,
+    mirror: r.mirror,
+    likeRoute: r.toggleRoute,
+    likesRoute: r.countsRoute,
+    flushCommunityLikes: r.flushCommunity,
+    communityDispose: r.communityDispose,
+  };
+}
+
+/**
+ * Register the "dislike" vote channel (点踩) — identical to the like channel but
+ * reading/writing the shares table's `dislike_count` column, kept fully
+ * separate from the like tally per the 点赞 / 点踩 计数分离 requirement.
+ */
+export function installDislikeRoutes(ctx, opts = {}) {
+  const r = installVoteRoutes(ctx, {
+    togglePath: opts.togglePath || DISLIKE_PATH,
+    countsPath: opts.countsPath || DISLIKES_PATH,
+    mirrorTable: opts.mirrorTable || "dislikes",
+    activeKey: "disliked",
+    ledger: opts.ledger,
+    peerSalt: opts.peerSalt,
+    facility: opts.facility,
+    community: opts.community,
+  });
+  return {
+    dislikes: r.votes,
+    mirror: r.mirror,
+    dislikeRoute: r.toggleRoute,
+    dislikesRoute: r.countsRoute,
+    flushCommunityDislikes: r.flushCommunity,
+    communityDispose: r.communityDispose,
+  };
+}
+
+function installVoteRoutes(ctx, cfg = {}) {
+  const ledger = cfg.ledger || createLikeLedger({ log: ctx?.logger ? (m) => ctx.logger.debug(m) : () => {} });
+  const salt = cfg.peerSalt || "flash-skin-v1";
+  const mirror = createLikeMirror(cfg.facility || defaultFacilityAccessor(ctx), cfg.mirrorTable || "likes");
   // Warm T1 from durable state without ever blocking the routes.
   try {
     void mirror.warm((groupId, count, peers) => {
@@ -322,7 +375,7 @@ export function installLikeRoutes(ctx, opts = {}) {
   //   - Toggles schedule a debounced, coalesced flush (one upsert window) rather
   //     than one write per like. Any failure just disables the channel and the
   //     local ledger stays authoritative.
-  const community = opts.community || null;
+  const community = cfg.community || null;
   let communityTimer = null;
   let communityPending = false;
   let communityInFlight = false;
@@ -338,8 +391,8 @@ export function installLikeRoutes(ctx, opts = {}) {
     typeof community.getClient === "function" &&
     typeof community.getTarget === "function" &&
     typeof community.getLikesEnabled === "function" &&
-    typeof community.readCommunityLikes === "function" &&
-    typeof community.submitCommunityLikes === "function";
+    typeof community.readCounts === "function" &&
+    typeof community.submitCounts === "function";
 
   /** The C2 like channel is enabled when the Feishu backend + a configured shares table are present. */
   const communityLikesOn = () => {
@@ -359,7 +412,7 @@ export function installLikeRoutes(ctx, opts = {}) {
     const client = community.getClient();
     if (!client) return;
     try {
-      const remote = await community.readCommunityLikes(client, target);
+      const remote = await community.readCounts(client, target);
       const counts = remote && remote.counts ? remote.counts : null;
       if (!counts) return;
       for (const [groupId, count] of Object.entries(counts)) {
@@ -375,7 +428,7 @@ export function installLikeRoutes(ctx, opts = {}) {
   };
 
   /** Flush the merged counts through the server-proxied Bitable upsert (single in-flight). */
-  const flushCommunityLikes = async () => {
+  const flushCommunity = async () => {
     if (!communityEnabled() || communityFailed || communityInFlight) return;
     const target = community.getTarget();
     if (!target) return;
@@ -388,7 +441,7 @@ export function installLikeRoutes(ctx, opts = {}) {
       // Fold explicitly-removed groupIds in so the table's stale rows for
       // groups unliked back to 0 are actually deleted (not just left behind).
       const removed = Array.from(communityRemoved);
-      const res = await community.submitCommunityLikes(client, target, { counts: merged, removed });
+      const res = await community.submitCounts(client, target, { counts: merged, removed });
       if (res && res.ok === false) {
         // Never retry into an unconfigurable state this process lifetime.
         if (res.error && res.error.code === "not-configured") communityFailed = true;
@@ -412,7 +465,7 @@ export function installLikeRoutes(ctx, opts = {}) {
     communityTimer = setTimeout(() => {
       communityPending = false;
       communityTimer = null;
-      void flushCommunityLikes().catch(() => {});
+      void flushCommunity().catch(() => {});
     }, debounce);
   };
 
@@ -471,7 +524,7 @@ export function installLikeRoutes(ctx, opts = {}) {
       sendJson(res, 200, {
         ok: true,
         setId: result.groupId,
-        liked: result.liked,
+        [cfg.activeKey || "liked"]: result.liked,
         count: result.count,
         peerId: result.peerId,
       });
@@ -493,12 +546,12 @@ export function installLikeRoutes(ctx, opts = {}) {
   };
 
   return {
-    likes: ledger,
+    votes: ledger,
     mirror,
-    likeRoute: ctx.webServer.register({ kind: "exact", path: LIKE_PATH, handler: like }),
-    likesRoute: ctx.webServer.register({ kind: "exact", path: LIKES_PATH, handler: likes }),
+    toggleRoute: ctx.webServer.register({ kind: "exact", path: cfg.togglePath, handler: like }),
+    countsRoute: ctx.webServer.register({ kind: "exact", path: cfg.countsPath, handler: likes }),
     // Exposed for deterministic tests / manual flush; a no-op when disabled.
-    flushCommunityLikes,
+    flushCommunity,
     communityDispose,
   };
 }

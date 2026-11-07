@@ -1743,6 +1743,7 @@ body[data-flash-skin="on"][data-flash-layout="left"] [class*="_toBottomSlot"] {
 }
 
 .flash-community__refresh,
+.flash-community__share,
 .flash-community__toggle {
   padding: 3px 10px;
   border: 1px solid var(--dsw-alias-border-l2);
@@ -1755,7 +1756,15 @@ body[data-flash-skin="on"][data-flash-layout="left"] [class*="_toBottomSlot"] {
   cursor: pointer;
 }
 
+/* The publish-to-community button in the directory header deserves a subtle
+   accent so it reads as the primary "contribute" action next to 刷新. */
+.flash-community__share {
+  color: var(--dsw-alias-interactive-fg-default, var(--dsw-alias-label-primary));
+  border-color: color-mix(in srgb, var(--dsw-alias-interactive-fg-default, #4d8df5) 45%, transparent);
+}
+
 .flash-community__refresh:hover:not(:disabled),
+.flash-community__share:hover,
 .flash-community__toggle:hover:not(:disabled) {
   background: var(--dsw-alias-interactive-bg-hover);
 }
@@ -1905,6 +1914,38 @@ body[data-flash-skin="on"][data-flash-layout="left"] [class*="_toBottomSlot"] {
 }
 
 .flash-community__like:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* Community-entry dislike (点踩): mirrors the like button but records the
+   feedback-table "unlike" action and flags the local disliked state in the
+   danger hue. It carries no aggregated count (likes only are tallied). */
+.flash-community__dislike {
+  flex: none;
+  padding: 3px 10px;
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-label-tertiary) 35%, transparent);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+  background: transparent;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.flash-community__dislike--on {
+  color: var(--dsw-static-severity-danger-default, #d92d20) !important;
+  border-color: color-mix(in srgb, var(--dsw-static-severity-danger-default, #d92d20) 55%, transparent) !important;
+  background: color-mix(in srgb, var(--dsw-static-severity-danger-default, #d92d20) 10%, transparent);
+}
+
+.flash-community__dislike:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--dsw-alias-interactive-fg-default, #4073e0) 12%, transparent);
+}
+
+.flash-community__dislike:disabled {
   cursor: not-allowed;
   opacity: 0.6;
 }

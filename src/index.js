@@ -5,8 +5,8 @@ import { fileURLToPath } from "node:url";
 import z from "@deepseek-ai/schemastery";
 import { z as zod } from "zod";
 import { parseSingleRange } from "./range.js";
-import { installLikeRoutes } from "./likes.js";
-import { COMMUNITY_PROVIDERS, createCommunityClient, DEFAULT_COMMUNITY_TARGET, installCommunityRoutes, readCommunityLikes, submitCommunityLikes } from "./community.js";
+import { installLikeRoutes, installDislikeRoutes } from "./likes.js";
+import { COMMUNITY_PROVIDERS, createCommunityClient, DEFAULT_COMMUNITY_TARGET, installCommunityRoutes, readCommunityLikes, submitCommunityLikes, readCommunityDislikes, submitCommunityDislikes } from "./community.js";
 export { parseSingleRange } from "./range.js";
 
 export const PACKAGE_ID = "dsh-flash-skin";
@@ -110,6 +110,137 @@ const compactionProjectionDefinition = {
   init: compactionProjectionInit,
   apply: compactionProjectionApply,
   wire: compactionProjectionWire,
+};
+
+// ── Skill-usage projection unit ──────────────────────────────────────────────
+// The 技能 (skill) pulse mirrors the compaction pulse exactly, so it reuses the
+// same client clock shape (seq/atWallMs). There is no dedicated host
+// `skill/used` session event, so the unit derives "a skill was used" from the
+// same authoritative signal ctx-mon does: the `<skill_content name="X">` block
+// DSH emits in a message's content whenever a skill body is loaded. It arrives
+// on two paths:
+//   1. the model calls the `skill` tool → a `tool/result` whose
+//      `data.message.content` carries the block;
+//   2. the user types `/name` in the composer → the host injects the block as
+//      its OWN `user/message` event (`event.data.content` carries it; no tool
+//      call at all, so a tool-call-only detector would miss it).
+// Requiring the tag to START a trimmed text block keeps the detector honest:
+//   - a FAILED skill call carries no such block, so failures never pulse;
+//   - prose that merely quotes the tag (a chat message discussing this feature,
+//     a grep hit in a tool result) never matches.
+// State and `apply` semantics match the compaction unit: plain-JSON state, and a
+// fresh reference returned ONLY when a real skill-content block is seen, so the
+// host's `Object.is` change feed fires once per skill use. When the seam is
+// absent on a standalone host the block below is inert and the client's skill
+// bonus simply reads 0 (graceful degradation, never a crash).
+const SKILL_PROJECTION_KEY = "flash-skin-skill";
+const SKILL_PROJECTION_STATE_VERSION = 1;
+const SKILL_CONTENT_PREFIX = '<skill_content name="';
+
+const skillProjectionInit = () => ({
+  seq: -1,
+  atWallMs: 0,
+  skill: "",
+});
+
+/**
+ * Pull the skill name out of a text block that IS a skill-content block, or
+ * null for anything else (including prose that merely mentions the tag).
+ * @param {unknown} text
+ * @returns {string | null}
+ */
+function parseSkillBlock(text) {
+  if (typeof text !== "string") return null;
+  const s = text.replace(/^\s+/, "");
+  if (!s.startsWith(SKILL_CONTENT_PREFIX)) return null;
+  const rest = s.slice(SKILL_CONTENT_PREFIX.length);
+  const end = rest.indexOf('"');
+  if (end <= 0) return null;
+  const name = rest.slice(0, end);
+  if (!name || name.length > 200) return null;
+  return name;
+}
+
+/**
+ * Depth-first search for the first text block that is a skill-content block.
+ * `value` is a message-content tree from a session event: a content-block array
+ * (user/message and tool/result messages) or a nested object wrapper. Mirrors
+ * ctx-mon's detector with a bounded depth defensively.
+ * @param {unknown} value
+ * @param {number} depth
+ * @returns {string | null}
+ */
+function findSkillBlock(value, depth) {
+  if (value === null || value === undefined || depth > 4) return null;
+  if (typeof value === "string") return parseSkillBlock(value);
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      const hit = findSkillBlock(value[i], depth + 1);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  if (typeof value === "object") {
+    if (typeof value.text === "string") {
+      const direct = parseSkillBlock(value.text);
+      if (direct) return direct;
+    }
+    for (const key of Object.keys(value)) {
+      const child = value[key];
+      if (child && typeof child === "object") {
+        const nested = findSkillBlock(child, depth + 1);
+        if (nested) return nested;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * @param {object} state
+ * @param {{ seq:number, time:number, type:string, data?:Record<string, unknown> }} event
+ * @returns {object}
+ */
+function skillProjectionApply(state, event) {
+  // Only a user/message or tool/result can carry a loaded skill body. For
+  // `user/message` the event data IS the message (`data.content`); for
+  // `tool/result` the message is nested (`data.message.content`).
+  const data = event.data ?? {};
+  const content = event.type === "user/message"
+    ? data.content
+    : event.type === "tool/result"
+      ? (data && typeof data === "object" ? data.message?.content : undefined)
+      : undefined;
+  if (content === undefined) return state;
+  const skill = findSkillBlock(content, 0);
+  if (!skill) return state;
+  return {
+    seq: event.seq,
+    atWallMs: event.time,
+    skill,
+  };
+}
+
+const skillProjectionWire = {
+  viewSchema: zod.object({
+    seq: zod.number(),
+    atWallMs: zod.number(),
+    skill: zod.string(),
+  }),
+  view: (state) => state,
+};
+
+const skillProjectionDefinition = {
+  key: SKILL_PROJECTION_KEY,
+  stateVersion: SKILL_PROJECTION_STATE_VERSION,
+  stateSchema: zod.object({
+    seq: zod.number(),
+    atWallMs: zod.number(),
+    skill: zod.string(),
+  }),
+  init: skillProjectionInit,
+  apply: skillProjectionApply,
+  wire: skillProjectionWire,
 };
 
 // ── Bundled example archives ────────────────────────────────────────────────
@@ -586,6 +717,15 @@ export function apply(ctx, config) {
     return () => deregister?.();
   }, "flash-skin: compaction projection scope");
 
+  // Skill-usage pulse driver: same seam, same shapes as the compaction unit, so
+  // a standalone host without the seam just leaves the client's skill bonus at 0.
+  ctx.effect(() => {
+    const deregister = ctx.inject(["sessionProjections"], (scoped) => {
+      return scoped.sessionProjections.register(skillProjectionDefinition);
+    }, "flash-skin: skill projection");
+    return () => deregister?.();
+  }, "flash-skin: skill projection scope");
+
   const activeStreams = new Set();
   ctx.effect(() => {
     const { upload, serve } = createAttachmentHandlers(ctx, activeStreams);
@@ -671,8 +811,23 @@ export function apply(ctx, config) {
         getClient: getCommunityClient,
         getTarget: getCommunityTarget,
         getLikesEnabled,
-        readCommunityLikes,
-        submitCommunityLikes,
+        readCounts: readCommunityLikes,
+        submitCounts: submitCommunityLikes,
+        debounceMs: 30_000,
+      },
+    });
+    const {
+      dislikeRoute, dislikesRoute, flushCommunityDislikes, communityDispose: dislikeCommunityDispose,
+    } = installDislikeRoutes(ctx, {
+      // Dislike tallies are stored on the shares-table rows' `dislike_count`
+      // column, fully separate from the like tally. Same tiered channel/ledger
+      // as likes, just pointing at `dislike_count` for reads and writes.
+      community: {
+        getClient: getCommunityClient,
+        getTarget: getCommunityTarget,
+        getLikesEnabled,
+        readCounts: readCommunityDislikes,
+        submitCounts: submitCommunityDislikes,
         debounceMs: 30_000,
       },
     });
@@ -683,8 +838,11 @@ export function apply(ctx, config) {
       exampleRoute();
       remoteRoute();
       communityDispose();
+      dislikeCommunityDispose();
       likeRoute();
       likesRoute();
+      dislikeRoute();
+      dislikesRoute();
       directoryRoute();
       submitRoute();
       importRoute();

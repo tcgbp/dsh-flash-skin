@@ -183,6 +183,24 @@ const COMMUNITY_IMPORT_PATH = `/plugins/${PACKAGE_ID}/community/import`;
 const COMMUNITY_FEEDBACK_PATH = `/plugins/${PACKAGE_ID}/community/feedback`;
 // Max length of the optional self-declared author (mirrors server-side cap).
 const COMMUNITY_AUTHOR_MAX = 40;
+// Max length of the optional community Set ID field (mirrors the server-side
+// COMMUNITY_SET_ID_MAX in community.js). The manual field is optional; when
+// blank the community group name is auto-derived from the archive URL hostname.
+const COMMUNITY_SET_ID_MAX = 64;
+
+/**
+ * Normalize a freely-entered community Set ID into a safe `[a-z0-9-]` token,
+ * mirroring the server's normalizeCommunitySetId. Returns "" when the input
+ * collapses to nothing; the caller keeps the auto-generated slug in that case.
+ */
+function normalizeCommunitySetIdClient(raw: string): string {
+  if (typeof raw !== "string") return "";
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
 // Per-device like bookkeeping, keyed by group id ({ [groupId]: boolean }). Not
 // part of the persisted config document, so liking never dirties the patch.
 const FLASH_SKIN_LIKED_KEY = "flash-skin:liked-by-id";
@@ -2597,6 +2615,11 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "communitySubmitTitle": "把你托管在任意公开地址的网络安装包提交进社区目录，供所有人浏览导入",
     "communityFormUrlLabel": "压缩包 URL",
     "communityFormUrlHint": "该压缩包由你自己托管（任意公开 URL）；社区只存这一行文本指针。",
+    "communityFormSetIdLabel": "组名（Set ID，可选）",
+    "communityFormSetIdPlaceholder": "留空则由 URL 自动生成",
+    "communityFormSetIdHint": "该名称会作为社区目录里的组名（标识）。留空则取压缩包 URL 的域名自动生成；仅支持字母、数字与连字符。",
+    "communitySetIdInvalid": "组名无效：请输入字母、数字或连字符",
+    "communitySetIdTooLong": "组名过长：最多 {max} 个字符",
     "communityFormAuthorLabel": "作者 / 昵称（可选）",
     "communityFormAuthorHint": "默认填当前登录的 DeepSeek 账号名（可自行修改）；留空则以「匿名」展示，仅作展示用途，不影响分享文本与校验。",
     "communityFormAuthorPlaceholder": "匿名",
@@ -2713,6 +2736,11 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "communitySubmitTitle": "Submit a hosted archive's URL into the community directory for everyone to browse and import",
     "communityFormUrlLabel": "Archive URL",
     "communityFormUrlHint": "Host this zip yourself (any public URL); the community only stores this one-line text pointer.",
+    "communityFormSetIdLabel": "Set ID (identifier, optional)",
+    "communityFormSetIdPlaceholder": "Leave blank to auto-generate from URL",
+    "communityFormSetIdHint": "This becomes the group name (identifier) shown in the community directory. Leave blank to derive it from the archive URL's hostname. Letters, digits and hyphens only.",
+    "communitySetIdInvalid": "Invalid Set ID: use letters, digits or hyphens",
+    "communitySetIdTooLong": "Set ID too long: at most {max} characters",
     "communityFormAuthorLabel": "Author / nickname (optional)",
     "communityFormAuthorHint": "Defaults to the signed-in DeepSeek account name (editable); leave blank to show as “Anonymous”. Display-only, does not affect the share text or integrity checks.",
     "communityFormAuthorPlaceholder": "Anonymous",
@@ -3531,6 +3559,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT, remote, locale }: Flas
   const [communityError, setCommunityError] = useState<string | null>(null);
   const [communityNotConfigured, setCommunityNotConfigured] = useState(false);
   const [submitUrl, setSubmitUrl] = useState("");
+  const [submitSetId, setSubmitSetId] = useState("");
   const [submitAuthor, setSubmitAuthor] = useState("");
   const [submitPhase, setSubmitPhase] = useState<"idle" | "submitting" | "done" | "error">("idle");
   const [submitMessage, setSubmitMessage] = useState<string | null>(null);
@@ -3547,8 +3576,9 @@ function FlashSkinConfigCard({ form, weights, t: localeT, remote, locale }: Flas
     setCommunityShareFor(true);
     setSubmitPhase("idle");
     setSubmitMessage(null);
-    // Deliberately NOT resetting submitAuthor: it is prefilled with the signed-in
-    // account name (or left blank →「匿名»), so reopening keeps the user's edit.
+    // Deliberately NOT resetting submitAuthor / submitSetId: the author is
+    // prefilled with the signed-in account name (or left blank →「匿名»), and the
+    // setId is an optional manual field — reopening keeps the user's edits.
   };
 
   // ── C2b: current DeepSeek account display name ────────────────────────────
@@ -3765,11 +3795,27 @@ function FlashSkinConfigCard({ form, weights, t: localeT, remote, locale }: Flas
     setSubmitPhase("submitting");
     setSubmitMessage(null);
     try {
-      // The directory is keyed by setId. Since a share is just a URL the user
-      // hosts (freely entered, unconnected to any local group), we generate a
-      // unique, stable-enough slug ourselves: the URL hostname + a short random
-      // suffix. The random suffix keeps it collision-free across submissions.
-      const setId = buildCommunitySetId(url);
+      // The directory is keyed by setId. The user may type a preferred Set ID
+      // (normalized by us and again server-side); when the optional field is
+      // left blank we fall back to deriving a unique, stable-enough slug from
+      // the URL's hostname + a short random suffix.
+      const manualId = normalizeCommunitySetIdClient(submitSetId);
+      let setId: string;
+      if (submitSetId.trim() !== "") {
+        if (!manualId) {
+          setSubmitPhase("error");
+          setSubmitMessage(t("communitySetIdInvalid"));
+          return;
+        }
+        if (manualId.length > COMMUNITY_SET_ID_MAX) {
+          setSubmitPhase("error");
+          setSubmitMessage(t("communitySetIdTooLong").replace("{max}", String(COMMUNITY_SET_ID_MAX)));
+          return;
+        }
+        setId = manualId;
+      } else {
+        setId = buildCommunitySetId(url);
+      }
       const response = await fetch(COMMUNITY_SUBMIT_PATH, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -5206,6 +5252,21 @@ function FlashSkinConfigCard({ form, weights, t: localeT, remote, locale }: Flas
                 placeholder="https://…/group.zip"
               />
               <em className="flash-community__field-hint">{t("communityFormUrlHint")}</em>
+            </label>
+            <label className="flash-community__field">
+              <span className="flash-community__field-label">{t("communityFormSetIdLabel")}</span>
+              <input
+                type="text"
+                className="flash-weights__input"
+                autoComplete="off"
+                autoCorrect="off"
+                spellCheck={false}
+                maxLength={COMMUNITY_SET_ID_MAX}
+                value={submitSetId}
+                onChange={(event) => setSubmitSetId(event.currentTarget.value)}
+                placeholder={t("communityFormSetIdPlaceholder")}
+              />
+              <em className="flash-community__field-hint">{t("communityFormSetIdHint")}</em>
             </label>
             <label className="flash-community__field">
               <span className="flash-community__field-label">{t("communityFormAuthorLabel")}</span>

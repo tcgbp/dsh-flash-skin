@@ -210,6 +210,15 @@ body[data-flash-skin="on"] [class*="_column"] [data-variant="others"] [class*="_
   background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent) !important;
 }
 
+/* 任务消息 / 各类触发通知（收到任务消息、执行请求、子任务状态更新等）：宿主
+ * chat 的 TurnTriggerNodeView 可展开通知卡，data-turn-trigger 与卡片表面同节点，
+ * 背景默认 var(--dsw-alias-turn-trigger-bg, var(--dsw-alias-markdown-code-block))
+ * 实心不随浓度，同样换成同款半透明灰底跟随“文字背景浓度”。data-turn-trigger
+ * 为宿主专用于该通知元素的稳定属性，不会误伤其它卡片。 */
+body[data-flash-skin="on"] [class*="_column"] [data-turn-trigger] {
+  background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent) !important;
+}
+
 /* Desktop (Electron) specifics — the port is what lets the z-index:-1
  * backdrop show through the native host frame, mirroring the predecessor
  * skin on the same host. Transparent here only: no token tinting. */

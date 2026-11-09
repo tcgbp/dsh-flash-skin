@@ -179,14 +179,34 @@ body[data-flash-skin="on"] [class*="_column"] [data-changed-files] [class*="_hea
  *   选择器只用宿主的稳定 CSS 类后缀（_userRow/_userStack/_bubble），哈希前缀
  *   随构建变化可免，与上方 _column 约定一致；不依赖 dsh-flash。
  * - 助手工具卡片宿主为 tool 插件的 [data-tool] 行（present 卡片同为 data-tool），
- *   其表面自带实心底（ToolRow 的 _root/_header），一并换为同款半透明灰底，
- *   使工具卡片跟随浓度控制。仅居中内容列命中，右侧栏保持的不透明（.rightbarCol）。
+ *   工具行 root 同时挂着稳定的 data-tool/data-variant/data-state 属性。其内层
+ *   表面（命令 I/O 卡 _ioCard、详情面板 ToolDetails._root、_card）用
+ *   --dsw-alias-markdown-code-block / --dsw-alias-bg-base 实心上色，不跟随浓度。
+ *   注：不能写 [data-tool] [class*="_root"]——data-tool 与 _root 同在工具行根元素
+ *   上，这是同级而非后代关系，会永远落空；改用稳定 data-variant 属性锚定各工具
+ *   （bash=运行命令、search=搜索文件内容、其余 generic 卡含读取任务输出）并命中
+ *   其内层带实心面的表面层。仅居中内容列命中，右侧栏保持不透明（.rightbarCol）。
  * - 已在各容器内的正文/代码块规则不与之双叠：气泡/卡片只吃这一层半透明底。 */
 body[data-flash-skin="on"] [class*="_column"] [class*="_userRow"] [class*="_userStack"] [class*="_bubble"] {
   background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent) !important;
 }
-body[data-flash-skin="on"] [class*="_column"] [data-tool] [class*="_root"],
-body[data-flash-skin="on"] [class*="_column"] [data-tool] [class*="_header"] {
+
+/* 运行命令（bash / pwsh 工具，data-variant="bash"）：命令 I/O 卡与终端表面
+ * 原用 --dsw-alias-markdown-code-block 实心底，换成同款半透明灰底随浓度变化。 */
+body[data-flash-skin="on"] [class*="_column"] [data-variant="bash"] [class*="_ioCard"],
+body[data-flash-skin="on"] [class*="_column"] [data-variant="bash"] [class*="_terminal"] {
+  background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent) !important;
+}
+
+/* 搜索文件内容（grep/glob/web_search，data-variant="search"）与读取任务输出
+ * （readJob 不在宿主 TOOL_VARIANTS 表，落入 generic "others"）：详情面板
+ * ToolDetails._root 与 _card 原是 markdown-code-block / bg-base 实心底，
+ * 换成同款半透明灰底使它们跟随“文字背景浓度”。others 为 generic 兜底变体，
+ * 统一让内容输出面板随浓度，保持一致。 */
+body[data-flash-skin="on"] [class*="_column"] [data-variant="search"] [class*="_root"],
+body[data-flash-skin="on"] [class*="_column"] [data-variant="search"] [class*="_card"],
+body[data-flash-skin="on"] [class*="_column"] [data-variant="others"] [class*="_root"],
+body[data-flash-skin="on"] [class*="_column"] [data-variant="others"] [class*="_card"] {
   background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent) !important;
 }
 
@@ -206,6 +226,21 @@ html[data-windows-titlebar] body[data-flash-skin="on"] #root [class*="_frame"]:h
    which would otherwise bleed the backdrop behind the rightbar too). The left
    sidebar keeps its own native surface. */
 body[data-flash-skin="on"] #root [class*="_rightbarCol"] {
+  background: var(--flash-surface, #f5f6f8) !important;
+}
+
+/* 右侧栏面板“全屏展开”时不透明：点展开（宿主在右侧栏面板上置
+ * data-sidebar-right-panel="fullscreen" + data-sidebar-right-open="true"，
+ * 面板 width:100vw 覆盖整个 frame）后，其 dockkit surface / panelBody 会继承
+ * 顶部 body 的 --dsw-alias-bg-base:transparent，导致面板透出人像（“全屏后变透明”）。
+ * 这里把展开面板的表面强制为不透明皮肤面（随 flashStage 的白/暗），
+ * 人像仍只从中间内容列透出。锚点只依赖宿主稳定属性与后缀类名约定，不依赖 dsh-flash。 */
+body[data-flash-skin="on"]
+  [data-sidebar-right-panel="fullscreen"][data-sidebar-right-open="true"],
+body[data-flash-skin="on"]
+  [data-sidebar-right-panel="fullscreen"][data-sidebar-right-open="true"] [class*="_panelBody"],
+body[data-flash-skin="on"]
+  [data-sidebar-right-panel="fullscreen"][data-sidebar-right-open="true"] [data-dockkit-surface="true"] {
   background: var(--flash-surface, #f5f6f8) !important;
 }
 
@@ -1167,12 +1202,31 @@ body[data-flash-skin="on"][data-flash-layout="left"] [class*="_dock"][data-compo
  *     左移的输入卡左缘错位。此处用与 todo/排队条完全相同的 margin-left 基准，
  *     并去掉那 20px 原生内边距，让芯片左缘与输入卡左缘落在同一根垂直线上。
  */
+/* 4b) 新会话空态里的“选择工作区”行([class*="_heroWorkspaceRow"])与输入卡左缘对齐。
+ *     它是 [class*="_composerStack"] 的直接子节点（与输入卡、todo、排队条同原点，
+ *     并不在 HeroShell 内部），原生靠内边距 padding-left:20px 落在偏左位置，与已
+ *     左移的输入卡左缘错位。此处用与 todo/排队条完全相同的 margin-left 基准，
+ *     并去掉那 20px 原生内边距，让芯片左缘与输入卡左缘落在同一根垂直线上。
+ *     原生 hero 态下该 stack 还带 _composerHero{...;align-self:center}，会把整根
+ *     hero 合成器（连同输入卡与这行芯片）水平居中、整体偏右；这里把它强制
+ *     flex-start，让这行与输入卡都贴座位的左缘，再叠加 4b 的 margin 即对齐基准轴。
+ *     同时清零工作区子行 [_workspaceRow] 的 8px 原生左内边距与各项 auto 边距，
+ *     让“选择工作区”芯片与模式/预设芯片都从基线起排，不再各自向右拱出。 */
+body[data-flash-skin="on"][data-flash-layout="left"] [class*="_composerStack"][class*="_composerHero"] {
+  align-self: flex-start !important;
+}
 body[data-flash-skin="on"][data-flash-layout="left"] [class*="_heroWorkspaceRow"] {
   margin-left: calc(
     var(--dsh-composer-side-clearance, 16px) + 16px
     + var(--dsh-flash-timeline-gutter, 50px)
   ) !important;
   margin-right: auto !important;
+  padding-left: 0 !important;
+}
+body[data-flash-skin="on"][data-flash-layout="left"] [class*="_heroWorkspaceRow"] > * {
+  margin-inline-start: 0 !important;
+}
+body[data-flash-skin="on"][data-flash-layout="left"] [class*="_heroWorkspaceRow"] [class*="_workspaceRow"] {
   padding-left: 0 !important;
 }
 

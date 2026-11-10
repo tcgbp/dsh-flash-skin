@@ -167,9 +167,7 @@ const desktopMode = () => {
 
 // Host attachments route (exact path for POST upload, prefix for GET serve).
 const ATTACHMENT_PATH = `/plugins/${PACKAGE_ID}/attachment`;
-// Network-import routes: bundled example archives (served by the plugin over
-// this prefix) and a server-side proxy for pasting any http(s) archive URL.
-const EXAMPLES_PREFIX = `/plugins/${PACKAGE_ID}/examples/`;
+// Network-import route: a server-side proxy for pasting any http(s) archive URL.
 const REMOTE_ARCHIVE_PATH = `/plugins/${PACKAGE_ID}/archive`;
 // Social channels (C1 text share + C2 community directory/likes). These exact
 // routes mirror src/likes.js and src/community.js path exports.
@@ -187,16 +185,6 @@ const COMMUNITY_AUTHOR_MAX = 40;
 // part of the persisted config document, so liking never dirties the patch.
 const FLASH_SKIN_LIKED_KEY = "flash-skin:liked-by-id";
 const FLASH_SKIN_DISLIKED_KEY = "flash-skin:disliked-by-id";
-// Archives bundled into the package (whitelisted in package.json `files`) and
-// offered as one-tap quick imports. Labels are shown in both languages so the
-// picker is usable regardless of the current UI language.
-const EXAMPLE_ARCHIVES = Object.freeze([
-  { file: "liangsheng-demo.zip", zh: "梁圣", en: "Liang the Saint" },
-  { file: "liangshen-demo.zip", zh: "梁神", en: "Liang the God" },
-  { file: "liangzu-demo.zip", zh: "梁祖", en: "Liang the Ancestor" },
-  { file: "liangshen-url-demo.zip", zh: "梁神在线（URL 示例）", en: "Liang the God (URL-only)" },
-  { file: "hanli-demo.zip", zh: "韩立", en: "Han Li" },
-]);
 // Image extensions an archive URL/name may end with to be accepted as importable.
 const ARCHIVE_EXT_RE = /\.(zip|tar|tgz|gz|gzip)$/i;
 // How many extracted images the client sends per upload POST. Must stay within
@@ -2557,8 +2545,6 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "importIdConflict": "标识（Set ID）「{id}」已被占用，请换一个唯一标识再导入",
     "importConfirm": "导入",
     "importCancel": "取消",
-    "importExamplesTitle": "内置示例包",
-    "importExamplesHint": "点击即可把内置示例包导入为一个新组：",
     "importNetTitle": "或从网络导入任意压缩包",
     "netUrlPlaceholder": "粘贴压缩包 URL，或朋友发来的本插件分享文本",
     "importNet": "从网络导入",
@@ -2597,6 +2583,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "communitySubmitTitle": "把你托管在任意公开地址的网络安装包提交进社区目录，供所有人浏览导入",
     "communityFormUrlLabel": "压缩包 URL",
     "communityFormUrlHint": "该压缩包由你自己托管（任意公开 URL）；社区只存这一行文本指针。",
+    "communityFormUrlFormat": "支持格式：.zip / .tar / .tar.gz / .tgz / .gz / .gzip（也可带可选的 portrait.yaml｜meta.yaml 清单打包；不支持加密压缩包）。",
     "communityFormAuthorLabel": "作者 / 昵称（可选）",
     "communityFormAuthorHint": "默认填当前登录的 DeepSeek 账号名（可自行修改）；留空则以「匿名」展示，仅作展示用途，不影响分享文本与校验。",
     "communityFormAuthorPlaceholder": "匿名",
@@ -2673,8 +2660,6 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "importIdConflict": "Set ID \"{id}\" is already in use — pick a unique one before importing",
     "importConfirm": "Import",
     "importCancel": "Cancel",
-    "importExamplesTitle": "Bundled examples",
-    "importExamplesHint": "Click to import a bundled example as a new group:",
     "importNetTitle": "Or import any archive from the network",
     "netUrlPlaceholder": "Paste an archive URL, or a share text a friend sent you",
     "importNet": "Import from network",
@@ -2713,6 +2698,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "communitySubmitTitle": "Submit a hosted archive's URL into the community directory for everyone to browse and import",
     "communityFormUrlLabel": "Archive URL",
     "communityFormUrlHint": "Host this zip yourself (any public URL); the community only stores this one-line text pointer.",
+    "communityFormUrlFormat": "Supported formats: .zip / .tar / .tar.gz / .tgz / .gz / .gzip (optionally with a portrait.yaml | meta.yaml manifest; password-protected archives are not supported).",
     "communityFormAuthorLabel": "Author / nickname (optional)",
     "communityFormAuthorHint": "Defaults to the signed-in DeepSeek account name (editable); leave blank to show as “Anonymous”. Display-only, does not affect the share text or integrity checks.",
     "communityFormAuthorPlaceholder": "Anonymous",
@@ -4348,24 +4334,6 @@ function FlashSkinConfigCard({ form, weights, t: localeT, remote, locale }: Flas
     }
   };
 
-  // One-tap import of a bundled example archive served by this plugin over the
-  // same-origin examples route; bytes then flow through the shared engine.
-  const importExample = async (file: string) => {
-    if (!writable || busy) return;
-    setFileError(null);
-    setBusy(true);
-    try {
-      const response = await fetch(EXAMPLES_PREFIX + file);
-      if (!response.ok) throw new Error(`example fetch ${response.status}`);
-      const buffer = await response.arrayBuffer();
-      await runArchiveImport(file, buffer);
-    } catch {
-      setFileError(t("zipParseFailed"));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const [netUrl, setNetUrl] = useState("");
 
   // Smallest unique variant of `baseId` against the current groups: the id itself
@@ -4961,23 +4929,6 @@ function FlashSkinConfigCard({ form, weights, t: localeT, remote, locale }: Flas
       </footer>
 
       <div className="flash-import-net">
-        <div className="flash-import-net__examples">
-          <span className="flash-import-net__label">{t("importExamplesTitle")}</span>
-          <div className="flash-import-net__row">
-            {EXAMPLE_ARCHIVES.map((example) => (
-              <button
-                key={example.file}
-                type="button"
-                className="flash-import-net__example"
-                disabled={!writable || busy}
-                onClick={() => void importExample(example.file)}
-                title={`${example.file} — ${example.zh} · ${example.en}`}
-              >
-                {example.zh} <em>{example.en}</em>
-              </button>
-            ))}
-          </div>
-        </div>
         <form
           className="flash-import-net__url"
           onSubmit={(event) => {
@@ -5206,6 +5157,7 @@ function FlashSkinConfigCard({ form, weights, t: localeT, remote, locale }: Flas
                 placeholder="https://…/group.zip"
               />
               <em className="flash-community__field-hint">{t("communityFormUrlHint")}</em>
+              <em className="flash-community__field-hint">{t("communityFormUrlFormat")}</em>
             </label>
             <label className="flash-community__field">
               <span className="flash-community__field-label">{t("communityFormAuthorLabel")}</span>

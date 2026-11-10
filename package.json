@@ -1,6 +1,6 @@
 {
   "name": "dsh-flash-skin",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Flash Skin: a session-state-driven portrait skin for DeepSeek Harness whose backdrop swaps character portraits with the session state. In composite mode a score is computed in real time from token usage, context pressure, reasoning effort and token speed, mapped straight onto the group's actual frame count, with a temporary extra boost on context compaction; per-signal weights and decay tuning are configurable on the detail page.",
   "repository": {
     "type": "git",

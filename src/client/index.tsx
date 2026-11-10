@@ -5219,7 +5219,6 @@ function FlashSkinConfigCard({ form, weights, t: localeT, remote, locale }: Flas
           role="dialog"
           aria-modal="true"
           aria-label={t("communityPublishTitle")}
-          onClick={() => setCommunityShareFor(false)}
           onKeyDown={(event) => {
             if (event.key === "Escape") setCommunityShareFor(false);
           }}

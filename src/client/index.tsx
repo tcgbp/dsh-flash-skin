@@ -4952,15 +4952,6 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale 
                     >
                       + {t("addImage")}
                     </button>
-                    <button
-                      type="button"
-                      className="flash-portrait-group__add-pick"
-                      title={t("pickLocalImageHint")}
-                      disabled={!writable || busy}
-                      onClick={() => openLocalPicker("add", groupIndex)}
-                    >
-                      {t("pickLocalImage")}
-                    </button>
                   </li>
                 )}
               </ol>

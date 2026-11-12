@@ -4909,7 +4909,7 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale 
                     : null;
                 })()}
                 {editingAdd ? (
-                  <li className="flash-portrait-group__image flash-portrait-group__add">
+                  <li className="flash-portrait-group__image flash-portrait-group__add flash-portrait-group__add--editing">
                     <input
                       className="flash-portrait-group__url"
                       autoFocus
@@ -4932,6 +4932,7 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale 
                     </button>
                     <button
                       type="button"
+                      className="flash-portrait-group__add-pick"
                       title={t("pickLocalImageHint")}
                       disabled={!writable || busy}
                       onClick={() => openLocalPicker("add", groupIndex)}

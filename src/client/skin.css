@@ -1012,6 +1012,42 @@ body[data-flash-skin="on"] textarea {
   border-style: solid;
 }
 
+/* The in-place add editor spreads the URL field and its action buttons onto a
+   single full-width horizontal row, so clicking "add image" never expands the
+   slot into a tall vertical stack — everything stays in one line within the
+   add box. */
+.flash-portrait-group__add--editing {
+  grid-column: 1 / -1;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 0;
+  padding: 8px 10px;
+}
+
+.flash-portrait-group__add--editing .flash-portrait-group__url {
+  flex: 1 1 180px;
+  min-width: 0;
+  width: auto;
+}
+
+.flash-portrait-group__add--editing button {
+  align-self: center;
+  min-height: 0;
+  border-style: solid;
+}
+
+.flash-portrait-group__add--editing button.flash-portrait-group__add-pick {
+  align-self: center;
+  min-height: 0;
+  border-style: solid;
+}
+
+.flash-portrait-group__add--editing button:hover:not(:disabled) {
+  border-style: solid;
+}
+
 .flash-portrait-groups__notice--error {
   color: var(--dsw-static-severity-error-default, #d54343);
 }

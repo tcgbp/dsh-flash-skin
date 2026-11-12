@@ -5573,7 +5573,7 @@ export function apply(ctx: ClientContext) {
   // treated as built-in). Without that whitelist entry the same switch would fall
   // back to the Extensions tab. Rule G §4: fully feature-detected — no import, no
   // inject declaration, only the `quickControl` runtime service probed defensively.
-  // If dsh-flash (hence `quickControl` and the `dock-flash:ready` event) never
+  // If dsh-flash (hence `quickControl` and the `dsh-flash:ready` event) never
   // appears, this whole block stays inert and the plugin keeps working standalone.
   // The row is shown only while this skin is enabled (`presenter.isEnabled()`).
   const OPEN_DETAILS_SWITCH_ID = `${PACKAGE_ID}:open-details`;
@@ -6013,11 +6013,11 @@ export function apply(ctx: ClientContext) {
     get?: (name: string) => unknown;
   };
 
-  // Passive discovery: dsh-flash emits `dock-flash:ready` once it has provided
+  // Passive discovery: dsh-flash emits `dsh-flash:ready` once it has provided
   // `quickControl` (covers dsh-flash loading after this bundle).
   if (typeof cts.on === "function") {
     try {
-      const offReady = cts.on("dock-flash:ready", (payload: unknown) => {
+      const offReady = cts.on("dsh-flash:ready", (payload: unknown) => {
         const p = payload as { quickControl?: unknown } | null | undefined;
         if (p?.quickControl) registerQuickSwitches(p.quickControl);
       });

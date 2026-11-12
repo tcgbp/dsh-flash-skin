@@ -2663,6 +2663,14 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "communitySubmitDone": "已提交「{set}」到社区目录",
     "communitySubmitFailed": "提交失败：{message}",
     "communityUrlMissing": "请输入压缩包 URL",
+    "communityPreview": "预览",
+    "communityPreviewTitle": "预览该分享包的内容（下载后仅展示，不会导入）",
+    "communityPreviewLoading": "正在下载并解析分享包…",
+    "communityPreviewFailed": "预览失败：无法解析该分享包的内容。",
+    "communityPreviewClose": "关闭",
+    "communityPreviewCount": "共 {n} 张图片",
+    "communityPreviewEmpty": "该分享包内没有可预览的图片。",
+    "communityPreviewImport": "导入此组",
     "communityTampered": "导入已拒绝：该链接指向的压缩包内容与分享时不一致，可能已被改动。",
     "feedbackWriteFailed": "反馈记录未同步（追加被服务器拒绝）。本地操作已完成，不影响使用。",
     "feedbackWriteNotConfigured": "反馈记录未同步（反馈表未配置）。本地操作已完成，不影响使用。",
@@ -2784,6 +2792,14 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "communitySubmitFailed": "Submit failed: {message}",
     "communityUrlMissing": "Please enter an archive URL",
     "communityTampered": "Import refused: the archive behind this link differs from what was shared and may have been altered.",
+    "communityPreview": "Preview",
+    "communityPreviewTitle": "Preview this share's contents (downloaded and shown only, never imported)",
+    "communityPreviewLoading": "Downloading and parsing share…",
+    "communityPreviewFailed": "Preview failed: could not parse this share's contents.",
+    "communityPreviewClose": "Close",
+    "communityPreviewCount": "{n} images",
+    "communityPreviewEmpty": "This share contains no images to preview.",
+    "communityPreviewImport": "Import this group",
     "feedbackWriteFailed": "Feedback record not synced (the server rejected the append). Your local action already completed and is unaffected.",
     "feedbackWriteNotConfigured": "Feedback record not synced (the feedback table is not configured). Your local action already completed and is unaffected.",
     "exportGroup": "Export archive",
@@ -3592,6 +3608,17 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale 
   const [communityEntries, setCommunityEntries] = useState<CommunityEntry[]>([]);
   const [communityError, setCommunityError] = useState<string | null>(null);
   const [communityNotConfigured, setCommunityNotConfigured] = useState(false);
+  // ── C2c: community-entry preview (download-into-memory, show, never import) ──
+  // Clicking「预览」on a directory row fetches that entry's remote archive bytes
+  // through the same server-side proxy used by import, parses them with the
+  // regular extractArchive pipeline, and renders the extracted frames as a
+  // thumbnail grid in an overlay. Nothing is persisted or imported — the bytes
+  // live only in memory for the lifetime of the opened preview.
+  const [previewEntry, setPreviewEntry] = useState<CommunityEntry | null>(null);
+  const [previewState, setPreviewState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [previewImages, setPreviewImages] = useState<{ list: { name: string; src: string; remote: boolean }[]; total: number }>({ list: [], total: 0 });
+  const [previewMeta, setPreviewMeta] = useState<PortraitImportMeta | null>(null);
+
   const [submitUrl, setSubmitUrl] = useState("");
   const [submitSetId, setSubmitSetId] = useState("");
   const [submitAuthor, setSubmitAuthor] = useState("");
@@ -3816,6 +3843,64 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale 
       // Append a feedback record for this successful import (verified or not).
       void reportFeedbackSafe(entry.setId, "import").catch(() => {});
     }
+  };
+
+  // Fetch a community entry's remote archive bytes and render its frames as a
+  // read-only thumbnail preview. Unlike import, this path performs NO MD5
+  // verification and NO persistence: the bytes are fetched through the shared
+  // server-side proxy, parsed by the ordinary extractArchive pipeline, and the
+  // extracted frames are turned into in-memory `data:` URLs purely for display.
+  // A failure just leaves previewState = "error" — it never blocks the directory
+  // and never mutates any configured group.
+  const previewCommunityEntry = async (entry: CommunityEntry) => {
+    setPreviewEntry(entry);
+    setPreviewState("loading");
+    setPreviewMeta(null);
+    setPreviewImages({ list: [], total: 0 });
+    try {
+      const trimmed = entry.url.trim();
+      const response = await fetch(`${REMOTE_ARCHIVE_PATH}?url=${encodeURIComponent(trimmed)}`);
+      if (!response.ok) throw new Error(`archive fetch ${response.status}`);
+      const buffer = await response.arrayBuffer();
+      const name = decodeURIComponent(
+        new URL(trimmed).pathname.split("/").filter(Boolean).pop() ?? "preview.zip",
+      );
+      const parsed = extractArchive(name, buffer);
+      setPreviewMeta(parsed.meta);
+      // Embedded frames (always preferred) turn into in-memory data URLs. When
+      // the archive ships no frames but its manifest seeds a URL-only image list
+      // (a tiny manifest-only share), preview those URLs directly.
+      const cap = 64;
+      const shown: { name: string; src: string; remote: boolean }[] = [];
+      for (let i = 0; i < Math.min(parsed.entries.length, cap); i += 1) {
+        const entryItem = parsed.entries[i];
+        shown.push({
+          name: entryItem.name,
+          src: `data:${mediaTypeForEntry(entryItem.name, entryItem.bytes)};base64,${bytesToBase64(entryItem.bytes)}`,
+          remote: false,
+        });
+      }
+      if (parsed.entries.length === 0) {
+        const manifestImages = parsed.meta?.images ?? [];
+        for (let i = 0; i < Math.min(manifestImages.length, cap); i += 1) {
+          shown.push({ name: manifestImages[i], src: manifestImages[i], remote: true });
+        }
+      }
+      setPreviewImages({
+        list: shown,
+        total: Math.max(parsed.entries.length, parsed.meta?.images?.length ?? 0),
+      });
+      setPreviewState(shown.length === 0 ? "error" : "ready");
+    } catch {
+      setPreviewState("error");
+    }
+  };
+
+  const closeCommunityPreview = () => {
+    setPreviewEntry(null);
+    setPreviewState("idle");
+    setPreviewImages({ list: [], total: 0 });
+    setPreviewMeta(null);
   };
 
   const submitCommunityShare = async () => {
@@ -4978,6 +5063,15 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale 
                           </button>
                           <button
                             type="button"
+                            className="flash-community__preview"
+                            title={t("communityPreviewTitle")}
+                            disabled={previewEntry !== null}
+                            onClick={() => void previewCommunityEntry(entry)}
+                          >
+                            {t("communityPreview")}
+                          </button>
+                          <button
+                            type="button"
                             className="flash-community__import"
                             disabled={!writable || busy}
                             onClick={() => void importCommunityEntry(entry)}
@@ -4994,6 +5088,84 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale 
             </div>
           )}
         </section>
+      )}
+
+      {previewEntry && (
+        <div
+          className="flash-preview"
+          data-plugin={PACKAGE_ID}
+          role="dialog"
+          aria-modal="true"
+          aria-label={t("communityPreviewTitle")}
+        >
+          <div className="flash-preview__scrim" onClick={closeCommunityPreview} />
+          <div className="flash-preview__panel">
+            <header className="flash-preview__head">
+              <div className="flash-preview__titles">
+                <h4 className="flash-preview__title">{previewMeta?.id || previewEntry.setId}</h4>
+                <span className="flash-preview__sub">
+                  {previewEntry.author || t("communityAnonymous")}
+                  {previewImages.total > 0 ? ` · ${t("communityPreviewCount").replace("{n}", String(previewImages.total))}` : ""}
+                </span>
+              </div>
+              <button
+                type="button"
+                className="flash-preview__close"
+                onClick={closeCommunityPreview}
+                title={t("communityPreviewClose")}
+                aria-label={t("communityPreviewClose")}
+              >
+                ✕
+              </button>
+            </header>
+            <div className="flash-preview__body">
+              {previewState === "loading" && (
+                <p className="flash-portrait-groups__notice" role="status">{t("communityPreviewLoading")}</p>
+              )}
+              {previewState === "error" && (
+                <p className="flash-portrait-groups__notice flash-portrait-groups__notice--error" role="alert">
+                  {t("communityPreviewFailed")}
+                </p>
+              )}
+              {previewState === "ready" && previewImages.list.length === 0 && (
+                <p className="flash-portrait-groups__hint">{t("communityPreviewEmpty")}</p>
+              )}
+              {previewState === "ready" && previewImages.list.length > 0 && (
+                <ul className="flash-preview__grid">
+                  {previewImages.list.map((frame) => (
+                    <li className="flash-preview__cell" key={frame.name}>
+                      <img
+                        className="flash-preview__img"
+                        src={frame.src}
+                        alt={frame.name}
+                        loading="lazy"
+                        {...(frame.remote ? { referrerPolicy: "no-referrer" } : {})}
+                      />
+                      <span className="flash-preview__cellname">{frame.name}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <footer className="flash-preview__foot">
+              <button
+                type="button"
+                className="flash-community__import"
+                disabled={!writable || busy}
+                onClick={() => {
+                  const entry = previewEntry;
+                  closeCommunityPreview();
+                  void importCommunityEntry(entry);
+                }}
+              >
+                {t("communityPreviewImport")}
+              </button>
+              <button type="button" className="flash-preview__done" onClick={closeCommunityPreview}>
+                {t("communityPreviewClose")}
+              </button>
+            </footer>
+          </div>
+        </div>
       )}
 
       <footer className="flash-portrait-groups__foot">

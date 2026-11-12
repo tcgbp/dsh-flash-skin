@@ -2145,3 +2145,173 @@ body[data-flash-skin="on"][data-flash-layout="left"] [class*="_toBottomSlot"] {
   cursor: not-allowed;
   opacity: 0.45;
 }
+
+/* ── C2d: community-entry read-only preview overlay ───────────────────────── */
+
+/* The「预览」row action: neutral/hinting accent, mirroring the action pill set. */
+.flash-community__preview {
+  flex: none;
+  padding: 3px 10px;
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-label-tertiary) 40%, transparent);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+  background: transparent;
+  cursor: pointer;
+}
+
+.flash-community__preview:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--dsw-alias-interactive-fg-default, #4073e0) 12%, transparent);
+}
+
+.flash-community__preview:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* Modal overlay, intentionally styled like the share modal (`.flash-share`) so
+   all plugin overlays share the same scrim + centered panel language. */
+.flash-preview {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483003;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.flash-preview__scrim {
+  position: absolute;
+  inset: 0;
+  background: rgb(0 0 0 / 60%);
+}
+
+.flash-preview__panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-sizing: border-box;
+  width: min(760px, 94vw);
+  max-height: min(88vh, 940px);
+  overflow: hidden;
+  padding: 16px 18px 18px;
+  border-radius: 14px;
+  background: var(--dsw-alias-bg-module-platform, #fff);
+  color: var(--dsw-alias-label-primary);
+  box-shadow: 0 24px 80px rgb(0 0 0 / 55%);
+}
+
+.flash-preview__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.flash-preview__titles {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.flash-preview__title {
+  margin: 0;
+  font-size: 16px;
+  line-height: 22px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.flash-preview__sub {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+  overflow-wrap: anywhere;
+}
+
+.flash-preview__close {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-label-tertiary) 35%, transparent);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-secondary);
+  background: transparent;
+  cursor: pointer;
+}
+
+.flash-preview__close:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--dsw-alias-label-tertiary) 14%, transparent);
+}
+
+.flash-preview__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* Thumbnail grid: fixed-size cells with cover-cropped frames and name captions. */
+.flash-preview__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 2px;
+  list-style: none;
+}
+
+.flash-preview__cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.flash-preview__img {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: color-mix(in srgb, var(--dsw-alias-bg-base, #fff) 40%, transparent);
+  display: block;
+}
+
+.flash-preview__cellname {
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--dsw-alias-label-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flash-preview__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.flash-preview__done {
+  padding: 4px 12px;
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-label-tertiary) 40%, transparent);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+  background: transparent;
+  cursor: pointer;
+}
+
+.flash-preview__done:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--dsw-alias-interactive-fg-default, #4073e0) 12%, transparent);
+}

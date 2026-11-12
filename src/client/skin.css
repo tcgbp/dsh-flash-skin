@@ -1520,6 +1520,17 @@ body[data-flash-skin="on"][data-flash-layout="left"] [class*="_toBottomSlot"] {
   font-weight: 600;
 }
 
+/* 简要(compact)模式的开头标签「加权得分」:无每路明细,直接以该标签起头。
+ * 弱化但仍可读的次级色,与紧随其后的加权得分数字(ink)形成前缀-值层次。 */
+.flash-level-control__eq-label {
+  margin: 0 6px 0 2px;
+  color: var(--flash-secondary, #5b6470);
+  font-style: normal;
+  font-weight: 700;
+  font-size: 0.86em;
+  white-space: nowrap;
+}
+
 .flash-level-control__part {
   color: var(--flash-accent, #4176e6);
   font-weight: 800;

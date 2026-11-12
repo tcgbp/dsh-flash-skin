@@ -73,6 +73,17 @@ const DRIVER_KEY = "dsh-flash-skin.driver";
 const TEXT_BG_KEY = "dsh-flash-skin.text-bg-strength";
 const WEIGHTS_KEY = "dsh-flash-skin.weights";
 
+// Weight-formula display mode for the composite input-row gauge ("full" = the
+// per-dimension term breakdown 用量×因子, "compact" = weighted sum + frame only,
+// "hidden" = no formula chip at all — just the gauge). Persisted alongside the
+// weights in WEIGHTS_KEY so the detail config card and the input row stay in
+// step. `normalizeFormulaMode` guards against corrupt / unknown persisted values.
+type FormulaMode = "full" | "compact" | "hidden";
+const DEFAULT_FORMULA_MODE: FormulaMode = "full";
+function normalizeFormulaMode(value: unknown): FormulaMode {
+  return value === "compact" || value === "hidden" ? value : DEFAULT_FORMULA_MODE;
+}
+
 // Default and allowed range for the text-background blend strength (%).
 const DEFAULT_TEXT_BG_STRENGTH = 80;
 const TEXT_BG_MIN = 40;
@@ -568,11 +579,15 @@ interface DriverRowProps {
 interface WeightsStore {
   getSnapshot(): CompositeWeights;
   getTuning(): SpeedTuning;
+  /** Weight-formula display mode for the composite input-row gauge. */
+  getFormulaMode(): FormulaMode;
   subscribe(listener: () => void): () => void;
   /** Replace the composite weights (renormalized to sum 1 on write). */
   setWeights(weights: CompositeWeights): void;
   /** Replace the speed-decay timing parameters (clamped on write). */
   setTuning(tuning: Partial<SpeedTuning>): void;
+  /** Change how the composite formula is shown in the input-row gauge. */
+  setFormulaMode(mode: FormulaMode): void;
   reset(): void;
   dispose(): void;
 }
@@ -1416,6 +1431,7 @@ function CompositeLevelControl({
 
   const normalized = normalizeWeights(weightsSnapshot);
   const tuning = weights.getTuning();
+  const formulaMode = weights.getFormulaMode();
   const usageF = usageFactor(outputTokens ?? 0, tuning.usageFull);
   const pressureF = contextPressureFactor(pressureTokens, contextWindow, turns);
   const effortF = reasoningEffortFactor(committedLevel);
@@ -1680,6 +1696,11 @@ function CompositeLevelControl({
 
   const label = (key: string, fallback: string) => (t ? t(key) : fallback);
 
+  // 公式展示方式(详情页配置里可选):full=每一路明细全展开;compact=只留加权
+  // 和与加分、隐藏每路明细;hidden=连算式片段都隐藏,只保留落帧结果。
+  const showTerms = formulaMode === "full";
+  const showSummary = formulaMode !== "hidden";
+
   return (
     <div
       className="flash-level-control flash-level-control--composite"
@@ -1689,7 +1710,7 @@ function CompositeLevelControl({
     >
       <output className="flash-level-control__gauge" aria-hidden="true">
         <span className="flash-level-control__formula" title={`真实算式:得分 = Σ(权重×因子) + 压缩加分,再映射到组内 ${count > 0 ? `${count} 帧` : "帧"}`}>
-          {terms.map(([label, id, weight, factor], index) => (
+          {showTerms && terms.map(([label, id, weight, factor], index) => (
             <Fragment key={id}>
               <span className="flash-level-control__term" title={`${label}:权重 ${fmt(weight)} × 因子 ${fmt(factor)} = 贡献 ${fmt(weight * factor)}`}>
                 <b>{label}</b>
@@ -1698,9 +1719,15 @@ function CompositeLevelControl({
               {index < terms.length - 1 && <i className="flash-level-control__plus" title="各维度贡献相加">+</i>}
             </Fragment>
           ))}
-          <i className="flash-level-control__eq">=</i>
-          <span className="flash-level-control__sum" title={`加权得分 = ${fmt(wBase)} (0..1)`}>{fmt(wBase)}</span>
-          {compActive && (
+          {/* 等号:完整模式保持「=」连接明细与结果;简要模式(compact)没有明细行,
+              以「加权得分」标签开头,替换掉最前面的「=」。hidden 模式整体不渲染。 */}
+          {showSummary && (formulaMode === "compact"
+            ? <span className="flash-level-control__eq-label">{label("weights.weightedScore", "加权得分")}</span>
+            : <i className="flash-level-control__eq">=</i>)}
+          {showSummary && (
+            <span className="flash-level-control__sum" title={`加权得分 = ${fmt(wBase)} (0..1)`}>{fmt(wBase)}</span>
+          )}
+          {showSummary && compActive && (
             <Fragment>
               <i className="flash-level-control__plus">+</i>
               {/* 脉冲激活时整段作为高亮「加分块」凸显,并以脉冲的时间戳为 key:
@@ -2206,19 +2233,21 @@ function restoreScrimStrength(): number {
   return DEFAULT_SCRIM_STRENGTH;
 }
 
-function readWeightsState(): { weights: CompositeWeights; tuning: SpeedTuning } {
-  const fallback: { weights: CompositeWeights; tuning: SpeedTuning } = {
+function readWeightsState(): { weights: CompositeWeights; tuning: SpeedTuning; formulaMode: FormulaMode } {
+  const fallback: { weights: CompositeWeights; tuning: SpeedTuning; formulaMode: FormulaMode } = {
     weights: { ...DEFAULT_COMPOSITE_WEIGHTS },
     tuning: { ...DEFAULT_SPEED_TUNING },
+    formulaMode: DEFAULT_FORMULA_MODE,
   };
   try {
     const raw = localStorage.getItem(WEIGHTS_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as Partial<CompositeWeights> & Partial<SpeedTuning>;
+      const parsed = JSON.parse(raw) as Partial<CompositeWeights> & Partial<SpeedTuning> & { formulaMode?: unknown };
       const tuning = normalizeTuning(parsed);
       return {
         weights: normalizeWeights(parsed),
         tuning,
+        formulaMode: normalizeFormulaMode(parsed.formulaMode),
       };
     }
   } catch {
@@ -2364,6 +2393,7 @@ function createWeightsStore(): WeightsStore {
       localStorage.setItem(WEIGHTS_KEY, JSON.stringify({
         ...state.weights,
         ...state.tuning,
+        formulaMode: state.formulaMode,
       }));
     } catch {
       // storage may be unavailable
@@ -2372,6 +2402,7 @@ function createWeightsStore(): WeightsStore {
   return {
     getSnapshot: () => state.weights,
     getTuning: () => state.tuning,
+    getFormulaMode: () => state.formulaMode,
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -2398,17 +2429,26 @@ function createWeightsStore(): WeightsStore {
       persist();
       notify();
     },
+    setFormulaMode(mode) {
+      const next = normalizeFormulaMode(mode);
+      if (next === state.formulaMode) return;
+      state = { ...state, formulaMode: next };
+      persist();
+      notify();
+    },
     reset() {
       const next = {
         weights: { ...DEFAULT_COMPOSITE_WEIGHTS },
         tuning: { ...DEFAULT_SPEED_TUNING },
+        formulaMode: DEFAULT_FORMULA_MODE,
       };
       const same = next.weights.usage === state.weights.usage
         && next.weights.pressure === state.weights.pressure
         && next.weights.effort === state.weights.effort
         && next.weights.speed === state.weights.speed
         && next.tuning.graceMs === state.tuning.graceMs
-        && next.tuning.fadeMs === state.tuning.fadeMs;
+        && next.tuning.fadeMs === state.tuning.fadeMs
+        && next.formulaMode === state.formulaMode;
       if (same) return;
       state = next;
       persist();
@@ -2486,6 +2526,8 @@ interface FlashSkinConfigCardProps {
   form: FlashSkinConfigForm<PortraitGroupsConfig>;
   /** 综合加权模式的四路权重存储。 */
   weights: WeightsStore;
+  /** 持久化偏好存储：其 `driver` 决定是否显示「综合加权」相关的公式展示开关。 */
+  scope?: PreferenceStore;
   /** 由插件管理页提供、已绑定到本插件语言命名空间的读取器。 */
   t?: (key: string) => string;
   /**
@@ -3192,7 +3234,7 @@ function boundaryForDarkLevel(count: number, level: number): number {
 // entry) and auto-expands + scrolls into view exactly once, then clears it.
 let expandConfigOnNextMount = false;
 
-function FlashSkinConfigCard({ form, weights, t: localeT, remote, locale }: FlashSkinConfigCardProps) {
+function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale }: FlashSkinConfigCardProps) {
   const snapshot = useSyncExternalStore(
     (listener) => form.subscribe(listener),
     () => form.getSnapshot(),
@@ -3205,6 +3247,12 @@ function FlashSkinConfigCard({ form, weights, t: localeT, remote, locale }: Flas
     (listener) => weights.subscribe(listener),
     () => weights.getTuning(),
   );
+  // 当前驱动模式决定是否显示「综合加权」相关的公式展示开关（仅 composite 时）。
+  const driverSnapshot = useSyncExternalStore(
+    (listener) => (scope ? scope.subscribe(listener) : () => undefined),
+    () => (scope ? scope.getSnapshot() : { driver: "composite" as DriverMode }),
+  );
+  const driver = driverSnapshot.driver;
   const [busy, setBusy] = useState(false);
   // Serializes form.mutate calls without falling back on the shared `busy`
   // state. `busy` doubles as the import/export spinner, and those flows set it
@@ -5059,6 +5107,26 @@ function FlashSkinConfigCard({ form, weights, t: localeT, remote, locale }: Flas
           ))}
         </div>
 
+        {driver === "composite" && (
+          <label className="flash-weights__field flash-weights__formula-mode">
+            <span className="flash-weights__caption">{t("weights.formulaMode")}</span>
+            <select
+              className="flash-weights__input"
+              value={weights.getFormulaMode()}
+              disabled={!writable || busy}
+              onChange={(event) => {
+                const mode = event.currentTarget.value as FormulaMode;
+                weights.setFormulaMode(normalizeFormulaMode(mode));
+              }}
+            >
+              <option value="full">{t("weights.formulaFull")}</option>
+              <option value="compact">{t("weights.formulaCompact")}</option>
+              <option value="hidden">{t("weights.formulaHidden")}</option>
+            </select>
+            <span className="flash-weights__desc">{t("weights.formulaModeDesc")}</span>
+          </label>
+        )}
+
         <button
           type="button"
           className="flash-weights__reset"
@@ -5356,6 +5424,12 @@ export function apply(ctx: ClientContext) {
         "weights.graceMsDesc": "速度记满后保持全速的宽限时长",
         "weights.fadeMs": "衰减",
         "weights.fadeMsDesc": "宽限期后速度衰减到 0 所需时长",
+        "weights.formulaMode": "输入行算式展示",
+        "weights.formulaModeDesc": "控制聊天输入行上综合加权仪表的算式展示方式（写入后实时生效）。",
+        "weights.formulaFull": "完整（每项明细）",
+        "weights.formulaCompact": "简要（仅得分）",
+        "weights.formulaHidden": "隐藏算式",
+        "weights.weightedScore": "加权得分",
         "expandDetails": "展开配置",
         "collapseDetails": "收起配置",
       },
@@ -5407,6 +5481,12 @@ export function apply(ctx: ClientContext) {
         "weights.graceMsDesc": "How long full speed holds after saturation before decay",
         "weights.fadeMs": "Fade",
         "weights.fadeMsDesc": "How long speed takes to decay to 0 after the hold",
+        "weights.formulaMode": "Formula display on the input row",
+        "weights.formulaModeDesc": "Controls how the composite weighted gauge's formula is shown on the chat input row (applies live).",
+        "weights.formulaFull": "Full (per-dimension)",
+        "weights.formulaCompact": "Compact (score only)",
+        "weights.formulaHidden": "Hide formula",
+        "weights.weightedScore": "Weighted score",
         "expandDetails": "Expand settings",
         "collapseDetails": "Collapse settings",
       },
@@ -5505,6 +5585,7 @@ export function apply(ctx: ClientContext) {
   const SCRIM_STRENGTH_SWITCH_ID = `${PACKAGE_ID}:scrim-strength`;
   const DUAL_SWITCH_ID = `${PACKAGE_ID}:portrait-dual`;
   const LEFT_SET_SWITCH_ID = `${PACKAGE_ID}:portrait-left-set`;
+  const FORMULA_MODE_SWITCH_ID = `${PACKAGE_ID}:formula-mode`;
   // 这些皮肤开关共享同一个簇字符串，宿主会把它们折叠成一张以
   // 「Flash 皮肤」为标题的卡片（首行控件常开、其余收进折叠体）。
   const FLASH_SKIN_CLUSTER = "flash-skin";
@@ -5648,6 +5729,7 @@ export function apply(ctx: ClientContext) {
         quickControl?.notifyChange?.(PORTRAIT_SLIDER_SWITCH_ID);
         quickControl?.notifyChange?.(DUAL_SWITCH_ID);
         quickControl?.notifyChange?.(LEFT_SET_SWITCH_ID);
+        quickControl?.notifyChange?.(FORMULA_MODE_SWITCH_ID);
       }
       const driver = scope.getSnapshot().driver;
       if (driver !== lastDriver) {
@@ -5656,6 +5738,8 @@ export function apply(ctx: ClientContext) {
         // 强度驱动切到「综合加权」时隐藏手动的人物强度滑杆（只有 manual 才显示），
         // 切回「手动」再让它出现 —— 面板只在 registry bump 后重跑 visible()。
         quickControl?.notifyChange?.(PORTRAIT_SLIDER_SWITCH_ID);
+        // 公式展示开关只在「综合加权」驱动模式下可见（manual 时隐藏）。
+        quickControl?.notifyChange?.(FORMULA_MODE_SWITCH_ID);
       }
     });
 
@@ -5763,6 +5847,32 @@ export function apply(ctx: ClientContext) {
             .finally(() => quickControl?.notifyChange?.(DRIVER_SWITCH_ID));
         },
         visible: () => presenter.isEnabled(),
+      });
+      // 「输入行算式展示」(26.3, 直接放在强度驱动下拉 26.25 之下)：控制综合加权
+      // 仪表在聊天输入行上的算式展示方式（full 完整每项 / compact 仅得分 /
+      // hidden 隐藏算式）。与配置卡的公式展示开关同源，读写给
+      // `weights.getFormulaMode()`/`setFormulaMode()`（持久化到 WEIGHTS_KEY），
+      // 两个面板保持同步。只在「综合加权」驱动模式可见；切回「手动」时隐藏。
+      const formulaModeDispose = reg.registerSwitch?.({
+        id: FORMULA_MODE_SWITCH_ID,
+        label: () => setLabel("weights.formulaMode"),
+        cluster: FLASH_SKIN_CLUSTER,
+        icon: "signal",
+        type: "select",
+        group: "appearance",
+        order: 26.3,
+        options: () => [
+          { value: "full", label: setLabel("weights.formulaFull") },
+          { value: "compact", label: setLabel("weights.formulaCompact") },
+          { value: "hidden", label: setLabel("weights.formulaHidden") },
+        ],
+        getValue: () => weights.getFormulaMode(),
+        setValue: (value) => {
+          weights.setFormulaMode(normalizeFormulaMode(String(value)));
+          quickControl?.notifyChange?.(FORMULA_MODE_SWITCH_ID);
+        },
+        visible: () =>
+          presenter.isEnabled() && scope.getSnapshot().driver === "composite",
       });
       // Text-background blend strength (26.8): a slider that tunes how strong
       // the translucent readability chip behind chat text is (40–100%). Runs
@@ -5881,6 +5991,8 @@ export function apply(ctx: ClientContext) {
         else reg.unregisterSwitch?.(LEFT_SET_SWITCH_ID);
         if (typeof driverDispose === "function") driverDispose();
         else reg.unregisterSwitch?.(DRIVER_SWITCH_ID);
+        if (typeof formulaModeDispose === "function") formulaModeDispose();
+        else reg.unregisterSwitch?.(FORMULA_MODE_SWITCH_ID);
         if (typeof sliderDispose === "function") sliderDispose();
         else reg.unregisterSwitch?.(PORTRAIT_SLIDER_SWITCH_ID);
         if (typeof openDispose === "function") openDispose();
@@ -5952,7 +6064,7 @@ export function apply(ctx: ClientContext) {
     key: PACKAGE_ID,
     order: 10,
     locale: LOCALE_NAMESPACE,
-    inject: () => ({ form: configForm, weights, t: setLabel, remote: ctx.remote, locale: ctx.locale }),
+    inject: () => ({ form: configForm, weights, scope, t: setLabel, remote: ctx.remote, locale: ctx.locale }),
   }, FlashSkinConfigCard));
 
   ctx.slots.inject("settings.general.item", () => ctx.slots.register({

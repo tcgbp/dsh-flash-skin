@@ -244,7 +244,7 @@ const skillProjectionDefinition = {
 };
 
 // ── Bundled example archives ────────────────────────────────────────────────
-// The four/ﬁve demo archives ship inside the package (`examples/portrait-archives/`,
+// The two demo archives ship inside the package (`examples/portrait-archives/`,
 // whitelisted in package.json `files`) and are served back to any client over the
 // webServer so the picker can import them from a plain same-origin URL. The file
 // list is an allowlist, so the handler never touches anything outside these exact
@@ -253,10 +253,7 @@ const EXAMPLES_PATH = `/plugins/${PACKAGE_ID}/examples`;
 const EXAMPLES_PREFIX = `${EXAMPLES_PATH}/`;
 const EXAMPLES_DIR = fileURLToPath(new URL("../examples/portrait-archives/", import.meta.url));
 const EXAMPLE_FILES = Object.freeze([
-  "liangsheng-demo.zip",
-  "liangshen-demo.zip",
   "liangzu-demo.zip",
-  "liangshen-url-demo.zip",
   "hanli-demo.zip",
 ]);
 

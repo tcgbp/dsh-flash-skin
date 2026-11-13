@@ -2559,6 +2559,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "moveImageRight": "右移",
     "replaceImage": "替换",
     "removeImage": "移除",
+    "confirmRemoveImage": "确认移除",
     "viewOriginal": "点击查看原图",
     "closePreview": "关闭预览",
     "addImage": "添加图片",
@@ -2693,6 +2694,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "moveImageRight": "Move right",
     "replaceImage": "Replace",
     "removeImage": "Remove",
+    "confirmRemoveImage": "Confirm remove",
     "viewOriginal": "Click to view original",
     "closePreview": "Close preview",
     "addImage": "Add image",
@@ -3281,6 +3283,8 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale 
     imageIndex?: number;
     value: string;
   } | null>(null);
+  // Which image's delete action is awaiting a second click to confirm.
+  const [confirmRemove, setConfirmRemove] = useState<{ groupIndex: number; imageIndex: number } | null>(null);
   // Hidden <input type=file> backing the "本地选图" buttons; pendingPick records
   // which slot the picked image should land in (add → append, replace → swap).
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -4783,6 +4787,8 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale 
                     editing?.kind === "replace" &&
                     editing.groupIndex === groupIndex &&
                     editing.imageIndex === imageIndex;
+                  const confirmingRemove =
+                    confirmRemove?.groupIndex === groupIndex && confirmRemove?.imageIndex === imageIndex;
                   const count = group.images.length;
                   const effectiveDark = group.darkLevel ?? MAX_LEVEL - 1;
                   const boundary = boundaryForDarkLevel(count, effectiveDark);
@@ -4862,7 +4868,10 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale 
                               title={t("moveImageLeft")}
                               aria-label={t("moveImageLeft")}
                               disabled={!writable || busy || imageIndex === 0}
-                              onClick={() => moveImage(groupIndex, imageIndex, -1)}
+                              onClick={() => {
+                                setConfirmRemove(null);
+                                moveImage(groupIndex, imageIndex, -1);
+                              }}
                             >
                               ◀
                             </button>
@@ -4872,7 +4881,10 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale 
                               title={t("moveImageRight")}
                               aria-label={t("moveImageRight")}
                               disabled={!writable || busy || imageIndex === group.images.length - 1}
-                              onClick={() => moveImage(groupIndex, imageIndex, +1)}
+                              onClick={() => {
+                                setConfirmRemove(null);
+                                moveImage(groupIndex, imageIndex, +1);
+                              }}
                             >
                               ▶
                             </button>
@@ -4882,21 +4894,31 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale 
                               title={t("replaceImage")}
                               aria-label={t("replaceImage")}
                               disabled={!writable || busy}
-                              onClick={() =>
-                                setEditing({ kind: "replace", groupIndex, imageIndex, value: group.images[imageIndex] })
-                              }
+                              onClick={() => {
+                                setConfirmRemove(null);
+                                setEditing({ kind: "replace", groupIndex, imageIndex, value: group.images[imageIndex] });
+                              }}
                             >
                               ⇄
                             </button>
                             <button
                               type="button"
-                              className="flash-portrait-group__action-icon flash-portrait-group__action--bottom flash-portrait-group__danger"
-                              title={t("removeImage")}
-                              aria-label={t("removeImage")}
+                              className={`flash-portrait-group__action-icon flash-portrait-group__action--bottom flash-portrait-group__danger${
+                                confirmingRemove ? " flash-portrait-group__action--confirming" : ""
+                              }`}
+                              title={confirmingRemove ? t("confirmRemoveImage") : t("removeImage")}
+                              aria-label={confirmingRemove ? t("confirmRemoveImage") : t("removeImage")}
                               disabled={!writable || busy}
-                              onClick={() => removeImage(groupIndex, imageIndex)}
+                              onClick={() => {
+                                if (confirmingRemove) {
+                                  setConfirmRemove(null);
+                                  removeImage(groupIndex, imageIndex);
+                                } else {
+                                  setConfirmRemove({ groupIndex, imageIndex });
+                                }
+                              }}
                             >
-                              🗑
+                              {confirmingRemove ? "✓" : "🗑"}
                             </button>
                           </div>
                         </>

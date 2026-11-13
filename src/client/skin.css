@@ -1007,6 +1007,14 @@ body[data-flash-skin="on"] textarea {
   transform: translateX(-50%);
 }
 
+/* The delete icon in its "click again to confirm" state: solid red disc with
+   a white check, overriding the outline-only danger style. */
+.flash-portrait-group__image-actions button.flash-portrait-group__action--confirming {
+  border-color: var(--dsw-static-severity-error-default, #d54343) !important;
+  color: #fff !important;
+  background: var(--dsw-static-severity-error-default, #d54343) !important;
+}
+
 .flash-portrait-group__url {
   box-sizing: border-box;
   width: 100%;

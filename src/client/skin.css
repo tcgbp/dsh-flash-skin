@@ -1662,6 +1662,21 @@ body[data-flash-skin="on"][data-flash-layout="left"] [class*="_toBottomSlot"] {
   animation: flash-pulse-pop 0.45s ease-out;
 }
 
+/* 技能脉冲加分块:与压缩块共用胶囊高亮与弹入动效,但用不同的色相,让技能与
+ * 压缩两路加分同时激活时能用底色一眼区分(技能偏紫,压缩偏蓝)。 */
+.flash-level-control__pulse--skill {
+  background: rgba(185, 98, 233, 0.16);
+  background: color-mix(in srgb, #b962e9 16%, transparent);
+  outline: 1px solid rgba(185, 98, 233, 0.4);
+  outline: 1px solid color-mix(in srgb, #b962e9 40%, transparent);
+}
+
+.flash-level-control__pulse--skill .flash-level-control__term--bonus b,
+.flash-level-control__pulse--skill .flash-level-control__bonus,
+.flash-level-control__pulse--skill .flash-level-control__pop .flash-level-control__bonus {
+  color: #b962e9;
+}
+
 .flash-level-control__pop {
   display: inline-flex;
   align-items: center;

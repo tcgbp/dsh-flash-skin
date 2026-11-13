@@ -1585,6 +1585,7 @@ function CompositeLevelControl({
   const skillBonus = SKILL_SCORE_BONUS * skillF;
   const combined = wBase + compBonus + skillBonus;
   const compActive = compactionF > 0;
+  const skillActive = skillF > 0;
   // Idle-score hold: the host only surfaces projections for the *active*
   // conversation, so switching to a stopped/idle session re-feeds no real
   // usage/pressure/speed data and the raw weighted score would collapse to 0
@@ -1709,7 +1710,7 @@ function CompositeLevelControl({
       title={label("driver.composite", "综合加权")}
     >
       <output className="flash-level-control__gauge" aria-hidden="true">
-        <span className="flash-level-control__formula" title={`真实算式:得分 = Σ(权重×因子) + 压缩加分,再映射到组内 ${count > 0 ? `${count} 帧` : "帧"}`}>
+        <span className="flash-level-control__formula" title={`真实算式:得分 = Σ(权重×因子) + 技能加分 + 压缩加分,再映射到组内 ${count > 0 ? `${count} 帧` : "帧"}`}>
           {showTerms && terms.map(([label, id, weight, factor], index) => (
             <Fragment key={id}>
               <span className="flash-level-control__term" title={`${label}:权重 ${fmt(weight)} × 因子 ${fmt(factor)} = 贡献 ${fmt(weight * factor)}`}>
@@ -1727,12 +1728,30 @@ function CompositeLevelControl({
           {showSummary && (
             <span className="flash-level-control__sum" title={`加权得分 = ${fmt(wBase)} (0..1)`}>{fmt(wBase)}</span>
           )}
+          {/* 技能脉冲加分块:只有技能脉冲激活(skillF > 0)才出现,以脉冲时间戳
+           * 为 key 重播弹入动效(与压缩块一致);平时整体隐藏,保持公式精简。 */}
+          {showSummary && skillActive && (
+            <Fragment>
+              <i className="flash-level-control__plus">+</i>
+              <span
+                key={`skill-${skillPulseAtRef.current ?? 0}`}
+                className="flash-level-control__pulse flash-level-control__pulse--skill"
+                title={`技能脉冲激活:加权 ${fmt(wBase)} + 技能加分 ${fmt(skillBonus)} = 最终得分 ${fmt(displayScore)}`}
+              >
+                <span className="flash-level-control__pop">
+                  <span className="flash-level-control__term flash-level-control__term--bonus" title={`技能加分 = 加分系数 ${fmt(SKILL_SCORE_BONUS)} × 技能脉冲 ${fmt(skillF)} = ${fmt(skillBonus)}`}>
+                    <b>{t ? t("weights.skillShort") : "技能"}</b>
+                    <span className="flash-level-control__bonus">{fmt(skillBonus)}</span>
+                  </span>
+                </span>
+              </span>
+            </Fragment>
+          )}
+          {/* 压缩脉冲加分块:脉冲激活时整段作为高亮「加分块」凸显,以脉冲时间戳为
+           * key 重播弹入动效,让转瞬即逝的加分更容易被注意到;平时整体隐藏。 */}
           {showSummary && compActive && (
             <Fragment>
               <i className="flash-level-control__plus">+</i>
-              {/* 脉冲激活时整段作为高亮「加分块」凸显,并以脉冲的时间戳为 key:
-               * 每次新的压缩事件都会重新挂载,重播弹入动效,让转瞬即逝的加分
-               * 更容易被注意到;平时(无脉冲)这一项整体隐藏,保持公式精简。 */}
               <span
                 key={`pulse-${compactionPulseAtRef.current ?? 0}`}
                 className="flash-level-control__pulse"
@@ -1741,13 +1760,18 @@ function CompositeLevelControl({
                 <span className="flash-level-control__pop">
                   <span className="flash-level-control__term flash-level-control__term--bonus" title={`压缩加分 = 加分系数 ${fmt(COMPACTION_SCORE_BONUS)} × 压缩脉冲 ${fmt(compactionF)} = ${fmt(compBonus)}`}>
                     <b>{t ? t("weights.compactionShort") : "压缩"}</b>
-                    <i className="flash-level-control__eq">=</i>
                     <span className="flash-level-control__bonus">{fmt(compBonus)}</span>
                   </span>
                 </span>
-                <i className="flash-level-control__eq">=</i>
-                <span className="flash-level-control__sum" title={`最终得分 = 加权 ${fmt(wBase)} + 压缩 ${fmt(compBonus)} = ${fmt(displayScore)} (0..1)`}>{fmt(displayScore)}</span>
               </span>
+            </Fragment>
+          )}
+          {/* 最终得分:任一脉冲激活时以「= 最终得分」收尾,展示含全部加分的
+             * combined 值;无任何脉冲时保持原来的「加权得分」收尾。 */}
+          {showSummary && (skillActive || compActive) && (
+            <Fragment>
+              <i className="flash-level-control__eq">=</i>
+              <span className="flash-level-control__sum" title={`最终得分 = 加权 ${fmt(wBase)}${skillActive ? ` + 技能 ${fmt(skillBonus)}` : ""}${compActive ? ` + 压缩 ${fmt(compBonus)}` : ""} = ${fmt(displayScore)} (0..1)`}>{fmt(displayScore)}</span>
             </Fragment>
           )}
           {/* 落帧映射的最终结果:只显示当前帧位,不再展示「加权得分 × 帧数」的中间算式。 */}
@@ -5597,11 +5621,13 @@ export function apply(ctx: ClientContext) {
         "weights.effort": "推理",
         "weights.speed": "速度",
         "weights.compaction": "压缩",
+        "weights.skill": "技能",
         "weights.usageShort": "用量",
         "weights.pressureShort": "压力",
         "weights.effortShort": "推理",
         "weights.speedShort": "速度",
         "weights.compactionShort": "压缩",
+        "weights.skillShort": "技能",
         "weights.usageDesc": "本次已生成 token,饱和 30 万",
         "weights.pressureDesc": "上下文占用/窗口,无窗口按轮次",
         "weights.effortDesc": "当前推理档位,未设置按 0",
@@ -5654,11 +5680,13 @@ export function apply(ctx: ClientContext) {
         "weights.effort": "Reasoning",
         "weights.speed": "Speed",
         "weights.compaction": "Compaction",
+        "weights.skill": "Skill",
         "weights.usageShort": "Usage",
         "weights.pressureShort": "Pressure",
         "weights.effortShort": "Reasoning",
         "weights.speedShort": "Speed",
         "weights.compactionShort": "Compaction",
+        "weights.skillShort": "Skill",
         "weights.usageDesc": "Tokens generated this turn, saturates at 300k",
         "weights.pressureDesc": "Context used / window; falls back to turns",
         "weights.effortDesc": "Current reasoning level, unknown counts as 0",

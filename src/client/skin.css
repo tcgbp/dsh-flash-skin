@@ -949,6 +949,8 @@ body[data-flash-skin="on"] textarea {
   text-align: center;
   color: #fff;
   background: rgb(0 0 0 / 55%);
+  /* Non-interactive corner badge — don't block the thumbnail's zoom click. */
+  pointer-events: none;
 }
 
 .flash-portrait-group__image-actions {
@@ -957,6 +959,10 @@ body[data-flash-skin="on"] textarea {
   display: none;
   grid-template-columns: 1fr auto 1fr;
   grid-template-rows: 1fr auto 1fr;
+  /* Let clicks pass through the overlay to the thumbnail below, so clicking
+     the picture still opens the zoom preview. Only the round icon buttons
+     capture events. */
+  pointer-events: none;
 }
 
 .flash-portrait-group__image:hover .flash-portrait-group__image-actions {
@@ -978,6 +984,7 @@ body[data-flash-skin="on"] textarea {
   line-height: 1;
   color: var(--dsw-alias-label-primary);
   background: var(--dsw-alias-bg-module-platform);
+  pointer-events: auto;
 }
 
 .flash-portrait-group__action--left {

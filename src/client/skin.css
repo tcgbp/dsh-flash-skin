@@ -253,6 +253,17 @@ body[data-flash-skin="on"]
   background: var(--flash-surface, #f5f6f8) !important;
 }
 
+/* Plugin manager / market / detail renders as the root main slot global panel
+ * inside the center column, whose --dsw-alias-bg-base is transparent so the
+ * chat surface shows the portrait. Give the plugin panel an opaque,
+ * skin-toned surface so portraits do not bleed through the plugin market,
+ * list, and detail views. Anchored only on the stable [data-plugin-panel] page
+ * root (present nowhere in the chat surface), so the chat backdrop is
+ * untouched. Does not depend on dsh-flash. */
+body[data-flash-skin="on"] #root [data-plugin-panel] {
+  background: var(--flash-surface, #f5f6f8) !important;
+}
+
 /* In desktop modes the host owns a top frame (caption/controls); offset the
    fixed backdrop below it so the portrait isn't hidden under the frame. */
 body[data-flash-skin="on"]:is(

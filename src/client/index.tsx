@@ -4858,36 +4858,45 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale 
                           <div className="flash-portrait-group__image-actions">
                             <button
                               type="button"
+                              className="flash-portrait-group__action-icon flash-portrait-group__action--left"
                               title={t("moveImageLeft")}
+                              aria-label={t("moveImageLeft")}
                               disabled={!writable || busy || imageIndex === 0}
                               onClick={() => moveImage(groupIndex, imageIndex, -1)}
                             >
-                              {t("moveImageLeft")}
+                              ◀
                             </button>
                             <button
                               type="button"
+                              className="flash-portrait-group__action-icon flash-portrait-group__action--right"
                               title={t("moveImageRight")}
+                              aria-label={t("moveImageRight")}
                               disabled={!writable || busy || imageIndex === group.images.length - 1}
                               onClick={() => moveImage(groupIndex, imageIndex, +1)}
                             >
-                              {t("moveImageRight")}
+                              ▶
                             </button>
                             <button
                               type="button"
+                              className="flash-portrait-group__action-icon flash-portrait-group__action--top"
+                              title={t("replaceImage")}
+                              aria-label={t("replaceImage")}
                               disabled={!writable || busy}
                               onClick={() =>
                                 setEditing({ kind: "replace", groupIndex, imageIndex, value: group.images[imageIndex] })
                               }
                             >
-                              {t("replaceImage")}
+                              ⇄
                             </button>
                             <button
                               type="button"
-                              className="flash-portrait-group__danger"
+                              className="flash-portrait-group__action-icon flash-portrait-group__action--bottom flash-portrait-group__danger"
+                              title={t("removeImage")}
+                              aria-label={t("removeImage")}
                               disabled={!writable || busy}
                               onClick={() => removeImage(groupIndex, imageIndex)}
                             >
-                              {t("removeImage")}
+                              ✕
                             </button>
                           </div>
                         </>

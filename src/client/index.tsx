@@ -4896,7 +4896,7 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale 
                               disabled={!writable || busy}
                               onClick={() => removeImage(groupIndex, imageIndex)}
                             >
-                              ✕
+                              🗑
                             </button>
                           </div>
                         </>

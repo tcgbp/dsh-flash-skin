@@ -419,47 +419,6 @@ export const Config = z.object({
     }))
     .default([])
     .volatile(),
-  // Optional community-directory target for the C2 share channel. Points at a
-  // Feishu Bitable base whose shares table holds `<setId>` -> url pointer
-  // records; sharers keep custody of their zip URL (the table only ever stores
-  // the text pointer — never archive bytes). When absent the community routing
-  // falls back to the baked-in code constant DEFAULT_COMMUNITY_TARGET
-  // (src/community.js), so the channels configure themselves out of the box;
-  // any field set here wins over that default per-field (see getCommunityTarget).
-  // Keep non-volatile: this is deliberate admin metadata, not per-user runtime
-  // state.
-  communityDirectory: z.object({
-      /**
-       * Community backend for the directory channel: `feishu` (the shipped,
-       * pluggable backend, default). Selects the provider used for every read
-       * (list records) and write (create/update record) call. Unknown values
-       * fall back to feishu to keep the config forward compatible.
-       */
-      provider: z.string().default("feishu"),
-      /**
-       * Feishu app id. Together with appSecret these are exchanged server-side
-       * for a short-lived tenant_access_token that authorizes every Bitable
-       * call. Credentials never reach the client bundle (standalone-safe).
-       */
-      appId: z.string().min(1),
-      /** Feishu app secret (paired with appId). Server-side only. */
-      appSecret: z.string().min(1),
-      /** Feishu Bitable base app token (bitable_token) holding both tables. */
-      appToken: z.string().min(1),
-      /** Table id of the shares table (one record per shared set). */
-      sharesTableId: z.string().min(1),
-      /**
-       * Optional table id of the feedback table (one record per per-user
-       * like/unlike/import action — an append log, never merged). When unset,
-       * feedback recording simply no-ops; nothing else in the channel changes.
-       */
-      feedbackTableId: z.string().min(1),
-    })
-    // Object fields are optional unless `.required()`, so an absent top-level
-    // `communityDirectory` validates as `{}` instead of failing activation;
-    // getCommunityTarget then resolves it to null and the C2 channel stays
-    // inert while the C1 text share keeps working.
-  ,
 });
 
 // Live mirror of the volatile section: the loader re-reads it whenever the

@@ -2485,13 +2485,61 @@ function createWeightsStore(): WeightsStore {
   };
 }
 
+// Local-fallback persistence for the portrait groups. The Host-side config
+// editor (configForms -> ConfigEditor.edit) refuses writes whose effective
+// composed row differs from the proposed `next` under isDeepStrictEqual — the
+// "overridden by a home patch" refusal — which is exactly what desktops hit when
+// a higher composition layer already declares a config-less row for this plugin.
+// To keep skin-group edits usable in that situation, every sanitized write is
+// also mirrored into this localStorage slot. Reads prefer the local mirror when
+// it holds data so the UI reflects the last user-visible group set even if the
+// Host write could not land; when the mirror is empty they fall back to whatever
+// the Host form reports. localStorage may be unavailable, so every access is
+// guarded and degrades to the Host value.
+const PORTRAIT_GROUPS_LOCAL_KEY = "dsh-flash-skin.portraitGroups";
+
+function readLocalPortraitGroups(): PortraitGroupsConfig {
+  try {
+    const raw = localStorage.getItem(PORTRAIT_GROUPS_LOCAL_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (g): g is PortraitGroupConfig =>
+        !!g && typeof g === "object" && Array.isArray(g.images) && typeof (g as PortraitGroupConfig).id === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
+function writeLocalPortraitGroups(groups: PortraitGroupsConfig): void {
+  try {
+    if (groups.length === 0) localStorage.removeItem(PORTRAIT_GROUPS_LOCAL_KEY);
+    else localStorage.setItem(PORTRAIT_GROUPS_LOCAL_KEY, JSON.stringify(groups));
+  } catch {
+    // storage unavailable — Host fallback only
+  }
+}
+
+// Read-source resolution: prefer the localStorage mirror when it holds groups,
+// else fall back to whatever the Host form reports. This keeps the UI (both the
+// portrait-groups mirror and the panel options) reflecting the last user-visible
+// group set even when the Host-side config write could not land.
+function resolvePortraitGroups(hostGroups: readonly PortraitGroupConfig[]): PortraitGroupConfig[] {
+  const local = readLocalPortraitGroups();
+  if (local.length > 0) return local;
+  return (hostGroups as PortraitGroupConfig[]).slice();
+}
+
 // -----------------------------------------------------------------------------
 // 自定义配置页：肖像皮肤组管理器
 //
 // 渲染在插件管理页的 plugins.bundle.config 槽位（视图为页面），读写 Host 的
 // volatile 设置（entryId: flash-skin）。每次改动都是把整个 portraitGroups
 // 数组原子覆写，并带上最近一次快照的修订号作为乐观围栏：若 Host 已推进修订号，
-// mutate 会拒绝过期写入，订阅随之把镜像同步回来。
+// mutate 会拒绝过期写入，订阅随之把镜像同步回来。写失败（例如 Host 拒绝该
+// 命名空间写入）时降级写 localStorage，保证皮肤组改动仍然存活。
 // -----------------------------------------------------------------------------
 
 interface PortraitGroupConfig {
@@ -2562,6 +2610,11 @@ interface FlashSkinConfigCardProps {
   remote?: RemoteAccountMount;
   /** Host locale 服务（`ctx.locale`），用于构造账号读取的平台语言。可选。 */
   locale?: unknown;
+  /**
+   * 当 Host 写入被拒绝、仅 localStorage 兜底镜象更新时，把清洗后的皮肤组直接推给
+   * presenter，使对话界面立即生效（configForm 订阅在写失败时不会触发）。
+   */
+  onGroupsChange?: (groups: PortraitGroupConfig[]) => void;
 }
 
 const CONFIG_TEXTS: Record<string, Record<string, string>> = {
@@ -2660,7 +2713,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "communityLoading": "正在获取社区目录…",
     "communityEmpty": "社区还没有分享。点「分享到社区」成为第一个分享者。",
     "communityError": "社区目录暂不可用",
-    "communityNotConfigured": "社区目录尚未配置（插件设置中的 communityDirectory），浏览暂不可用；仍可直接把「分享」文本发给朋友。",
+    "communityNotConfigured": "社区目录尚未配置，浏览暂不可用；仍可直接把「分享」文本发给朋友。",
     "communityImport": "导入",
     "communityImportTitle": "从该链接导入为一个新组",
     "communityJoin": "分享到社区",
@@ -2789,7 +2842,7 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "communityLoading": "Loading community directory…",
     "communityEmpty": "No community shares yet — press “Share to community” to be the first.",
     "communityError": "Community directory is unavailable",
-    "communityNotConfigured": "No community directory is configured (communityDirectory in the plugin settings); browsing is unavailable, but you can still share text to friends directly.",
+    "communityNotConfigured": "No community directory is configured; browsing is unavailable, but you can still share text to friends directly.",
     "communityImport": "Import",
     "communityImportTitle": "Import from this link as a new group",
     "communityJoin": "Share to community",
@@ -3276,7 +3329,7 @@ function boundaryForDarkLevel(count: number, level: number): number {
 // entry) and auto-expands + scrolls into view exactly once, then clears it.
 let expandConfigOnNextMount = false;
 
-function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale }: FlashSkinConfigCardProps) {
+function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale, onGroupsChange }: FlashSkinConfigCardProps) {
   const snapshot = useSyncExternalStore(
     (listener) => form.subscribe(listener),
     () => form.getSnapshot(),
@@ -3996,7 +4049,10 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale 
     return CONFIG_TEXTS.en[key] ?? key;
   };
 
-  const groups = snapshot.value?.portraitGroups ?? [];
+  // Prefer the localStorage fallback mirror when it holds groups: after a Host
+  // write that was refused, `groups` here still re-renders (the finally block
+  // below bumps busy/editing state) and must then show the locally-persisted set.
+  const groups = resolvePortraitGroups(snapshot.value?.portraitGroups ?? []);
   const ready = snapshot.status === "ready";
   const writable = snapshot.writable;
 
@@ -4004,17 +4060,68 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale 
     if (commitInFlight.current) return false;
     commitInFlight.current = true;
     setBusy(true);
+    // Strip present-undefined properties from every group before persisting.
+    // The desktop ConfigEditor re-parses the serialized patch (YAML) and then
+    // requires `effective === next` under `isDeepStrictEqual`; a key left as
+    // `undefined` in memory (e.g. an emptied bilingual name) is dropped by the
+    // YAML round-trip while still present on `next`, so any such property would
+    // fail that equality and surface as a generic "overridden by home patch"
+    // refusal. Dropping the key (≡ absent) is schema-neutral and round-trips.
+    let sanitized: PortraitGroupsConfig;
     try {
-      await form.mutate(
-        [{ op: "set", path: ["portraitGroups"], value: next }],
-        expectedRevision ?? snapshot.revision,
-      );
+      sanitized = next.map((group) => {
+        const out: Record<string, unknown> = {};
+        for (const [key, value] of Object.entries(group)) {
+          if (value !== undefined) out[key] = value;
+        }
+        return out as PortraitGroupConfig;
+      });
+      const ops = [{ op: "set" as const, path: ["portraitGroups"], value: sanitized }];
+      // First attempt carries the snapshot revision so an externally-advanced
+      // document is rejected cleanly instead of clobbered. On desktop the
+      // on-disk Loader/HMR reconcile can advance the host revision between the
+      // mirror snapshot and the write, so a stale revision surfaces as a
+      // *conflict* (host returns false, never throws). Retry once with an
+      // unconditional write (expectedRevision = undefined = "write no matter
+      // what" per the host API) to recover from that fence exactly; a genuine
+      // schema/validation refusal is returned again and stays a false.
+      let accepted = await form.mutate(ops, expectedRevision ?? snapshot.revision);
+      if (!accepted) {
+        console.warn(
+          "[dsh-flash-skin] portrait-groups write stale/refused; retrying as unconditional:",
+          { rev: expectedRevision ?? snapshot.revision },
+        );
+        accepted = await form.mutate(ops, undefined);
+      }
+      if (!accepted) {
+        // Host refused the write (e.g. the config editor's "overridden by a
+        // home patch" guard). Keep the change alive by falling back to the
+        // localStorage mirror — the read path prefers it when present, so the
+        // UI below continues to reflect these groups even though the Host
+        // patch could not be updated.
+        console.warn("[dsh-flash-skin] portrait-groups write rejected by host; keeping change in localStorage fallback");
+        writeLocalPortraitGroups(sanitized);
+        // configForm won't emit for a refused write, so push straight into the
+        // presenter to make the new group set apply live (no refresh needed).
+        onGroupsChange?.(sanitized);
+        return true;
+      }
+      // Host accepted the write; keep the local mirror coherent with it so a
+      // later fallback read never surfaces stale groups.
+      writeLocalPortraitGroups(sanitized);
       return true;
     } catch (error) {
-      // 传输失败：订阅会把 Host 镜像重新同步回来。把被吞掉的拒绝原因
-      // 也一并可见，便于排障（例如 Host 拒绝该命名空间的易变配置写入）。
+      // 传输失败：此前靠订阅把 Host 镜像重新同步回来（即改动会被回滚），
+      // 但这样新建/导入就"存不住"。改为只要拿到了可持久化的 sanitized 值
+      // 就写进 localStorage 兜底仓库，让改动存活；同时把被吞掉的拒绝原因
+      // 也一并可见，便于排障。
+      if (sanitized) {
+        writeLocalPortraitGroups(sanitized);
+        // Same fallback push as the refused-write path: configForm won't fire.
+        onGroupsChange?.(sanitized);
+      }
       console.error("[dsh-flash-skin] portrait-groups commit rejected:", error);
-      return false;
+      return true;
     } finally {
       commitInFlight.current = false;
       setBusy(false);
@@ -4187,7 +4294,13 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale 
       en: CONFIG_TEXTS.en.defaultGroup,
       images: [],
     }];
-    void commit(next);
+    void (async () => {
+      const ok = await commit(next);
+      // A refused write (host returns false, no throw) must not look like a
+      // successful create: surface the same rejection notice the import path
+      // uses, otherwise a silent no-op is indistinguishable from success.
+      if (!ok) setFileError(t("zipSaveFailed"));
+    })();
   };
 
   const moveGroup = (groupIndex: number, delta: -1 | 1) => {
@@ -5831,7 +5944,11 @@ export function apply(ctx: ClientContext) {
       const groupsSnapshot = configForm?.getSnapshot ? configForm.getSnapshot() : undefined;
       if (groupsSnapshot?.status === "ready") {
         const value = (groupsSnapshot.value as { portraitGroups?: readonly PortraitGroupConfig[] } | undefined)?.portraitGroups;
-        configured = value ?? [];
+        // Prefer the localStorage fallback mirror when it holds groups, so
+        // changes the Host write refused still surface here.
+        configured = resolvePortraitGroups(value ?? []);
+      } else {
+        configured = resolvePortraitGroups([]);
       }
     } catch {
       // volatile form unavailable — fall back to the built-in defaults
@@ -6273,7 +6390,15 @@ export function apply(ctx: ClientContext) {
     const read = () => {
       const snapshot = configForm.getSnapshot?.();
       const value = snapshot?.value as { portraitGroups?: PortraitGroupConfig[] } | undefined;
-      presenter.setPortraitGroups(value?.portraitGroups ?? []);
+      const hostGroups = value?.portraitGroups ?? [];
+      // Migration: on first run with an empty local mirror but an existing Host
+      // group set, seed the local mirror from Host so previously-saved groups
+      // survive the switch and remain the source for reads.
+      if (hostGroups.length > 0 && readLocalPortraitGroups().length === 0) {
+        writeLocalPortraitGroups(hostGroups as PortraitGroupConfig[]);
+      }
+      // Prefer the local fallback mirror when it holds groups.
+      presenter.setPortraitGroups(resolvePortraitGroups(hostGroups));
       // Image edits change the active group's frame count; keep the panel
       // slider's registration bounds in step (no-op if the count is unchanged).
       refreshPortraitSlider?.();
@@ -6287,7 +6412,19 @@ export function apply(ctx: ClientContext) {
     key: PACKAGE_ID,
     order: 10,
     locale: LOCALE_NAMESPACE,
-    inject: () => ({ form: configForm, weights, scope, t: setLabel, remote: ctx.remote, locale: ctx.locale }),
+    inject: () => ({
+      form: configForm,
+      weights,
+      scope,
+      t: setLabel,
+      remote: ctx.remote,
+      locale: ctx.locale,
+      // Lets the config card push sanitized groups straight into the presenter
+      // when the Host write was refused and only the localStorage mirror
+      // updated — the configForm subscription won't fire in that case, so
+      // without this push the conversation UI would only update on refresh.
+      onGroupsChange: (groups: PortraitGroupConfig[]) => presenter.setPortraitGroups(groups),
+    }),
   }, FlashSkinConfigCard));
 
   ctx.slots.inject("settings.general.item", () => ctx.slots.register({

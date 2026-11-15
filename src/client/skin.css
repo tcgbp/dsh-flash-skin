@@ -318,6 +318,21 @@ body[data-flash-skin="on"] #root [class*="_centerCol"] [class*="_column"] :is(p,
   max-width: 100% !important;
 }
 
+/* 会话标题栏动作文字纳入浓度控制（用户提供真实 DOM，选择“随浓度+圆角底”）：
+ * 会话头部的动作条在中心列 headerResponsive 的 .an3WzG_headerActions 里，可见文字
+ * 是“标准模式”等 agent 预设标签(.dscfja_label)与“1 个后台任务”计数(.Ag-ohG_count)。
+ * 把它们连到同一个 --flash-text-bg-strength 浓度控制（80% 兜底，由滑块驱动），并沿用
+ * 圆角药丸文字底。仅命中 _headerActions 内的 _label/_count 文字，不动图标、触发器按钮
+ * 及面包屑/标题本体；中间列外、右栏、插件面板不受影响。不依赖 dsh-flash。 */
+body[data-flash-skin="on"] #root [class*="_centerCol"] [class*="_headerActions"] [class*="_label"],
+body[data-flash-skin="on"] #root [class*="_centerCol"] [class*="_headerActions"] [class*="_count"] {
+  background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent) !important;
+  border-radius: 0.375em !important;
+  padding: 0.06em 0.3em !important;
+  box-decoration-break: clone !important;
+  -webkit-box-decoration-break: clone !important;
+}
+
 /* 选项 B —— “深/浅底色都能看清”的描边文字（相框式双重描边）。
  * 用户选择用这一种单一样式来提升可见性：给文字本体套一层中性描边+投影，
  * 不依赖底下有没有浓度底、也不管人像/皮肤此刻是深是浅。因为本皮肤正文文字

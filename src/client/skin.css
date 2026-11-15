@@ -273,14 +273,15 @@ body[data-flash-skin="on"] #root [class*="_sidebarCol"] :is(p, h1, h2, h3, h4, h
   -webkit-box-decoration-break: clone !important;
 }
 
-/* 左栏导航文字纳入浓度控制（用户发现左栏文字不随浓度滑块变化而在 app.asar
- * 源码核实真实结构）：宿主把左栏导航文字包在 .AnXs9G_navLabel（一个 flex:1 的
- * 非 span 元素，多半是 div；模块前缀 AnXs9G 是混淆后的 CSS 模块，稳定后缀为
- * _navLabel）。上方 :is(...) 清单只含文本标签、不含 div，故 navLabel 原本吃不到
- * 浓度底。这里锚定稳定后缀 [class*="_navLabel"] 并限定在 _sidebarCol 内，把它连到
- * 同一个 --flash-text-bg-strength 浓度控制，并沿用圆角药丸文字底。仅命中左栏导航
- * 标签，不触碰图标容器(_navIcon)、中间列、右栏、插件面板。不依赖 dsh-flash。 */
-body[data-flash-skin="on"] #root [class*="_sidebarCol"] [class*="_navLabel"] {
+/* 左栏文字纳入浓度控制（用户发现左栏文字不随浓度滑块变化，并提供真实 DOM）：
+ * 左栏这段是“会话列表”，文字在 .wnFoaW_title（会话名）与 .wnFoaW_time（时间戳，
+ * 稳定后缀 _title / _time）里，外层为 .wnFoaW_sessionRow。注意：先前在 asar 里找到的
+ * .AnXs9G_navLabel 是另一处“插件导航”组件，本会话侧栏并不存在，故那条规则落空。
+ * 这里锚定稳定后缀并限定在 .sidebarCol 内，把这些文字连到同一个 --flash-text-bg-strength
+ * 浓度控制，并沿用圆角药丸文字底。仅命中左栏会话行文字，不触碰图标(_slot/_icon)、
+ * 行上动作按钮(_rowActions)、中间列、右栏、插件面板。不依赖 dsh-flash。 */
+body[data-flash-skin="on"] #root [class*="_sidebarCol"] [class*="_sessionRow"] [class*="_title"],
+body[data-flash-skin="on"] #root [class*="_sidebarCol"] [class*="_sessionRow"] [class*="_time"] {
   background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent) !important;
   border-radius: 0.375em !important;
   padding: 0.06em 0.3em !important;

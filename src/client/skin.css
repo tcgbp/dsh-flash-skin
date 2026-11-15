@@ -266,12 +266,15 @@ body[data-flash-skin="on"] #root [class*="_sidebarCol"] :is(p, h1, h2, h3, h4, h
  * 不够，这里用“一层浅色光晕 + 一层深色投影”双保险：
  *   - 浅色光晕：在深相（深底浅字）时把浅字从暗背景里托出来；
  *   - 深色投影：在浅相（浅底深字）时给深字描出硬边、压住浅底。
- * 深浅底色、深浅文字都能读。仅命中左栏/右栏/标题栏三处文本承载元素；
+ * 深浅底色、深浅文字都能读。text-shadow 是继承属性，故把描边设在左栏列体
+ * (_sidebarCol)、右栏面板(_panelBody / data-dockkit-surface)、标题栏 header
+ * 这三个容器上，即可继承作用于容器内**所有**文本节点——导航标签多为 span 等
+ * 非文中列举标签、逐标签枚举会漏，设容器层最稳，无需关心内层元素是 span/按钮/div。
  * 纯 text-shadow，不做任何背景涂面或提层，收起态零残留。不依赖 dsh-flash。 */
-body[data-flash-skin="on"] #root [class*="_sidebarCol"] :is(p, h1, h2, h3, h4, h5, h6, li, td, th, label, summary, a, strong, em),
-body[data-flash-skin="on"] #root [class*="_rightbarCol"] [class*="_panelBody"] :is(p, h1, h2, h3, h4, h5, h6, li, td, th, label, summary, a, span, strong, em),
-body[data-flash-skin="on"] #root [class*="_rightbarCol"] [data-dockkit-surface="true"] :is(p, h1, h2, h3, h4, h5, h6, li, td, th, label, summary, a, span, strong, em),
-body[data-flash-skin="on"] #root [class*="_centerCol"] header[data-window-drag] :is(p, h1, h2, h3, h4, h5, h6, li, td, th, label, summary, a, span, strong, em) {
+body[data-flash-skin="on"] #root [class*="_sidebarCol"],
+body[data-flash-skin="on"] #root [class*="_rightbarCol"] [class*="_panelBody"],
+body[data-flash-skin="on"] #root [class*="_rightbarCol"] [data-dockkit-surface="true"],
+body[data-flash-skin="on"] #root [class*="_centerCol"] header[data-window-drag] {
   text-shadow:
     0 0 1px rgba(255, 255, 255, 0.55),
     0 0 2px rgba(255, 255, 255, 0.35),

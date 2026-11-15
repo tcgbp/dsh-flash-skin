@@ -6238,7 +6238,14 @@ export function apply(ctx: ClientContext) {
           presenter.setTextBg(Number(value));
           quickControl?.notifyChange?.(TEXT_BG_SWITCH_ID);
         },
-        formatLabel: (value) => `${Math.round(Number(value) || DEFAULT_TEXT_BG_STRENGTH)}%`,
+        formatLabel: (value) => {
+          const n = Number(value);
+          // Fall back to the default only for a genuinely non-numeric value;
+          // 0 is a valid min for the text-background strength (TEXT_BG_MIN),
+          // so `Number(n) || DEFAULT` would wrongly pin the label at the
+          // default (80%) when the thumb is at the far left.
+          return `${Math.round(Number.isFinite(n) ? n : DEFAULT_TEXT_BG_STRENGTH)}%`;
+        },
         visible: () => presenter.isEnabled(),
       });
       // Readability scrim strength (26.81, just under the text-bg slider at
@@ -6265,7 +6272,12 @@ export function apply(ctx: ClientContext) {
           presenter.setScrimStrength(Number(value));
           quickControl?.notifyChange?.(SCRIM_STRENGTH_SWITCH_ID);
         },
-        formatLabel: (value) => `${Math.round(Number(value) || DEFAULT_SCRIM_STRENGTH)}%`,
+        formatLabel: (value) => {
+          const n = Number(value);
+          // Scrim is 0-valid (fully transparent = off), so do not fall back to
+          // the default when the value is 0.
+          return `${Math.round(Number.isFinite(n) ? n : DEFAULT_SCRIM_STRENGTH)}%`;
+        },
         visible: () => presenter.isEnabled(),
       });
       // Displayed portrait size (26.6, directly under the level slider at 26.5):
@@ -6290,7 +6302,13 @@ export function apply(ctx: ClientContext) {
           presenter.setPortraitSize(Number(value));
           quickControl?.notifyChange?.(PORTRAIT_SIZE_SWITCH_ID);
         },
-        formatLabel: (value) => `${Math.round(Number(value) || DEFAULT_PORTRAIT_SIZE)}%`,
+        formatLabel: (value) => {
+          // Kept consistent with the other strength sliders even though 0 is
+          // outside the portrait range (min is PORTRAIT_SIZE_MIN); only fall
+          // back to the default for a genuinely non-numeric value.
+          const n = Number(value);
+          return `${Math.round(Number.isFinite(n) ? n : DEFAULT_PORTRAIT_SIZE)}%`;
+        },
         visible: () => presenter.isEnabled(),
       });
       // the select at 26 and the open-details action at 27): it switches the

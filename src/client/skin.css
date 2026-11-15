@@ -274,12 +274,18 @@ body[data-flash-skin="on"] #root [class*="_sidebarCol"] :is(p, h1, h2, h3, h4, h
  *
  * 注意最难的组合是“浅相深字落在深色人像上”（浅色主题、深色背景）：深字要靠
  * 足够厚的浅色光晕从暗底上托出（白光即是“白对白浅底→不可见”，不会破坏浅底可读）；
- * 保留一条轻的深色投影与硬边，兼顾“深相浅字落浅色人像”那一头。 */
+ * 同时给文字四周叠一圈紧凑的深色硬边，覆盖镜像的另一半——“深相浅字落在浅色人像上”
+ * （深边在浅底上给浅字描出轮廓；在深底/深/浅浓度底上，深边与被它们同色相撞而不可见，
+ * 不会干扰正常可读性）。于是深浅底色、深浅文字四象限全靠这一条变色不依赖主题的描边兜住。 */
 body[data-flash-skin="on"] #root [class*="_sidebarCol"],
 body[data-flash-skin="on"] #root [class*="_rightbarCol"] [class*="_panelBody"],
 body[data-flash-skin="on"] #root [class*="_rightbarCol"] [data-dockkit-surface="true"],
 body[data-flash-skin="on"] #root [class*="_centerCol"] header[data-window-drag] {
   text-shadow:
+    -1px 0 0 rgba(8, 12, 18, 0.5),
+    1px 0 0 rgba(8, 12, 18, 0.5),
+    0 -1px 0 rgba(8, 12, 18, 0.5),
+    0 1px 0 rgba(8, 12, 18, 0.5),
     0 0 2px rgba(255, 255, 255, 0.95),
     0 0 6px rgba(255, 255, 255, 0.85),
     0 0 10px rgba(255, 255, 255, 0.7),

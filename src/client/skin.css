@@ -2558,3 +2558,58 @@ body[data-flash-skin="on"][data-flash-layout="left"] [class*="_toBottomSlot"] {
 .flash-preview__done:hover:not(:disabled) {
   background: color-mix(in srgb, var(--dsw-alias-interactive-fg-default, #4073e0) 12%, transparent);
 }
+
+/* 轮次导航（round/turn nav）可见性优化（用户要求）：左侧时间线槽里纵向的
+ * “第几轮”刻度轨，结构 nav[aria-label="轮次导航"] > .scroller(.fadeTop) >
+ * .marks > button.mark(Unloaded=未加载, Active=当前轮)。皮肤当前冻结在深色盘
+ * (--flash-surface≈#1a1d24，--flash-accent 金 #c19a49，--flash-secondary 灰蓝)，
+ * 透明底带 + 文字药丸让轨道前的空白已全透出人像，但这些浅刻度点在深色/人像上
+ * 偏淡。这里只强化“看得见”的层面，不动宿主用内联 translate3d 摆放的位置：
+ * 1) marks 列包一条半透明深色胶囊底带（--flash-surface+浓度，强度略低于正文，
+ *    托住刻度又保留轨道两侧空白透出人像）；
+ * 2) 三态分明：未加载=淡色细空心点，已加载=清晰实心灰点，当前=强调色实心点+
+ *    同色浅光晕环，hover 整体提亮。
+ * 仅命中该 aria 命名的轮次导航，不触碰其它条目。不依赖 dsh-flash。 */
+body[data-flash-skin="on"] #root nav[aria-label="轮次导航"] [class*="_marks"] {
+  width: fit-content !important;
+  max-width: 100% !important;
+  margin: 0 auto !important;
+  padding: 4px 5px !important;
+  border-radius: 999px !important;
+  background: color-mix(in srgb, var(--flash-surface, #1a1d24) calc(var(--flash-text-bg-strength, 80%) * 0.62), transparent) !important;
+}
+
+/* 所有刻度点统一圆角（胶囊点形）。 */
+body[data-flash-skin="on"] #root nav[aria-label="轮次导航"] button[class*="_mark"] {
+  border-radius: 999px !important;
+}
+
+/* 未加载轮次：淡色细空心点，低调不抢眼。 */
+body[data-flash-skin="on"] #root nav[aria-label="轮次导航"] button[class*="_markUnloaded"] {
+  background: transparent !important;
+  border: 1px solid color-mix(in srgb, var(--flash-secondary, #98a2b3) 55%, transparent) !important;
+  opacity: 0.85 !important;
+}
+
+/* 已加载轮次（非未加载、非当前）：清晰实心灰点。 */
+body[data-flash-skin="on"] #root nav[aria-label="轮次导航"] button[class*="_mark"]:not([class*="_markUnloaded"]):not([class*="_markActive"]) {
+  background: color-mix(in srgb, var(--flash-secondary, #98a2b3) 72%, transparent) !important;
+  border: 1px solid transparent !important;
+  opacity: 1 !important;
+}
+
+/* 当前轮：强调色实心点 + 同色浅光晕环，一眼定位。 */
+body[data-flash-skin="on"] #root nav[aria-label="轮次导航"] button[class*="_markActive"] {
+  background: var(--flash-accent, #c19a49) !important;
+  border: 1px solid transparent !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--flash-accent, #c19a49) 45%, transparent) !important;
+  opacity: 1 !important;
+}
+
+/* hover 提亮，便于点击前定位目标刻度。 */
+body[data-flash-skin="on"] #root nav[aria-label="轮次导航"] button[class*="_mark"]:hover {
+  background: var(--flash-accent, #c19a49) !important;
+  border-color: transparent !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--flash-accent, #c19a49) 40%, transparent) !important;
+  opacity: 1 !important;
+}

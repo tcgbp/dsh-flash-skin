@@ -229,17 +229,12 @@ html[data-windows-titlebar] body[data-flash-skin="on"] #root [class*="_frame"]:h
   background: transparent !important;
 }
 
-/* 右侧边栏（_rightbarCol）保持宿主默认皮肤的原生行为：不强制列级不透明、
- * 不做列级提层（避免收起态遮挡会话区），只给列内面板表面套用与中间列
- * 标题栏/时间线同款的“文字背景浓度”配方，让右侧栏（含展开/全屏后面板）
- * 的文字始终立在皮肤面上可读，同时人像仍可隐约透出、观感与皮肤统一。
- * 结构锚点(_rightbarCol 内 _panelBody / data-dockkit-surface)稳定，不依赖
- * dsh-flash。注：无法精确区分“展开/全屏”与“正常收起”，故列内全部表面一视同仁。 */
-body[data-flash-skin="on"] #root [class*="_rightbarCol"] [class*="_panelBody"],
-body[data-flash-skin="on"] #root [class*="_rightbarCol"] [data-dockkit-surface="true"] {
-  background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent) !important;
-}
-
+/* 右侧边栏（_rightbarCol）按用户要求保持宿主默认皮肤的原生行为与样式：
+ * 不对它做任何专门修改（不强制不透明、不设浓度底、不提层），以完全还原模式
+ * 皮肤设定。此前曾对列内面板表面(_panelBody / data-dockkit-surface)套“文字背景
+ * 浓度”配方，但因无法区分“展开/全屏”与“收起”状态、收起时内部表面仍在原位置
+ * 以半透明绘制，导致收起后残留一块半透明面板；故整体移除，右侧栏完全交给宿主。
+ * 人像/透明背景只作用于中间内容列（_column）与整体 frame 透明规则之上。 */
 
 /* Plugin manager / market / detail renders as the root main slot global panel
  * inside the center column, whose --dsw-alias-bg-base is transparent so the

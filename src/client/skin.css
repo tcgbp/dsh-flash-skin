@@ -238,19 +238,33 @@ body[data-flash-skin="on"] #root [class*="_rightbarCol"] {
   background: var(--flash-surface, #f5f6f8) !important;
 }
 
-/* 右侧栏面板“全屏展开”时不透明：点展开（宿主在右侧栏面板上置
+/* 右侧栏面板“全屏/最大化”时不透明且置顶（强健锚点）：
+ * 需求：点右侧栏右上角“展开/全屏”最大化后，不得再让底层的中间列会话标题
+ * header 与输入卡/composer 透出。此前规则只锚定猜测属性
  * data-sidebar-right-panel="fullscreen" + data-sidebar-right-open="true"，
- * 面板 width:100vw 覆盖整个 frame）后，其 dockkit surface / panelBody 会继承
- * 顶部 body 的 --dsw-alias-bg-base:transparent，导致面板透出人像（“全屏后变透明”）。
- * 这里把展开面板的表面强制为不透明皮肤面（随 flashStage 的白/暗），
- * 人像仍只从中间内容列透出。锚点只依赖宿主稳定属性与后缀类名约定，不依赖 dsh-flash。 */
+ * 但未命中真实 DOM，导致最大化后面板透出底层内容。
+ * 打包前端不可读、当前又无浏览器控制，无法取到真实全屏属性；改为结构强健锚点：
+ *  —— 右侧栏列(_rightbarCol，已知稳定)内的面板表面(_panelBody /
+ *     data-dockkit-surface="true")一律强制为不透明皮肤面(随 flashStage 白/暗），
+ *     让任何占满整屏的右侧栏内容都以实底盖住中间列的会话头与输入卡；
+ *     正常三栏布局下列间不重叠，这些选择器只命中右侧栏内部表面，不误伤普通卡片。
+ *  —— 顺带把右侧栏列层级提到中心列之上(position:relative 使 z-index 生效)，
+ *     处理“中心内容叠在展开面板之上”的堆叠情形；正常布局下列互不重叠，无副作用。
+ *  —— 保留原猜测属性分支，避免个别构建确实设置该属性时漏网（无害）。
+ * 锚点只依赖宿主稳定属性与后缀类名约定，不依赖 dsh-flash。 */
 body[data-flash-skin="on"]
   [data-sidebar-right-panel="fullscreen"][data-sidebar-right-open="true"],
 body[data-flash-skin="on"]
   [data-sidebar-right-panel="fullscreen"][data-sidebar-right-open="true"] [class*="_panelBody"],
 body[data-flash-skin="on"]
-  [data-sidebar-right-panel="fullscreen"][data-sidebar-right-open="true"] [data-dockkit-surface="true"] {
+  [data-sidebar-right-panel="fullscreen"][data-sidebar-right-open="true"] [data-dockkit-surface="true"],
+body[data-flash-skin="on"] #root [class*="_rightbarCol"] [class*="_panelBody"],
+body[data-flash-skin="on"] #root [class*="_rightbarCol"] [data-dockkit-surface="true"] {
   background: var(--flash-surface, #f5f6f8) !important;
+}
+body[data-flash-skin="on"] #root [class*="_rightbarCol"] {
+  position: relative !important;
+  z-index: 2 !important;
 }
 
 /* Plugin manager / market / detail renders as the root main slot global panel
@@ -262,6 +276,35 @@ body[data-flash-skin="on"]
  * untouched. Does not depend on dsh-flash. */
 body[data-flash-skin="on"] #root [data-plugin-panel] {
   background: var(--flash-surface, #f5f6f8) !important;
+}
+
+/* 会话标题栏可读性（深色人像盲区修复）：中间内容列
+ * ([class*="_centerCol"]) 的常驻导航 header（conversation.header，
+ * ConversationRoot.module.css 的 .header，是个 <header data-window-drag>）
+ * 自身没有任何不透明表面，而宿主的 --dsw-alias-bg-base 又已被本皮肤设为
+ * transparent，于是深色的背景人像会直接透到标题文字与图标之后，造成标题不可读。
+ * 这里给该 header 一块与正文可读性面板同款的“浓度”配方背景
+ * (--flash-surface + --flash-text-bg-strength)，让标题始终立在皮肤面上，
+ * 人像仍只从它下方的聊天内容区透出。选择器仅命中“中间内容列内、且为
+ * <header data-window-drag>”的常驻标题栏：不触碰左侧栏（自带
+ * --dsw-specific-sidebar-fill）、右侧栏（_rightbarCol，另设不透明）、
+ * 插件市场（[data-plugin-panel]，另设不透明）。不依赖 dsh-flash。 */
+body[data-flash-skin="on"] #root [class*="_centerCol"] header[data-window-drag] {
+  background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent) !important;
+}
+
+/* 聊天时间线可读性（深色人像盲区修复）：消息列（dsh-client-ui-chat 的
+ * .column，居左布局里就是整条消息时间线，宽度 = --dsh-chat-content-width）
+ * 自身是透明的，宿主又把 --dsw-alias-bg-base 设为 transparent，于是深色人像会
+ * 直接透到分隔符、时间戳、折叠摘要、运行状态等所有“直接落在列上”的文字之后，
+ * 造成时间线不可读。这里给整条消息列一块与正文可读性面板同款的“浓度”配方半
+ * 透明底 (--flash-surface + --flash-text-bg-strength)，让时间线上所有内容都立在
+ * 皮肤面上，人像仍从左侧/滚动区的空隙（timeline 槽与侧边距）以及消息之间的间
+ * 隙透出。选择器控制在中间内容列([class*="_centerCol"])内的 [class*="_column"]：
+ * 不触碰左侧栏、右侧栏(_rightbarCol)、插件面板([data-plugin-panel]，另设不透明)、
+ * 输入卡(_body/_card 结构，不共用 _column)。不依赖 dsh-flash。 */
+body[data-flash-skin="on"] #root [class*="_centerCol"] [class*="_column"] {
+  background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent) !important;
 }
 
 /* In desktop modes the host owns a top frame (caption/controls); offset the

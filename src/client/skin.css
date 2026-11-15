@@ -229,12 +229,20 @@ html[data-windows-titlebar] body[data-flash-skin="on"] #root [class*="_frame"]:h
   background: transparent !important;
 }
 
-/* 右侧边栏（_rightbarCol）按用户要求保持宿主默认皮肤的原生行为与样式：
- * 不对它做任何专门修改（不强制不透明、不设浓度底、不提层），以完全还原模式
- * 皮肤设定。此前曾对列内面板表面(_panelBody / data-dockkit-surface)套“文字背景
- * 浓度”配方，但因无法区分“展开/全屏”与“收起”状态、收起时内部表面仍在原位置
- * 以半透明绘制，导致收起后残留一块半透明面板；故整体移除，右侧栏完全交给宿主。
- * 人像/透明背景只作用于中间内容列（_column）与整体 frame 透明规则之上。 */
+/* 右侧边栏（_rightbarCol）不涂整块表面：不做列级不透明、不设全表面浓度底、
+ * 不提层，完全保留宿主默认皮肤的原生面板。人像/透明背景只作用于中间内容列
+ * （_column）与整体 frame 透明规则之上。 */
+
+/* 右侧栏“只给文字”加文字背景浓度（复用中间列标题栏/时间线同款配方
+ * --flash-surface + --flash-text-bg-strength）：仅命中右栏面板内直接承载文字的
+ * 文本元素（标题/段落/列表项/单元格/标签/链接/行内文字），让每条文字自带一块
+ * 随 flashStage 白/暗与浓度滑块变化的皮肤小底，读起来清楚、又不整面涂半透明，
+ * 因此收起态不会残留“原位置的半透明面板”。不依赖 dsh-flash。 */
+body[data-flash-skin="on"] #root [class*="_rightbarCol"] [class*="_panelBody"] :is(p, h1, h2, h3, h4, h5, h6, li, td, th, label, summary, a, span, strong, em),
+body[data-flash-skin="on"] #root [class*="_rightbarCol"] [data-dockkit-surface="true"] :is(p, h1, h2, h3, h4, h5, h6, li, td, th, label, summary, a, span, strong, em) {
+  background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 75%), transparent) !important;
+}
+
 
 /* Plugin manager / market / detail renders as the root main slot global panel
  * inside the center column, whose --dsw-alias-bg-base is transparent so the

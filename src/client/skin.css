@@ -243,19 +243,19 @@ body[data-flash-skin="on"] #root [class*="_rightbarCol"] [data-dockkit-surface="
   background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 75%), transparent) !important;
 }
 
-/* 左侧边栏透明化 + 文字可读底（用户要求）：左侧导航栏本体自带的
- * --dsw-specific-sidebar-fill 是实心不透明白，这里把它以及左栏列体
- * ([class*="_leftbarCol"]，按已确认的右栏 _rightbarCol 对称推定)都覆写为透明，
- * 让人像/皮肤从左侧栏透出；同时给左栏内直接承载文字的文本元素套中间列同款
- * “文字背景浓度”配方 (--flash-surface + --flash-text-bg-strength)，让导航文字
- * 始终立在可读的皮肤小底上，深色人像也不会透糊。仅命中左栏列体与其中文本，
- * 不触碰中间列(_centerCol)、右侧栏(_rightbarCol)、插件面板([data-plugin-panel])。
- * 注：_leftbarCol 为推理锚点，若宿主左栏类名不同请以 DevTools 命中为准。不依赖 dsh-flash。 */
-body[data-flash-skin="on"] #root [class*="_leftbarCol"] {
+/* 左侧边栏透明化 + 文字可读底（用户要求）：左侧导航栏本体是 host AppFrame 的
+ * _sidebarCol（grid-area:1/1，即最左列，已在 app.asar 源码核实；并无 _leftbarCol 这类名），
+ * 其背景用的是独立的实心 token --dsw-specific-sidebar-fill —— 全局透明规则只覆写了
+ * --dsw-alias-bg-base，故左栏仍是不透明白。这里把该 token 连同 _sidebarCol 自身背景一并
+ * 覆写为 transparent，让人像/皮肤从左侧栏透出；同时给左栏内直接承载文字的文本元素套中间
+ * 列同款“文字背景浓度”配方 (--flash-surface + --flash-text-bg-strength)，让导航文字始终立在
+ * 可读的皮肤小底上，深色人像也不会透糊。仅命中左栏列体与其中文本，不触碰中间列(_centerCol)、
+ * 右侧栏(_rightbarCol)、插件面板([data-plugin-panel])。不依赖 dsh-flash。 */
+body[data-flash-skin="on"] #root [class*="_sidebarCol"] {
   --dsw-specific-sidebar-fill: transparent !important;
   background: transparent !important;
 }
-body[data-flash-skin="on"] #root [class*="_leftbarCol"] :is(p, h1, h2, h3, h4, h5, h6, li, td, th, label, summary, a, strong, em) {
+body[data-flash-skin="on"] #root [class*="_sidebarCol"] :is(p, h1, h2, h3, h4, h5, h6, li, td, th, label, summary, a, strong, em) {
   background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent) !important;
 }
 

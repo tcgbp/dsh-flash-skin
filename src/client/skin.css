@@ -377,18 +377,17 @@ body[data-flash-skin="on"] #root [class*="_centerCol"] header[data-window-drag] 
   background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent) !important;
 }
 
-/* 聊天时间线可读性（深色人像盲区修复）：消息列（dsh-client-ui-chat 的
- * .column，居左布局里就是整条消息时间线，宽度 = --dsh-chat-content-width）
- * 自身是透明的，宿主又把 --dsw-alias-bg-base 设为 transparent，于是深色人像会
- * 直接透到分隔符、时间戳、折叠摘要、运行状态等所有“直接落在列上”的文字之后，
- * 造成时间线不可读。这里给整条消息列一块与正文可读性面板同款的“浓度”配方半
- * 透明底 (--flash-surface + --flash-text-bg-strength)，让时间线上所有内容都立在
- * 皮肤面上，人像仍从左侧/滚动区的空隙（timeline 槽与侧边距）以及消息之间的间
- * 隙透出。选择器控制在中间内容列([class*="_centerCol"])内的 [class*="_column"]：
- * 不触碰左侧栏、右侧栏(_rightbarCol，保持宿主默认皮肤面)、插件面板([data-plugin-panel]，另设不透明)、
- * 输入卡(_body/_card 结构，不共用 _column)。不依赖 dsh-flash。 */
+/* 会话文字区域最下层那层面板完全透明（用户要求）：中间内容列
+ * ([class*="_centerCol"]) 里的消息列 [class*="_column"]（居左布局即整条消息
+ * 时间线，宽度 = --dsh-chat-content-width）原是上一条“浓度”配方整面半透明底，
+ * 现在改为完全透明，让皮肤/人像从其后的空白处（timeline 槽、侧边距、消息之间
+ * 的间隙）直接透出来——与“只在文字下加背景、没字的地方不要”的方向一致。
+ * 上层逐文字小块（p/h1-h6/li/code/td/th 等，见上方正文可读性规则）仍在列上，
+ * 各自带 --flash-text-bg-strength 浓度底，文字依旧可读，不受本规则影响。
+ * 仅命中中间内容列内的列体，不触碰左栏、右栏(_rightbarCol)、插件面板
+ * ([data-plugin-panel])、输入卡(_body/_card)。不依赖 dsh-flash。 */
 body[data-flash-skin="on"] #root [class*="_centerCol"] [class*="_column"] {
-  background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent) !important;
+  background: transparent !important;
 }
 
 /* In desktop modes the host owns a top frame (caption/controls); offset the

@@ -273,15 +273,15 @@ body[data-flash-skin="on"] #root [class*="_sidebarCol"] :is(p, h1, h2, h3, h4, h
   -webkit-box-decoration-break: clone !important;
 }
 
-/* 左栏文字纳入浓度控制（用户发现左栏文字不随浓度滑块变化，并提供真实 DOM）：
- * 左栏这段是“会话列表”，文字在 .wnFoaW_title（会话名）与 .wnFoaW_time（时间戳，
- * 稳定后缀 _title / _time）里，外层为 .wnFoaW_sessionRow。注意：先前在 asar 里找到的
- * .AnXs9G_navLabel 是另一处“插件导航”组件，本会话侧栏并不存在，故那条规则落空。
- * 这里锚定稳定后缀并限定在 .sidebarCol 内，把这些文字连到同一个 --flash-text-bg-strength
- * 浓度控制，并沿用圆角药丸文字底。仅命中左栏会话行文字，不触碰图标(_slot/_icon)、
- * 行上动作按钮(_rowActions)、中间列、右栏、插件面板。不依赖 dsh-flash。 */
-body[data-flash-skin="on"] #root [class*="_sidebarCol"] [class*="_sessionRow"] [class*="_title"],
-body[data-flash-skin="on"] #root [class*="_sidebarCol"] [class*="_sessionRow"] [class*="_time"] {
+/* 左栏文字纳入浓度控制（用户提供真实 DOM，多段异构结构：会话行 wnFoaW_sessionRow
+ * → wnFoaW_title/wnFoaW_time，工作区行 wnFoaW_projectRow → wnFoaW_projectText>wnFoaW_title，
+ * 区块标题 GAkraW_sectionHeader → GAkraW_sectionLabel，前缀 wnFoaW/GAkraW 各异）。
+ * 与其逐后缀枚举，这里用一条通用结构规则：左栏列体(_sidebarCol)内“直接承载文字”的
+ * span —— 不含 svg 图标，也不是包着其它 span 的父容器 —— 统一连到同一个
+ * --flash-text-bg-strength 浓度控制（80% 兜底，由滑块驱动），并沿用圆角药丸文字底。
+ * 图标槽(_slot/_folder/_chevron，含 svg)、行上动作按钮、输入框均被排除；中间列、右栏、
+ * 插件面板不受影响。:has() 为现代 Chromium/Electron 支持，宿主可视环境安全。不依赖 dsh-flash。 */
+body[data-flash-skin="on"] #root [class*="_sidebarCol"] span:not(:has(svg)):not(:has(span)) {
   background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent) !important;
   border-radius: 0.375em !important;
   padding: 0.06em 0.3em !important;

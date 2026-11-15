@@ -85,8 +85,9 @@ function normalizeFormulaMode(value: unknown): FormulaMode {
 }
 
 // Default and allowed range for the text-background blend strength (%).
+// MIN is 0 so the chip opacity can be fully removed; MAX 100 is fully opaque.
 const DEFAULT_TEXT_BG_STRENGTH = 80;
-const TEXT_BG_MIN = 40;
+const TEXT_BG_MIN = 0;
 const TEXT_BG_MAX = 100;
 
 // Displayed size (%) of the backdrop portrait, alongside the blend-strength

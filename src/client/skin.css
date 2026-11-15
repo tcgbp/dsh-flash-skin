@@ -362,19 +362,31 @@ body[data-flash-skin="on"] #root [data-plugin-panel] {
   background: var(--flash-surface, #f5f6f8) !important;
 }
 
-/* 会话标题栏可读性（深色人像盲区修复）：中间内容列
+/* 会话标题栏表面完全透明（用户要求）：中间内容列
  * ([class*="_centerCol"]) 的常驻导航 header（conversation.header，
  * ConversationRoot.module.css 的 .header，是个 <header data-window-drag>）
- * 自身没有任何不透明表面，而宿主的 --dsw-alias-bg-base 又已被本皮肤设为
- * transparent，于是深色的背景人像会直接透到标题文字与图标之后，造成标题不可读。
- * 这里给该 header 一块与正文可读性面板同款的“浓度”配方背景
- * (--flash-surface + --flash-text-bg-strength)，让标题始终立在皮肤面上，
- * 人像仍只从它下方的聊天内容区透出。选择器仅命中“中间内容列内、且为
- * <header data-window-drag>”的常驻标题栏：不触碰左侧栏（自带
- * --dsw-specific-sidebar-fill）、右侧栏（_rightbarCol，保持宿主默认皮肤面）、
- * 插件市场（[data-plugin-panel]，另设不透明）。不依赖 dsh-flash。 */
+ * 原来的“浓度”配方整面半透明底被移除，改成完全透明，让皮肤/人像从标题栏的
+ * 空白处（两侧留白、标题文字之外的区域）透出来——与“只在文字下加背景、没字的
+ * 地方不要”的方向一致。标题栏内的文字可读性改由下一条逐文字药丸规则承担，
+ * 所以标题不会因透明而看不清。选择器仅命中“中间内容列内、且为
+ * <header data-window-drag>”的常驻标题栏：不触碰左侧栏、右栏(_rightbarCol)、
+ * 插件面板([data-plugin-panel])、输入卡(_body/_card)。不依赖 dsh-flash。 */
 body[data-flash-skin="on"] #root [class*="_centerCol"] header[data-window-drag] {
+  background: transparent !important;
+}
+
+/* 标题栏文字“贴字”药丸（配合上一条透明表面）：标题栏透明后，深色人像会直接
+ * 透到标题文字之后造成不可读（就是原来那面整块底的用途）。这里只给标题栏内的
+ * 纯文字叶子 span（面包屑路径 crumb、tab 标签这类）加同款浓度药丸：结构化
+ * span:not(:has(span)) 避开容器（crumbSeg/titleCluster），:not(:has(:is(button,svg,img)))
+ * 避开图标按钮与带图标的标签，仅剩直排文字的 span 会被披上背景，文字依旧清晰，
+ * 图标与按钮保持原样。不依赖 dsh-flash。 */
+body[data-flash-skin="on"] #root [class*="_centerCol"] header[data-window-drag] span:not(:has(span)):not(:has(:is(button, svg, img))) {
   background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent) !important;
+  border-radius: 0.375em !important;
+  padding: 0.06em 0.3em !important;
+  box-decoration-break: clone !important;
+  -webkit-box-decoration-break: clone !important;
 }
 
 /* 会话文字区域最下层那层面板完全透明（用户要求）：中间内容列

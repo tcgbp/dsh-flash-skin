@@ -333,6 +333,20 @@ body[data-flash-skin="on"] #root [class*="_centerCol"] [class*="_headerActions"]
   -webkit-box-decoration-break: clone !important;
 }
 
+/* 当前选中的会话行高亮（用户要求）：
+ * 皮肤把左栏列体(_sidebarCol)背景调成透明以透出人像/皮肤。宿主原生
+ * .sessionRow.selected 用的是 --dsw-alias-interactive-bg-hover（默认浅灰药丸），在
+ * 透明列体上叠深色人像时几乎不可见。这里给选中的会话行套一层随 flashStage 自适应
+ * 的 flash-accent 半透明底，并在行左缘用 inset box-shadow 画一条实心 accent 标记
+ * 条，让“当前会话”在浅/深外壳、浅/深人像上都一眼可辨。仅命中左栏会话行
+ * ([class*="_sessionRow"][class*="_selected"])，不碰项目行/其它行、中间列、右栏及
+ * 插件面板；背景与 box-shadow 均不参与布局，不改行动/高度，收起态零残留。
+ * 不依赖 dsh-flash。 */
+body[data-flash-skin="on"] #root [class*="_sidebarCol"] [class*="_sessionRow"][class*="_selected"] {
+  background: color-mix(in srgb, var(--flash-accent, #4176e6) 16%, var(--flash-surface, #f5f6f8)) !important;
+  box-shadow: inset 3px 0 0 var(--flash-accent, #4176e6) !important;
+}
+
 /* 选项 B —— “深/浅底色都能看清”的描边文字（相框式双重描边）。
  * 用户选择用这一种单一样式来提升可见性：给文字本体套一层中性描边+投影，
  * 不依赖底下有没有浓度底、也不管人像/皮肤此刻是深是浅。因为本皮肤正文文字

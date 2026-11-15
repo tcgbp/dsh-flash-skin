@@ -1825,7 +1825,12 @@ function PortraitSetRow({ scope, presenter, form, locale, t }: PortraitSetRowPro
     groupsSnapshot?.status === "ready"
       ? ((groupsSnapshot.value as { portraitGroups?: readonly PortraitGroupConfig[] } | undefined)?.portraitGroups ?? [])
       : [];
-  const sets = (configured.length > 0 ? configured : [DEFAULT_PORTRAIT_SET]).map((set) => ({
+  // Same source-resolution as the quick-panel options: prefer the localStorage
+  // mirror when it holds groups, so sets the Host write refused (kept only in
+  // the local fallback) still surface here in general settings. Without this
+  // the row would fall back to `default` and the portrait list would read empty.
+  const source = resolvePortraitGroups(configured);
+  const sets = (source.length > 0 ? source : [DEFAULT_PORTRAIT_SET]).map((set) => ({
     id: set.id,
     label: setDisplayName(set, localeSnapshot.active),
     darkLevel: (set as PortraitGroupConfig).darkLevel,
@@ -1983,7 +1988,11 @@ function LeftSetRow({ scope, presenter, form, locale, t }: LeftSetRowProps) {
     groupsSnapshot?.status === "ready"
       ? ((groupsSnapshot.value as { portraitGroups?: readonly PortraitGroupConfig[] } | undefined)?.portraitGroups ?? [])
       : [];
-  const sets = (configured.length > 0 ? configured : [DEFAULT_PORTRAIT_SET]).map((set) => ({
+  // Same source-resolution as the primary row / quick-panel options: honor the
+  // localStorage mirror so sets kept only locally (refused Host writes) still
+  // show up in the left-set list.
+  const source = resolvePortraitGroups(configured);
+  const sets = (source.length > 0 ? source : [DEFAULT_PORTRAIT_SET]).map((set) => ({
     id: set.id,
     label: setDisplayName(set, localeSnapshot.active),
   }));

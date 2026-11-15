@@ -229,43 +229,9 @@ html[data-windows-titlebar] body[data-flash-skin="on"] #root [class*="_frame"]:h
   background: transparent !important;
 }
 
-/* Keep the right-hand column an opaque, skin-toned surface so the portrait
-   only shows through the center column. Applies in both the web shell and the
-   desktop host (the preceding :has() rule makes the whole frame transparent,
-   which would otherwise bleed the backdrop behind the rightbar too). The left
-   sidebar keeps its own native surface. */
-body[data-flash-skin="on"] #root [class*="_rightbarCol"] {
-  background: var(--flash-surface, #f5f6f8) !important;
-}
-
-/* 右侧栏面板“全屏/最大化”时不透明且置顶（强健锚点）：
- * 需求：点右侧栏右上角“展开/全屏”最大化后，不得再让底层的中间列会话标题
- * header 与输入卡/composer 透出。此前规则只锚定猜测属性
- * data-sidebar-right-panel="fullscreen" + data-sidebar-right-open="true"，
- * 但未命中真实 DOM，导致最大化后面板透出底层内容。
- * 打包前端不可读、当前又无浏览器控制，无法取到真实全屏属性；改为结构强健锚点：
- *  —— 右侧栏列(_rightbarCol，已知稳定)内的面板表面(_panelBody /
- *     data-dockkit-surface="true")一律强制为不透明皮肤面(随 flashStage 白/暗），
- *     让任何占满整屏的右侧栏内容都以实底盖住中间列的会话头与输入卡；
- *     正常三栏布局下列间不重叠，这些选择器只命中右侧栏内部表面，不误伤普通卡片。
- *  —— 顺带把右侧栏列层级提到中心列之上(position:relative 使 z-index 生效)，
- *     处理“中心内容叠在展开面板之上”的堆叠情形；正常布局下列互不重叠，无副作用。
- *  —— 保留原猜测属性分支，避免个别构建确实设置该属性时漏网（无害）。
- * 锚点只依赖宿主稳定属性与后缀类名约定，不依赖 dsh-flash。 */
-body[data-flash-skin="on"]
-  [data-sidebar-right-panel="fullscreen"][data-sidebar-right-open="true"],
-body[data-flash-skin="on"]
-  [data-sidebar-right-panel="fullscreen"][data-sidebar-right-open="true"] [class*="_panelBody"],
-body[data-flash-skin="on"]
-  [data-sidebar-right-panel="fullscreen"][data-sidebar-right-open="true"] [data-dockkit-surface="true"],
-body[data-flash-skin="on"] #root [class*="_rightbarCol"] [class*="_panelBody"],
-body[data-flash-skin="on"] #root [class*="_rightbarCol"] [data-dockkit-surface="true"] {
-  background: var(--flash-surface, #f5f6f8) !important;
-}
-body[data-flash-skin="on"] #root [class*="_rightbarCol"] {
-  position: relative !important;
-  z-index: 2 !important;
-}
+/* 右侧边栏（_rightbarCol）按用户要求保持宿主默认皮肤的原生行为与样式：
+ * 不对它做任何专门修改（不强制不透明、不提层），以完全还原模式皮肤设定。
+ * 人像/透明背景只作用于中间内容列（_column）与整体 frame 透明规则之上。 */
 
 /* Plugin manager / market / detail renders as the root main slot global panel
  * inside the center column, whose --dsw-alias-bg-base is transparent so the
@@ -287,7 +253,7 @@ body[data-flash-skin="on"] #root [data-plugin-panel] {
  * (--flash-surface + --flash-text-bg-strength)，让标题始终立在皮肤面上，
  * 人像仍只从它下方的聊天内容区透出。选择器仅命中“中间内容列内、且为
  * <header data-window-drag>”的常驻标题栏：不触碰左侧栏（自带
- * --dsw-specific-sidebar-fill）、右侧栏（_rightbarCol，另设不透明）、
+ * --dsw-specific-sidebar-fill）、右侧栏（_rightbarCol，保持宿主默认皮肤面）、
  * 插件市场（[data-plugin-panel]，另设不透明）。不依赖 dsh-flash。 */
 body[data-flash-skin="on"] #root [class*="_centerCol"] header[data-window-drag] {
   background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent) !important;
@@ -301,7 +267,7 @@ body[data-flash-skin="on"] #root [class*="_centerCol"] header[data-window-drag] 
  * 透明底 (--flash-surface + --flash-text-bg-strength)，让时间线上所有内容都立在
  * 皮肤面上，人像仍从左侧/滚动区的空隙（timeline 槽与侧边距）以及消息之间的间
  * 隙透出。选择器控制在中间内容列([class*="_centerCol"])内的 [class*="_column"]：
- * 不触碰左侧栏、右侧栏(_rightbarCol)、插件面板([data-plugin-panel]，另设不透明)、
+ * 不触碰左侧栏、右侧栏(_rightbarCol，保持宿主默认皮肤面)、插件面板([data-plugin-panel]，另设不透明)、
  * 输入卡(_body/_card 结构，不共用 _column)。不依赖 dsh-flash。 */
 body[data-flash-skin="on"] #root [class*="_centerCol"] [class*="_column"] {
   background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent) !important;

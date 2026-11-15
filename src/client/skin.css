@@ -270,16 +270,21 @@ body[data-flash-skin="on"] #root [class*="_sidebarCol"] :is(p, h1, h2, h3, h4, h
  * (_sidebarCol)、右栏面板(_panelBody / data-dockkit-surface)、标题栏 header
  * 这三个容器上，即可继承作用于容器内**所有**文本节点——导航标签多为 span 等
  * 非文中列举标签、逐标签枚举会漏，设容器层最稳，无需关心内层元素是 span/按钮/div。
- * 纯 text-shadow，不做任何背景涂面或提层，收起态零残留。不依赖 dsh-flash。 */
+ * 纯 text-shadow，不做任何背景涂面或提层，收起态零残留。不依赖 dsh-flash。
+ *
+ * 注意最难的组合是“浅相深字落在深色人像上”（浅色主题、深色背景）：深字要靠
+ * 足够厚的浅色光晕从暗底上托出（白光即是“白对白浅底→不可见”，不会破坏浅底可读）；
+ * 保留一条轻的深色投影与硬边，兼顾“深相浅字落浅色人像”那一头。 */
 body[data-flash-skin="on"] #root [class*="_sidebarCol"],
 body[data-flash-skin="on"] #root [class*="_rightbarCol"] [class*="_panelBody"],
 body[data-flash-skin="on"] #root [class*="_rightbarCol"] [data-dockkit-surface="true"],
 body[data-flash-skin="on"] #root [class*="_centerCol"] header[data-window-drag] {
   text-shadow:
-    0 0 1px rgba(255, 255, 255, 0.55),
-    0 0 2px rgba(255, 255, 255, 0.35),
-    0 0 1px rgba(8, 12, 18, 0.6),
-    0 1px 2px rgba(8, 12, 18, 0.5);
+    0 0 2px rgba(255, 255, 255, 0.95),
+    0 0 6px rgba(255, 255, 255, 0.85),
+    0 0 10px rgba(255, 255, 255, 0.7),
+    0 0 1px rgba(255, 255, 255, 0.9),
+    0 1px 2px rgba(8, 12, 18, 0.45);
 }
 
 

@@ -322,8 +322,10 @@ body[data-flash-skin="on"] #root [class*="_centerCol"] [class*="_column"] :is(p,
  * 会话头部的动作条在中心列 headerResponsive 的 .an3WzG_headerActions 里，可见文字
  * 是“标准模式”等 agent 预设标签(.dscfja_label)与“1 个后台任务”计数(.Ag-ohG_count)。
  * 把它们连到同一个 --flash-text-bg-strength 浓度控制（80% 兜底，由滑块驱动），并沿用
- * 圆角药丸文字底。仅命中 _headerActions 内的 _label/_count 文字，不动图标、触发器按钮
- * 及面包屑/标题本体；中间列外、右栏、插件面板不受影响。不依赖 dsh-flash。 */
+ * 圆角药丸文字底。同时 text-shadow:none 去掉文章栏容器级继承下来的“辉光描边”，让
+ * 这批动作文字只随浓度、不叠辉光（用户明确要求去掉）。仅命中 _headerActions 内的
+ * _label/_count 文字，不动图标、触发器按钮及面包屑/标题本体；中间列外、右栏、插件
+ * 面板不受影响。不依赖 dsh-flash。 */
 body[data-flash-skin="on"] #root [class*="_centerCol"] [class*="_headerActions"] [class*="_label"],
 body[data-flash-skin="on"] #root [class*="_centerCol"] [class*="_headerActions"] [class*="_count"] {
   background: color-mix(in srgb, var(--flash-surface, #f5f6f8) var(--flash-text-bg-strength, 80%), transparent) !important;
@@ -331,6 +333,7 @@ body[data-flash-skin="on"] #root [class*="_centerCol"] [class*="_headerActions"]
   padding: 0.06em 0.3em !important;
   box-decoration-break: clone !important;
   -webkit-box-decoration-break: clone !important;
+  text-shadow: none !important;
 }
 
 /* 当前选中的会话行高亮（用户要求）：

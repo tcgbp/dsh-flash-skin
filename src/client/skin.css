@@ -405,6 +405,25 @@ body[data-flash-skin="on"] #root [data-plugin-panel] {
   background: var(--flash-surface, #f5f6f8) !important;
 }
 
+/* Right-sidebar fullscreen panel: opaque, fully covering the chat view.
+ * The host sidebar-right panel is position:absolute (top/bottom/right:0) over
+ * the content area; when [data-sidebar-right-panel="fullscreen"] its dock
+ * layer is elevated (--dsh-dockkit-dock-layer:40) so it sits above the
+ * conversation. Because the chat view lies underneath, giving the panel frame
+ * and every dockkit surface inside an opaque, skin-toned background makes the
+ * fullscreen panel completely hide the conversation's content (including the
+ * transparent-backdrop portrait) instead of showing through a translucent
+ * panel. Scoped to the stable fullscreen data attribute on the right sidebar
+ * only; the left sidebar rail, the collapsed state and the chat surface are
+ * untouched. Does not depend on dsh-flash. */
+body[data-flash-skin="on"] #root [data-sidebar-right-panel="fullscreen"],
+body[data-flash-skin="on"] #root [data-sidebar-right-panel="fullscreen"] [data-dockkit-host="dock"],
+body[data-flash-skin="on"] #root [data-sidebar-right-panel="fullscreen"] [data-dockkit-pane],
+body[data-flash-skin="on"] #root [data-sidebar-right-panel="fullscreen"] [data-dockkit-empty],
+body[data-flash-skin="on"] #root [data-sidebar-right-panel="fullscreen"] [class*="_panelBody"] {
+  background: var(--flash-surface, #f5f6f8) !important;
+}
+
 /* 会话标题栏表面完全透明（用户要求）：中间内容列
  * ([class*="_centerCol"]) 的常驻导航 header（conversation.header，
  * ConversationRoot.module.css 的 .header，是个 <header data-window-drag>）

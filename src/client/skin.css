@@ -301,6 +301,16 @@ body[data-flash-skin="on"] #root [class*="_sidebarCol"] span:not(:has(svg)):not(
   white-space: nowrap !important;
 }
 
+/* 左栏时间戳去掉继承的“辉光描边”（用户要求）：时间戳(_time/_timestamp，形如
+ * “4天”)是左栏里最小的文字。Option B 的宽柔白辉光(3/9/16/24px)会对小字成倍扩散，
+ * 把两个字符泡成模糊一团、叠上浓度药丸后更显脏糊。这里只对左栏时间戳 text-shadow:none，
+ * 保留浓度药丸底，让它在深/浅底色上都保持锐利。仅命中左栏内名称含 _time 的时间戳
+ * （wnFoaW_time/wnFoaW_timestamp）；不影响左栏标题/区块文字及中间列、右栏、插件面板。
+ * 不依赖 dsh-flash。 */
+body[data-flash-skin="on"] #root [class*="_sidebarCol"] [class*="_time"] {
+  text-shadow: none !important;
+}
+
 /* 贴字底（所有文字，用户要求“只在文字下加背景、没字的地方不要”）：
  * 把三处（左栏 _sidebarCol、右栏 _panelBody / data-dockkit-surface、正文
  * _centerCol>_column）里真正“承载文字”的块级元素（标题/段落/列表项/标签/

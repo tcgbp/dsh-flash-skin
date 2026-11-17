@@ -249,6 +249,11 @@ body[data-flash-skin="on"] #root [class*="_rightbarCol"] [data-dockkit-surface="
   padding: 0.06em 0.3em !important;
   box-decoration-break: clone !important;
   -webkit-box-decoration-break: clone !important;
+  /* 去掉 Option B 继承下来的“辉光描边”（用户要求，范围=右栏）：右栏容器挂着
+   * 宽柔白辉光 text-shadow(3/9/16/24px)，叠在逐文字药丸底上会成倍扩散糊字。
+   * 这里对右栏直接承载文字的文本元素统一 text-shadow:none，只保留浓度药丸底，
+   * 深浅底色下都锐利。只命中右栏直文字，不影响左栏、中间列、插件面板。不依赖 dsh-flash。 */
+  text-shadow: none !important;
 }
 
 /* 左侧边栏透明化 + 文字可读底（用户要求）：左侧导航栏本体是 host AppFrame 的
@@ -425,6 +430,12 @@ body[data-flash-skin="on"] #root [class*="_centerCol"] header[data-window-drag] 
   padding: 0.06em 0.3em !important;
   box-decoration-break: clone !important;
   -webkit-box-decoration-break: clone !important;
+  /* 去掉 Option B 继承下来的“辉光描边”（用户要求，范围=中间标题栏标题）：标题栏
+   * 容器挂着宽柔白辉光 text-shadow(3/9/16/24px)，叠在直排文字药丸底上会成倍糊字。
+   * 这里对标题栏纯文字叶子 span 统一 text-shadow:none，只保留浓度药丸底，深浅底色
+   * 下都锐利。图标/按钮保持原样；只命中中间列标题栏直文字，不影响左栏、右栏、插件面板。
+   * 不依赖 dsh-flash。 */
+  text-shadow: none !important;
 }
 
 /* 会话文字区域最下层那层面板完全透明（用户要求）：中间内容列

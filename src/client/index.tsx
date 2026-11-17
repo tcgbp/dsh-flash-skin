@@ -69,6 +69,14 @@ const DUAL_KEY = "dsh-flash-skin.dual";
 // Portrait horizontal flip mode: "right" (mirror the main image), "left"
 // (mirror the secondary image), "both" (mirror both sides) or "off" (none).
 const FLIP_KEY = "dsh-flash-skin.flip";
+// Automatic full-bleed: when the PRIMARY (right) frame's rendered media is
+// landscape (width/height ratio >= this floor) it stretches to cover the whole
+// viewport instead of the compact 42vw chip; portrait/vertical media stays at
+// the normal 42vw size. Decided in JS from the loaded media's intrinsic size
+// (img.naturalWidth/videoWidth) and surfaced on the backdrop root as
+// `data-full-bleed="on"/"off"`; skin.css applies the cover layout under the
+// single-main-image layout gate (data-flash-layout="left").
+const FULL_BLEED_MIN_RATIO = 1.2;
 const DRIVER_KEY = "dsh-flash-skin.driver";
 // Blend strength (%) of the translucent background chip behind chat text.
 // Persisted so the readability scrim keeps a user-tuned opacity across reloads,
@@ -846,6 +854,35 @@ class SkinPresenter {
       if (this.root.querySelector(`[data-side="${side}"]`) !== node) this.root.appendChild(node);
     }
     this.applyMediaState();
+    this.applyFullBleed();
+  }
+
+  // Decide the automatic full-bleed flag from the PRIMARY (right) frame's
+  // actual media size and surface it on the backdrop root. The frame node IS
+  // the <img>/<video> element and the loader only emits it after its ready()
+  // promise resolves (img.decode / video canplay), so the intrinsic dimensions
+  // are trustworthy here. Full-bleed is ONLY allowed in single-main-image mode
+  // (enabled && !dual — the exact same gate as data-flash-layout="left"); while
+  // dual is on we force "off" so the mirrored pair always keeps the compact
+  // 42vw chip. Landscape media (w/h >= FULL_BLEED_MIN_RATIO) gets
+  // `data-full-bleed="on"`; everything else is explicitly "off" (kept set so
+  // stale "on" never lingers after a swap). skin.css also re-checks the layout
+  // gate so the cover layout can only ever kick in for a single main image.
+  private applyFullBleed() {
+    if (this.disposed) return;
+    const single = this.enabled && !this.dual;
+    const frame = this.root.querySelector<HTMLElement>('[data-side="right"]');
+    let width = 0;
+    let height = 0;
+    if (frame instanceof HTMLImageElement) {
+      width = frame.naturalWidth;
+      height = frame.naturalHeight;
+    } else if (frame instanceof HTMLVideoElement) {
+      width = frame.videoWidth;
+      height = frame.videoHeight;
+    }
+    const landscape = single && width > 0 && height > 0 && width / height >= FULL_BLEED_MIN_RATIO;
+    this.root.dataset.fullBleed = landscape ? "on" : "off";
   }
 
   private renderFrame(side: "right" | "left", media: PortraitMedia | null) {

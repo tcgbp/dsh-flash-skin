@@ -24,16 +24,33 @@ const ATTACHMENT_PATH = `/plugins/${PACKAGE_ID}/attachment`;
 // Serve URLs are one path segment deeper (`<slug>/<hex>`), so the prefix route
 // registers the bare path and the handler binds `/`-separated suffixes.
 const ATTACHMENT_PREFIX = `${ATTACHMENT_PATH}/`;
+
+// Ambient-video routes. Local videos are persisted through the host
+// `attachments` verbatim-file channel (`saveFileStream`), which accepts any byte
+// content — unlike `saveImages`, which is hard-coded to the four raster image
+// types and would reject `video/*`. The client uploads the picked video's bytes
+// here and stores the returned serve URL (never a base64 payload) in the
+// portrait-group frame list. Serve URLs are `<slug>/<hex>/<encName>` so the
+// reader can rebuild the FileAttachmentRef (digest + sanitized name) that
+// `fileHostPath` resolves, and can derive the video Content-Type from the slug.
+const VIDEO_PATH = `/plugins/${PACKAGE_ID}/video`;
+const VIDEO_PREFIX = `${VIDEO_PATH}/`;
 const MAX_UPLOAD_IMAGES_PER_BATCH = 16;
-// Server-side body budget: one batch of at most 16 images, each already capped
-// at MAX_LOCAL_IMAGE_BYTES and carried as base64 (~ +33%). Doubled for slack so
-// the check only ever trips on genuinely-malicious payloads.
-const MAX_UPLOAD_BODY_BYTES = Math.ceil(MAX_UPLOAD_IMAGES_PER_BATCH * 2 * 1024 * 1024 * 1.34) + 64 * 1024;
+// Server-side body budget: one batch of at most 16 media files, each already
+// capped (images at MAX_LOCAL_IMAGE_BYTES, videos at MAX_LOCAL_VIDEO_BYTES)
+// and carried as base64 (~ +33%). The budget is sized generously so a batch
+// holding a large imported video is not refused outright.
+const MAX_UPLOAD_BODY_BYTES = 128 * 1024 * 1024;
 const MEDIA_TYPE_BY_SLUG = Object.freeze({
   png: "image/png",
   jpeg: "image/jpeg",
   webp: "image/webp",
   gif: "image/gif",
+  // Ambient background videos, served with their own content type.
+  mp4: "video/mp4",
+  webm: "video/webm",
+  mov: "video/quicktime",
+  ogg: "video/ogg",
 });
 const SLUG_BY_MEDIA_TYPE = Object.freeze(
   Object.fromEntries(Object.entries(MEDIA_TYPE_BY_SLUG).map(([slug, mediaType]) => [mediaType, slug])),
@@ -648,6 +665,178 @@ function createAttachmentHandlers(ctx, activeStreams) {
   return { upload, serve };
 }
 
+// Verbatim-file handlers for ambient background videos. Upload stores the raw
+// video bytes through `attachments.saveFileStream` (accepts any byte content,
+// unlike the image-only `saveImages`) and answers with a content-addressed
+// serve URL; the serve handler rebuilds the FileAttachmentRef from the URL's
+// digest + sanitized name, resolves it to a local path via `fileHostPath`, and
+// streams it back with Range support so <video> can seek freely. When the host
+// exposes no attachments store (or no verbatim-file methods) both handlers
+// degrade to HTTP errors — the client surfaces the usual import-failure notice,
+// never a throw.
+function createVideoHandlers(ctx, activeStreams) {
+  const attachments = ctx.get("attachments");
+  const canStoreFiles = attachments !== undefined
+    && typeof attachments.saveFileStream === "function"
+    && typeof attachments.fileHostPath === "function";
+
+  const upload = async (req, res) => {
+    if ((req.method ?? "GET") !== "POST") {
+      send(res, 405, { Allow: "POST" });
+      return;
+    }
+    if (!canStoreFiles) {
+      send(res, 503);
+      return;
+    }
+    const body = await readRequestBody(req, MAX_UPLOAD_BODY_BYTES);
+    if (body === null) {
+      req.resume();
+      send(res, 413, { Connection: "close" });
+      return;
+    }
+    let envelope;
+    try {
+      envelope = JSON.parse(String(body));
+    } catch {
+      send(res, 400);
+      return;
+    }
+    const videos = Array.isArray(envelope?.videos) ? envelope.videos : null;
+    if (!videos || videos.length === 0 || videos.length > MAX_UPLOAD_IMAGES_PER_BATCH) {
+      send(res, 400);
+      return;
+    }
+    const refs = [];
+    for (const item of videos) {
+      const mediaType = typeof item?.mediaType === "string" ? item.mediaType : "";
+      if (!SLUG_BY_MEDIA_TYPE[mediaType] || !mediaType.startsWith("video/")) {
+        send(res, 415);
+        return;
+      }
+      const name = typeof item?.name === "string" && item.name.length > 0 ? item.name : undefined;
+      let data;
+      try {
+        data = typeof item?.data === "string" ? Uint8Array.from(Buffer.from(item.data, "base64")) : null;
+      } catch {
+        data = null;
+      }
+      if (!data || data.byteLength === 0) {
+        send(res, 400);
+        return;
+      }
+      try {
+        const stream = (async function* singleChunk() {
+          yield data;
+        })();
+        const ref = await attachments.saveFileStream({ data: stream, name });
+        refs.push({ mediaType, ref });
+      } catch {
+        send(res, 400);
+        return;
+      }
+    }
+    const urls = refs.map(({ mediaType, ref }) => {
+      const hex = String(ref.attachmentId ?? "").replace(/^sha256:/, "");
+      const slug = SLUG_BY_MEDIA_TYPE[mediaType];
+      const videoUrl = HEX64_RE.test(hex)
+        ? `${VIDEO_PREFIX}${slug}/${hex}/${encodeURIComponent(typeof ref.name === "string" && ref.name ? ref.name : "file")}`
+        : "";
+      return {
+        name: typeof ref.name === "string" ? ref.name : undefined,
+        url: videoUrl,
+      };
+    });
+    sendJson(res, 200, { videos: urls });
+  };
+
+  const serve = (req, res) => {
+    const method = req.method ?? "GET";
+    if (method !== "GET" && method !== "HEAD") {
+      send(res, 405, { Allow: "GET, HEAD" });
+      return;
+    }
+    if (!canStoreFiles) {
+      send(res, 404);
+      return;
+    }
+    let pathname;
+    try {
+      pathname = new URL(req.url ?? "/", "http://dsh.local").pathname;
+    } catch {
+      send(res, 404);
+      return;
+    }
+    if (!pathname.startsWith(VIDEO_PREFIX)) {
+      send(res, 404);
+      return;
+    }
+    const rest = pathname.slice(VIDEO_PREFIX.length);
+    // Expect exactly `<slug>/<hex>/<encName>`.
+    const parts = rest.split("/");
+    if (parts.length !== 3) {
+      send(res, 404);
+      return;
+    }
+    const [slug, hex, encName] = parts;
+    const mediaType = MEDIA_TYPE_BY_SLUG[slug];
+    if (!mediaType || !mediaType.startsWith("video/") || !HEX64_RE.test(hex) || encName === "") {
+      send(res, 404);
+      return;
+    }
+    let name;
+    try {
+      name = decodeURIComponent(encName);
+    } catch {
+      send(res, 404);
+      return;
+    }
+    if (name === "") {
+      send(res, 404);
+      return;
+    }
+    const ref = {
+      attachmentId: `sha256:${hex}`,
+      name,
+      bytes: 0,
+    };
+    let hostPath;
+    try {
+      hostPath = attachments.fileHostPath(ref);
+    } catch {
+      send(res, 404);
+      return;
+    }
+    let info;
+    try {
+      info = statSync(hostPath);
+    } catch {
+      send(res, 404);
+      return;
+    }
+    if (!info.isFile()) {
+      send(res, 404);
+      return;
+    }
+    writeAsset(req, res, method, {
+      path: hostPath,
+      type: mediaType,
+      size: info.size,
+      etag: `W/"${info.size.toString(16)}-${Math.trunc(info.mtimeMs).toString(16)}"`,
+    }, activeStreams);
+  };
+
+  return { upload, serve };
+}
+
+function sendJson(res, status, value) {
+  send(res, status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": String(Buffer.byteLength(JSON.stringify(value))),
+  });
+  res.end(JSON.stringify(value));
+}
+
 export const inject = ["webServer"];
 
 export function apply(ctx, config) {
@@ -691,6 +880,11 @@ export function apply(ctx, config) {
     // pathname.startsWith(path + "/")`), so both coexist on the same router.
     const uploadRoute = ctx.webServer.register({ kind: "exact", path: ATTACHMENT_PATH, handler: upload });
     const serveRoute = ctx.webServer.register({ kind: "prefixes", path: ATTACHMENT_PATH, handler: serve });
+    // Ambient-video routes: same upload/serve split, but backed by the host's
+    // verbatim-file channel so `video/*` bytes persist (see createVideoHandlers).
+    const { upload: videoUpload, serve: videoServe } = createVideoHandlers(ctx, activeStreams);
+    const videoUploadRoute = ctx.webServer.register({ kind: "exact", path: VIDEO_PATH, handler: videoUpload });
+    const videoServeRoute = ctx.webServer.register({ kind: "prefixes", path: VIDEO_PATH, handler: videoServe });
     // Network-import routes: bundled example archives plus the remote-URL proxy.
     const { example, remote } = createNetworkHandlers(activeStreams);
     const exampleRoute = ctx.webServer.register({ kind: "prefixes", path: EXAMPLES_PATH, handler: example });
@@ -792,6 +986,8 @@ export function apply(ctx, config) {
     return () => {
       uploadRoute();
       serveRoute();
+      videoUploadRoute();
+      videoServeRoute();
       exampleRoute();
       remoteRoute();
       communityDispose();

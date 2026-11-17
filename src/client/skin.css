@@ -48,7 +48,11 @@ body[data-flash-skin="on"] .flash-skin-backdrop {
   mask-image: linear-gradient(270deg, transparent 0%, rgb(0 0 0 / 20%) 10%, black 30%, black 100%);
 }
 
-.flash-skin-backdrop img {
+/* Frames (both <img> and <video>) default to hidden; the presenter flips the
+   backdrop to data-media="sequence" only when a frame is really attached, and
+   the sequence rule below reveals whichever node carries the frame class. */
+.flash-skin-backdrop img,
+.flash-skin-backdrop video {
   display: none;
 }
 
@@ -82,7 +86,8 @@ body[data-flash-skin="on"][data-scrim="on"] .flash-skin-scrim {
   display: block;
 }
 
-.flash-skin-backdrop[data-media="color"] img {
+.flash-skin-backdrop[data-media="color"] img,
+.flash-skin-backdrop[data-media="color"] video {
   display: none;
 }
 

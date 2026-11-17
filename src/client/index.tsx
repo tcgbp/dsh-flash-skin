@@ -11,7 +11,7 @@ import {
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import styles from "./skin.css";
 import { createPortraitLoader } from "./portrait-loader";
-import type { PortraitImage, PortraitSource } from "./portrait-loader";
+import type { PortraitMedia, PortraitMediaKind, PortraitSource } from "./portrait-loader";
 import {
   COMPACTION_DROP_RATIO,
   COMPACTION_SCORE_BONUS,
@@ -179,6 +179,9 @@ const desktopMode = () => {
 
 // Host attachments route (exact path for POST upload, prefix for GET serve).
 const ATTACHMENT_PATH = `/plugins/${PACKAGE_ID}/attachment`;
+// Ambient-video route: local videos are persisted through the host's
+// verbatim-file channel (saveFileStream) and served back as Range-able video.
+const VIDEO_PATH = `/plugins/${PACKAGE_ID}/video`;
 // Network-import route: a server-side proxy for pasting any http(s) archive URL.
 const REMOTE_ARCHIVE_PATH = `/plugins/${PACKAGE_ID}/archive`;
 // Social channels (C1 text share + C2 community directory/likes). These exact
@@ -228,6 +231,11 @@ const MEDIA_TYPE_BY_EXT: Record<string, string> = {
   ".jpeg": "image/jpeg",
   ".webp": "image/webp",
   ".gif": "image/gif",
+  // Ambient background videos: mp4/webm (widely decodable) + mov/ogg.
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".mov": "video/quicktime",
+  ".ogg": "video/ogg",
 };
 
 // Like bookkeeping: persisted per device under FLASH_SKIN_LIKED_KEY (group id →
@@ -625,8 +633,8 @@ class SkinPresenter {
   private readonly scope: PreferenceStore;
   private readonly theme: ThemeService;
   private readonly root: HTMLDivElement;
-  private readonly onChange: (state: { image: PortraitImage | null }) => void;
-  private readonly leftOnChange: (state: { image: PortraitImage | null }) => void;
+  private readonly onChange: (state: { media: PortraitMedia | null }) => void;
+  private readonly leftOnChange: (state: { media: PortraitMedia | null }) => void;
   private portraits: ReturnType<typeof createPortraitLoader>;
   private enabled = true;
   private level = 0;
@@ -725,6 +733,7 @@ class SkinPresenter {
       return group.images.map((url, index) => ({
         level: frames[index] ?? 0,
         url,
+        kind: mediaKindForUrl(url),
       }));
     }
     return [];
@@ -757,15 +766,15 @@ class SkinPresenter {
     this.scrim.className = "flash-skin-scrim";
     this.scrim.dataset.plugin = PACKAGE_ID;
     this.scrim.setAttribute("aria-hidden", "true");
-    this.onChange = ({ image }) => this.renderFrame("right", image);
-    this.leftOnChange = ({ image }) => this.renderFrame("left", image);
+    this.onChange = ({ media }) => this.renderFrame("right", media);
+    this.leftOnChange = ({ media }) => this.renderFrame("left", media);
     this.portraits = this.buildPortraits(this.set, this.onChange);
     this.portraitsSources = this.sourcesForSet(this.set);
     this.unsubscribe = scope.subscribe(() => this.syncSettings());
     this.syncSettings();
   }
 
-  private buildPortraits(set: PortraitSet, onChange: (state: { image: PortraitImage | null }) => void) {
+  private buildPortraits(set: PortraitSet, onChange: (state: { media: PortraitMedia | null }) => void) {
     return createPortraitLoader({
       sources: this.sourcesForSet(set),
       onChange,
@@ -780,12 +789,13 @@ class SkinPresenter {
     this.setLeftSet(snapshot.leftSet || DEFAULT_PORTRAIT_SET.id);
   }
 
-  // Upsert (or remove) one side's decoded <img> in the shared backdrop root.
-  // Built on up-to-three coexisting child nodes now (primary right frame plus
-  // an optional mirrored left frame), so swapping one side never wipes the
-  // other — hence no replaceChildren() here.
-  private upsertFrame(side: "right" | "left", node: HTMLImageElement | null) {
-    const existing = this.root.querySelector<HTMLImageElement>(`[data-side="${side}"]`);
+  // Upsert (or remove) one side's decoded media <img>/<video> in the shared
+  // backdrop root. Built on up-to-three coexisting child nodes now (primary
+  // right frame plus an optional mirrored left frame), so swapping one side
+  // never wipes the other — hence no replaceChildren() here.
+  private upsertFrame(side: "right" | "left", media: PortraitMedia | null) {
+    const node = media?.node ?? null;
+    const existing = this.root.querySelector<HTMLElement>(`[data-side="${side}"]`);
     if (node === null) {
       existing?.remove();
     } else {
@@ -793,19 +803,25 @@ class SkinPresenter {
         ? "flash-skin-sequence-frame flash-skin-sequence-frame--left"
         : "flash-skin-sequence-frame";
       node.setAttribute("data-side", side);
-      node.alt = "";
-      node.draggable = false;
+      node.setAttribute("aria-hidden", "true");
+      if (node instanceof HTMLImageElement) {
+        node.alt = "";
+        node.draggable = false;
+      } else if (node instanceof HTMLVideoElement) {
+        // Resume playback each time the frame is (re)attached — a video that
+        // was stopped/released must start playing again to read as a backdrop.
+        void node.play().catch(() => {});
+      }
       if (existing && existing !== node) existing.remove();
       if (this.root.querySelector(`[data-side="${side}"]`) !== node) this.root.appendChild(node);
     }
     this.applyMediaState();
   }
 
-  private renderFrame(side: "right" | "left", image: PortraitImage | null) {
+  private renderFrame(side: "right" | "left", media: PortraitMedia | null) {
     if (this.disposed || !this.enabled) return;
     if (side === "left" && !this.dual) return;
-    const node = image === null ? null : (image as HTMLImageElement);
-    this.upsertFrame(side, node);
+    this.upsertFrame(side, media);
   }
 
   private applyMediaState() {
@@ -2658,7 +2674,9 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "urlEmpty": "请输入图片 URL",
     "fileNotImage": "请选择图片文件",
     "fileTooLarge": "图片不能超过 2MB",
+    "fileTooLargeVideo": "视频不能超过 48MB",
     "readFailed": "读取图片失败，请重试",
+    "uploadFailed": "导入失败，请重试",
     "defaultGroup": "新的皮肤组",
     "darkLevel": "深浅切换点",
     "darkLevelHint": "用左右箭头逐档移动深浅切换点：箭头左侧为浅色外壳，右侧为深色外壳。",
@@ -2793,7 +2811,9 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "urlEmpty": "Enter an image URL",
     "fileNotImage": "Please choose an image file",
     "fileTooLarge": "Image must be 2MB or smaller",
+    "fileTooLargeVideo": "Video must be 48MB or smaller",
     "readFailed": "Failed to read the image, please retry",
+    "uploadFailed": "Import failed, please retry",
     "defaultGroup": "New group",
     "darkLevel": "Light/dark threshold",
     "darkLevelHint": "Use the arrows to move the light/dark threshold one level at a time: images to their left keep the light shell, images to their right switch to dark.",
@@ -2910,6 +2930,9 @@ function newGroupId(): string {
 // Local image picker: cap file size so the embedded base64 never blows up the
 // persisted config (localStorage-backed settings).
 const MAX_LOCAL_IMAGE_BYTES = 2 * 1024 * 1024;
+// Ambient background videos get a much larger embedded-size budget (a single
+// looping .mp4/.webm is typically tens of MB where a frame is ~1 MB).
+const MAX_LOCAL_VIDEO_BYTES = 48 * 1024 * 1024;
 
 function readLocalFile(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -2932,6 +2955,31 @@ interface ZipImageEntry {
 // persisted config (localStorage-backed settings).
 const MAX_IMAGES_PER_IMPORT = 64;
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
+// Ambient background videos that the backdrop can render as a looping layer.
+const VIDEO_EXTENSIONS = new Set([".mp4", ".webm", ".mov", ".ogg"]);
+
+// Classify a backdrop source URL by its file extension so the portrait loader
+// can build the right media element (<img> vs <video>). Unknown/extensionless
+// URLs fall back to `image` — the safe default for attachment/data/web images.
+function mediaKindForUrl(url: string): PortraitMediaKind {
+  // Locally-picked media are persisted as `data:` URLs. A video data URL has no
+  // filename dotted extension, but its media-type marker is reliable — sniff it.
+  if (url.startsWith("data:video/")) return "video";
+  // Server-persisted ambient videos come back on the plugin video route. Trust
+  // that stem directly so classification never depends on the stored filename.
+  if (url.startsWith(VIDEO_PATH + "/")) return "video";
+  let ext = "";
+  try {
+    const path = new URL(url, "http://dsh.local").pathname;
+    const dot = path.lastIndexOf(".");
+    ext = dot >= 0 ? path.slice(dot).toLowerCase() : "";
+  } catch {
+    // Not a parseable URL; fall through to a plain suffix check.
+    const dot = url.lastIndexOf(".");
+    ext = dot >= 0 ? url.slice(dot).toLowerCase() : "";
+  }
+  return VIDEO_EXTENSIONS.has(ext) ? "video" : "image";
+}
 
 // Detect the actual image format from magic bytes. The host attachment store
 // refuses a declared media type that does not match the bytes, so prefer the
@@ -2953,6 +3001,13 @@ function mediaTypeForEntry(name: string, bytes: Uint8Array): string {
   if (bytes.length >= 6 && (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46
     && (bytes[3] === 0x38 && bytes[4] === 0x37 || bytes[3] === 0x38 && bytes[4] === 0x39) && bytes[5] === 0x61)) {
     return "image/gif"; // GIF87a / GIF89a
+  }
+  // Video magic bytes so imported archives get the right declared media type.
+  if (bytes.length >= 12 && bytes[4] === 0x66 && bytes[5] === 0x74 && bytes[6] === 0x79 && bytes[7] === 0x70) {
+    return "video/mp4"; // box header + `ftyp` at offset 4 (mp4/mov family)
+  }
+  if (bytes.length >= 4 && bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3) {
+    return "video/webm"; // EBML (webm/mkv)
   }
   const dot = name.lastIndexOf(".");
   const ext = dot >= 0 ? name.slice(dot).toLowerCase() : "";
@@ -2985,6 +3040,25 @@ function imageMediaTypeFromBytes(bytes: Uint8Array): string {
   return "";
 }
 
+// Broader strict sniff used to validate a frame's bytes on export/share. Like
+// imageMediaTypeFromBytes it refuses HTTP-200 non-media garbage, but it also
+// accepts foreground/background videos so an ambient .mp4/.webm can round-trip.
+// Returns the media type on a known signature, "" otherwise.
+function mediaSniffFromBytes(bytes: Uint8Array): string {
+  const image = imageMediaTypeFromBytes(bytes);
+  if (image !== "") return image;
+  if (bytes.length >= 12 && bytes[4] === 0x66 && bytes[5] === 0x74 && bytes[6] === 0x79 && bytes[7] === 0x70) {
+    return "video/mp4"; // box header + `ftyp` at offset 4 (mp4/mov family)
+  }
+  if (bytes.length >= 4 && bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3) {
+    return "video/webm"; // EBML (webm/mkv)
+  }
+  if (bytes.length >= 4 && bytes[0] === 0x4f && bytes[1] === 0x67 && bytes[2] === 0x67 && bytes[3] === 0x53) {
+    return "video/ogg"; // OggS (ogg)
+  }
+  return "";
+}
+
 function readLocalFileAsArrayBuffer(file: File): Promise<ArrayBuffer> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -3007,14 +3081,19 @@ const EXT_BY_MEDIA_TYPE: Record<string, string> = {
   "image/jpeg": ".jpg",
   "image/webp": ".webp",
   "image/gif": ".gif",
+  // Ambient background videos keep their real extension so a re-import works.
+  "video/mp4": ".mp4",
+  "video/webm": ".webm",
+  "video/quicktime": ".mov",
+  "video/ogg": ".ogg",
 };
 
-function extensionForImageUrl(url: string, bytes: Uint8Array): string {
+function extensionForMediaUrl(url: string, bytes: Uint8Array): string {
   try {
     const path = new URL(url, "http://dsh.local").pathname;
     const dot = path.lastIndexOf(".");
     const ext = dot >= 0 ? path.slice(dot).toLowerCase() : "";
-    if (IMAGE_EXTENSIONS.has(ext)) return ext;
+    if (IMAGE_EXTENSIONS.has(ext) || VIDEO_EXTENSIONS.has(ext)) return ext;
   } catch {
     // Not a parseable URL; fall through to sniffing the bytes.
   }
@@ -3022,13 +3101,13 @@ function extensionForImageUrl(url: string, bytes: Uint8Array): string {
   return EXT_BY_MEDIA_TYPE[type] ?? ".png";
 }
 
-// Decode a `data:` image URL into its raw bytes. Images picked from local disk
-// are stored as base64 data URLs in the config, so export must handle them.
+// Decode a `data:` image/video URL into its raw bytes. Media picked from local
+// disk are stored as base64 data URLs in the config, so export must handle them.
 function dataUrlToBytes(dataUrl: string): Uint8Array | null {
   const comma = dataUrl.indexOf(",");
   if (comma === -1) return null;
   const meta = dataUrl.slice(0, comma);
-  if (!/^data:image\/[a-z0-9.+-]+(?:;[^,]*)?$/i.test(meta)) return null;
+  if (!/^data:(?:image|video)\/[a-z0-9.+-]+(?:;[^,]*)?$/i.test(meta)) return null;
   try {
     // atob tolerates whitespace; non-base64 data URLs are not expected here.
     const raw = atob(dataUrl.slice(comma + 1).replace(/\s+/g, ""));
@@ -3226,8 +3305,12 @@ function collectImages(rawEntries: ZipImageEntry[]): { entries: ZipImageEntry[];
     const dot = base.lastIndexOf(".");
     if (dot < 0) continue;
     const ext = base.slice(dot).toLowerCase();
-    if (!IMAGE_EXTENSIONS.has(ext)) continue;
-    if (rawEntry.bytes.length > MAX_LOCAL_IMAGE_BYTES) {
+    const isVideo = VIDEO_EXTENSIONS.has(ext);
+    if (!IMAGE_EXTENSIONS.has(ext) && !isVideo) continue;
+    // Videos are legitimately much larger than frames; allow them a larger
+    // embedded-size budget so a real .mp4/.webm is not refused outright.
+    const cap = isVideo ? MAX_LOCAL_VIDEO_BYTES : MAX_LOCAL_IMAGE_BYTES;
+    if (rawEntry.bytes.length > cap) {
       skippedOversize += 1;
       continue;
     }
@@ -3307,6 +3390,34 @@ async function postImageBatch(
     : [];
   if (urls.length !== images.length) throw new Error("attachment upload truncated");
   return urls;
+}
+
+// Persist one locally-picked ambient video through the host verbatim-file
+// channel and return its serve URL. The video bytes ride as base64 inside the
+// POST (never stored in config), and the server answers with a content-
+// addressed serve URL that <video> can seek — same URL-only persistence model
+// as archive-imported images. Throws on any transport/HTTP failure so the
+// caller can show the usual import-failure notice (a host without the
+// attachments store answers 503).
+async function postSingleVideo(file: File): Promise<string> {
+  const buffer = await readLocalFileAsArrayBuffer(file);
+  const bytes = new Uint8Array(buffer);
+  const response = await fetch(VIDEO_PATH, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      videos: [{
+        name: file.name,
+        mediaType: file.type || mediaTypeForEntry(file.name, bytes),
+        data: bytesToBase64(bytes),
+      }],
+    }),
+  });
+  if (!response.ok) throw new Error(`video upload ${response.status}`);
+  const payload = (await response.json()) as { videos?: { name?: string; url: string }[] };
+  const url = Array.isArray(payload.videos) ? payload.videos[0]?.url : undefined;
+  if (typeof url !== "string" || url.length === 0) throw new Error("video upload truncated");
+  return url;
 }
 
 // Upload all archive-extracted images in ordered batches, preserving entry
@@ -3643,10 +3754,10 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale,
       for (const source of group.images) {
         try {
           const bytes = await fetchExportImageBytes(source);
-          if (imageMediaTypeFromBytes(bytes) === "") {
-            throw new Error("frame is not a decodable image");
+          if (mediaSniffFromBytes(bytes) === "") {
+            throw new Error("frame is not decodable media");
           }
-          frames.push({ bytes, ext: extensionForImageUrl(source, bytes) });
+          frames.push({ bytes, ext: extensionForMediaUrl(source, bytes) });
         } catch {
           setSharePhase("ready");
           setShareNotice(t("shareFailed"));
@@ -3660,9 +3771,9 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale,
         entries[`${index}${frame.ext}`] = frame.bytes;
       });
       // Immediately unpack the just-built archive in memory and confirm every
-      // packed frame de-compresses back to a decodable image. A packing bug or
-      // a CRC failure is caught right here, before the share text is copied or
-      // the zip is downloaded, instead of only surfacing as a failed re-import.
+      // packed frame de-compresses back to decodable media. A packing bug or a
+      // CRC failure is caught right here, before the share text is copied or the
+      // zip is downloaded, instead of only surfacing as a failed re-import.
       const zipped = zipSync(entries, { level: 6 });
       const inflated = unzipSync(zipped);
       if (inflated["portrait.yaml"] === undefined) {
@@ -3670,7 +3781,7 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale,
       }
       frames.forEach((frame, index) => {
         const bytes = inflated[`${index}${frame.ext}`];
-        if (!(bytes instanceof Uint8Array) || bytes.length === 0 || imageMediaTypeFromBytes(bytes) === "") {
+        if (!(bytes instanceof Uint8Array) || bytes.length === 0 || mediaSniffFromBytes(bytes) === "") {
           throw new Error("archive round-trip self-check failed for " + index + frame.ext);
         }
       });
@@ -4253,10 +4364,10 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale,
       for (const source of group.images) {
         try {
           const bytes = await fetchExportImageBytes(source);
-          if (imageMediaTypeFromBytes(bytes) === "") {
-            throw new Error("frame is not a decodable image");
+          if (mediaSniffFromBytes(bytes) === "") {
+            throw new Error("frame is not decodable media");
           }
-          frames.push({ bytes, ext: extensionForImageUrl(source, bytes) });
+          frames.push({ bytes, ext: extensionForMediaUrl(source, bytes) });
         } catch {
           setFileError(t("exportDownloadFailed").replace("{n}", String(group.images.length)));
           return;
@@ -4278,7 +4389,7 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale,
       let failedFrame: string | null = null;
       frames.forEach((frame, index) => {
         const bytes = inflated[`${index}${frame.ext}`];
-        if (!(bytes instanceof Uint8Array) || bytes.length === 0 || imageMediaTypeFromBytes(bytes) === "") {
+        if (!(bytes instanceof Uint8Array) || bytes.length === 0 || mediaSniffFromBytes(bytes) === "") {
           failedFrame = `${index}${frame.ext}`;
         }
       });
@@ -4377,24 +4488,28 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale,
     const pick = pendingPick.current;
     pendingPick.current = null;
     if (!pick) return;
-    if (!file.type.startsWith("image/")) {
+    const isVideo = file.type.startsWith("video/");
+    if (!file.type.startsWith("image/") && !isVideo) {
       setFileError(t("fileNotImage"));
       return;
     }
-    if (file.size > MAX_LOCAL_IMAGE_BYTES) {
-      setFileError(t("fileTooLarge"));
+    if (file.size > (isVideo ? MAX_LOCAL_VIDEO_BYTES : MAX_LOCAL_IMAGE_BYTES)) {
+      setFileError(t(isVideo ? "fileTooLargeVideo" : "fileTooLarge"));
       return;
     }
     try {
-      const dataUrl = await readLocalFile(file);
+      // An ambient video is persisted through the host verbatim-file channel so
+      // the config only holds a serve URL (a multi-MB base64 data URL would blow
+      // the settings quota). Images keep the in-memory data-URL path.
+      const src = isVideo ? await postSingleVideo(file) : await readLocalFile(file);
       setFileError(null);
       if (pick.kind === "replace" && pick.imageIndex !== undefined) {
-        replaceImage(pick.groupIndex, pick.imageIndex, dataUrl);
+        replaceImage(pick.groupIndex, pick.imageIndex, src);
       } else {
-        addImage(pick.groupIndex, dataUrl);
+        addImage(pick.groupIndex, src);
       }
     } catch {
-      setFileError(t("readFailed"));
+      setFileError(t(isVideo ? "uploadFailed" : "readFailed"));
     }
   };
 
@@ -4784,7 +4899,7 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale,
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*"
+        accept="image/*,video/mp4,video/webm,video/quicktime,video/ogg,.mp4,.webm,.mov,.ogg"
         hidden
         aria-hidden="true"
         tabIndex={-1}

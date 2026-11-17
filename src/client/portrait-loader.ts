@@ -1,37 +1,50 @@
+export type PortraitMediaKind = "image" | "video";
+
 export interface PortraitSource {
   level: number;
   url: string;
+  /** Resource kind for the asset. `video` sources render as a looping,
+   *  muted, autoplaying <video>; `image` sources decode into an <img>. */
+  kind: PortraitMediaKind;
+}
+
+/** Common surface the loader uses to drive a media element to a ready state,
+ *  satisfied by both `HTMLImageElement` (load+decode) and `HTMLVideoElement`
+ *  (loadeddata). Kept minimal so the loader never touches browser-only fields
+ *  it doesn't need. */
+export interface PortraitMedia {
+  kind: PortraitMediaKind;
+  /** The actual DOM node to attach into the backdrop (<img> or <video>). */
+  node: HTMLImageElement | HTMLVideoElement;
+  /** The resolved (possibly retried) URL the asset was loaded from. */
+  src: string;
+  /** Resolve when the media is ready to display; reject on hard error. */
+  ready(): Promise<void>;
+  /** Release the source so the element stops consuming the resource. */
+  release(): void;
 }
 
 export interface PortraitState {
   index: number | null;
   url: string | null;
   status: "loading" | "ready" | "failed";
-  image: PortraitImage | null;
-}
-
-export interface PortraitImage {
-  src: string;
-  loading: "eager" | "lazy";
-  decoding: "async" | "sync" | "auto";
-  decode(): Promise<void>;
-  addEventListener(type: "load" | "error", listener: () => void): void;
-  removeEventListener(type: "load" | "error", listener: () => void): void;
-  removeAttribute(name: string): void;
+  media: PortraitMedia | null;
 }
 
 export interface PortraitLoaderOptions {
   sources: readonly PortraitSource[];
   onChange: (state: PortraitState) => void;
-  createImage?: () => PortraitImage;
+  createImage?: () => HTMLImageElement;
+  createVideo?: () => HTMLVideoElement;
 }
 
 interface Asset {
   url: string;
+  kind: PortraitMediaKind;
   status: "idle" | "loading" | "ready" | "failed";
   loadedUrl: string | null;
   retries: number;
-  image: PortraitImage | null;
+  media: PortraitMedia | null;
   timer: ReturnType<typeof setTimeout> | null;
   detach: (() => void) | null;
 }
@@ -61,15 +74,16 @@ function retryUrl(source: string, retry: number) {
 export function createPortraitLoader(options: PortraitLoaderOptions) {
   const sources = options.sources.map((source) => ({ ...source }));
   const assets = new Map<string, Asset>();
-  for (const { url } of sources) {
+  for (const { url, kind } of sources) {
     if (!assets.has(url)) {
       assets.set(url, {
-        url, status: "idle", loadedUrl: null, retries: 0,
-        image: null, timer: null, detach: null,
+        url, kind, status: "idle", loadedUrl: null, retries: 0,
+        media: null, timer: null, detach: null,
       });
     }
   }
   const createImage = options.createImage ?? (() => new Image());
+  const createVideo = options.createVideo ?? (() => document.createElement("video"));
   let onChange: PortraitLoaderOptions["onChange"] | null = options.onChange;
   let active = false;
   let disposed = false;
@@ -104,35 +118,67 @@ export function createPortraitLoader(options: PortraitLoaderOptions) {
     else if (displayedIndex === null) displayedIndex = nearestIndex(isReady);
     if (displayedIndex !== null) {
       const asset = assets.get(sources[displayedIndex].url)!;
-      emit({ index: displayedIndex, url: asset.loadedUrl, image: asset.image, status: "ready" });
+      emit({ index: displayedIndex, url: asset.loadedUrl, media: asset.media, status: "ready" });
     } else {
       const exhausted = [...assets.values()].every((asset) => asset.status === "failed");
-      emit({ index: null, url: null, image: null, status: exhausted ? "failed" : "loading" });
+      emit({ index: null, url: null, media: null, status: exhausted ? "failed" : "loading" });
     }
   };
 
   const request = (asset: Asset, run: number) => {
     if (!isCurrent(run)) return;
     asset.status = "loading";
-    const image = createImage();
-    asset.image = image;
-    image.loading = "eager";
-    image.decoding = "async";
     const url = retryUrl(asset.url, asset.retries);
+    const node = asset.kind === "video" ? createVideo() : createImage();
+    if (asset.kind === "image") {
+      const img = node as HTMLImageElement;
+      img.loading = "eager";
+      img.decoding = "async";
+    } else {
+      const video = node as HTMLVideoElement;
+      // Video frames play as an ambient looping backdrop: muted (autoplay
+      // policy), looped, inline on mobile and preloaded so `canplay` resolves.
+      video.autoplay = true;
+      video.muted = true;
+      video.loop = true;
+      video.playsInline = true;
+      video.preload = "auto";
+    }
+    const media: PortraitMedia = asset.kind === "video"
+      ? {
+          kind: "video", node, src: url,
+          // video resolves once it can actually render a frame.
+          ready: () => new Promise<void>((resolve, reject) => {
+            node.addEventListener("loadeddata", () => resolve());
+            node.addEventListener("error", () => reject(new Error("video load error")), { once: true });
+          }),
+          release: () => {
+            (node as HTMLVideoElement).pause();
+            node.removeAttribute("src");
+            (node as HTMLVideoElement).load();
+          },
+        }
+      : {
+          kind: "image", node, src: url,
+          ready: () => (node as HTMLImageElement).decode(),
+          release: () => node.removeAttribute("src"),
+        };
+    asset.media = media;
     let settled = false;
     let decoding = false;
-    const current = () => !settled && isCurrent(run) && asset.image === image;
+    const current = () => !settled && isCurrent(run) && asset.media === media;
     const detach = () => {
-      image.removeEventListener("load", handleLoad);
-      image.removeEventListener("error", handleError);
+      node.removeEventListener("load", handleLoad);
+      node.removeEventListener("canplay", handleLoad);
+      node.removeEventListener("error", handleError);
       asset.detach = null;
     };
     const handleError = () => {
       if (!current()) return;
       settled = true;
       detach();
-      image.removeAttribute("src");
-      asset.image = null;
+      media.release();
+      asset.media = null;
       if (asset.retries < RETRY_DELAYS.length) {
         const delay = RETRY_DELAYS[asset.retries];
         asset.retries += 1;
@@ -149,7 +195,7 @@ export function createPortraitLoader(options: PortraitLoaderOptions) {
     const handleLoad = () => {
       if (!current() || decoding) return;
       decoding = true;
-      void image.decode().then(() => {
+      void media.ready().then(() => {
         if (!current()) return;
         settled = true;
         detach();
@@ -159,9 +205,12 @@ export function createPortraitLoader(options: PortraitLoaderOptions) {
       }, handleError);
     };
     asset.detach = detach;
-    image.addEventListener("load", handleLoad);
-    image.addEventListener("error", handleError);
-    image.src = url;
+    // `<video>` signals readiness via `canplay`; `<img>` via `load`.
+    node.addEventListener(asset.kind === "video" ? "canplay" : "load", handleLoad);
+    node.addEventListener("error", handleError);
+    // Both <img> and <video> expose a string `src`; driving the property kicks
+    // off the fetch after the listeners above are attached.
+    node.src = url;
   };
 
   const stop = () => {
@@ -171,8 +220,8 @@ export function createPortraitLoader(options: PortraitLoaderOptions) {
       if (asset.timer !== null) clearTimeout(asset.timer);
       asset.timer = null;
       asset.detach?.();
-      asset.image?.removeAttribute("src");
-      asset.image = null;
+      asset.media?.release();
+      asset.media = null;
       asset.status = "idle";
       asset.loadedUrl = null;
       asset.retries = 0;

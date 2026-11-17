@@ -666,20 +666,21 @@ export function apply(ctx, config) {
   // holding this key at the same stateVersion) this block is inert and the
   // plugin still loads and works standalone. The registry adds its own effect
   // wrap, so the unit (and its cached cells) rides the plugin's unload.
+  // NOTE: `ctx.inject` returns a Cordis Disposable object, not a function — take
+  // `.dispose` (with optional chaining for graceful standalone degradation),
+  // exactly as the host's own agentLoop does (`ctx.inject(...).dispose`).
   ctx.effect(() => {
-    const deregister = ctx.inject(["sessionProjections"], (scoped) => {
+    return ctx.inject(["sessionProjections"], (scoped) => {
       return scoped.sessionProjections.register(compactionProjectionDefinition);
-    }, "flash-skin: compaction projection");
-    return () => deregister?.();
+    }, "flash-skin: compaction projection")?.dispose;
   }, "flash-skin: compaction projection scope");
 
   // Skill-usage pulse driver: same seam, same shapes as the compaction unit, so
   // a standalone host without the seam just leaves the client's skill bonus at 0.
   ctx.effect(() => {
-    const deregister = ctx.inject(["sessionProjections"], (scoped) => {
+    return ctx.inject(["sessionProjections"], (scoped) => {
       return scoped.sessionProjections.register(skillProjectionDefinition);
-    }, "flash-skin: skill projection");
-    return () => deregister?.();
+    }, "flash-skin: skill projection")?.dispose;
   }, "flash-skin: skill projection scope");
 
   const activeStreams = new Set();

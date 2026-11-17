@@ -287,6 +287,12 @@ body[data-flash-skin="on"] #root [class*="_sidebarCol"] span:not(:has(svg)):not(
   padding: 0.06em 0.3em !important;
   box-decoration-break: clone !important;
   -webkit-box-decoration-break: clone !important;
+  /* 去掉继承的“辉光描边”（用户要求，范围=左栏所有直文字）：左栏容器挂着 Option B
+   * 的宽柔白辉光 text-shadow(3/9/16/24px)，对小号/淡字（时间戳“4天”、区块label
+   * “工作区”等）成倍扩散会糊成一团。这里对左栏所有直接承载文字的 span 统一
+   * text-shadow:none，保留浓度药丸底，深浅底色下都锐利。只命中左栏直文字，
+   * 不影响中间列、右栏、插件面板。不依赖 dsh-flash。 */
+  text-shadow: none !important;
   /* 贴字底：只让文字下的背景裹住字，空余不铺。左栏标题 span 是 flex:1 的
    * 弹性项（为省略号与把时间戳推到右侧），会拉伸整行；这里去掉拉伸并让宽度
    * 按内容收缩，同时 max-width:100% + overflow/text-overflow 保住长名的省略号，
@@ -299,16 +305,6 @@ body[data-flash-skin="on"] #root [class*="_sidebarCol"] span:not(:has(svg)):not(
   overflow: hidden !important;
   text-overflow: ellipsis !important;
   white-space: nowrap !important;
-}
-
-/* 左栏时间戳去掉继承的“辉光描边”（用户要求）：时间戳(_time/_timestamp，形如
- * “4天”)是左栏里最小的文字。Option B 的宽柔白辉光(3/9/16/24px)会对小字成倍扩散，
- * 把两个字符泡成模糊一团、叠上浓度药丸后更显脏糊。这里只对左栏时间戳 text-shadow:none，
- * 保留浓度药丸底，让它在深/浅底色上都保持锐利。仅命中左栏内名称含 _time 的时间戳
- * （wnFoaW_time/wnFoaW_timestamp）；不影响左栏标题/区块文字及中间列、右栏、插件面板。
- * 不依赖 dsh-flash。 */
-body[data-flash-skin="on"] #root [class*="_sidebarCol"] [class*="_time"] {
-  text-shadow: none !important;
 }
 
 /* 贴字底（所有文字，用户要求“只在文字下加背景、没字的地方不要”）：

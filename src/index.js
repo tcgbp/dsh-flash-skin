@@ -830,11 +830,13 @@ function createVideoHandlers(ctx, activeStreams) {
 }
 
 function sendJson(res, status, value) {
-  send(res, status, {
+  const body = JSON.stringify(value);
+  res.writeHead(status, {
+    "X-Content-Type-Options": "nosniff",
     "Content-Type": "application/json; charset=utf-8",
-    "Content-Length": String(Buffer.byteLength(JSON.stringify(value))),
+    "Content-Length": String(Buffer.byteLength(body)),
   });
-  res.end(JSON.stringify(value));
+  res.end(body);
 }
 
 export const inject = ["webServer"];

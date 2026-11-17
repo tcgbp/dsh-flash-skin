@@ -48,6 +48,30 @@ body[data-flash-skin="on"] .flash-skin-backdrop {
   mask-image: linear-gradient(270deg, transparent 0%, rgb(0 0 0 / 20%) 10%, black 30%, black 100%);
 }
 
+/* Horizontal flip of the rendered portrait MEDIA (independent of the dual
+   gate). The presenter sets `data-flip` on the backdrop root (=right/left/both).
+   A frame node IS the <img>/<video> element itself (upsertFrame puts the
+   frame class on the media node), so the flip must target the frame element
+   and NOT a nested img/video (which never exists and would match nothing).
+   Each flipped frame gets `scaleX(-1)` AND a REVERSED mask gradient: because
+   scaleX(-1) mirrors the element's own mask too, re-pointing the gradient to
+   the opposite 90/270deg restores the original fade orientation, so the only
+   visible effect is the mirrored image with the mask visually untouched:
+   - data-flip="right"/"both" -> mirror the primary (right) frame
+   - data-flip="left"/"both"  -> mirror the secondary (--left) frame
+   translateY(-50%) is restated so mirroring never drops the vertical
+   centering (transform is fully overridden). */
+.flash-skin-backdrop[data-flip="right"] .flash-skin-sequence-frame:not(.flash-skin-sequence-frame--left),
+.flash-skin-backdrop[data-flip="both"] .flash-skin-sequence-frame:not(.flash-skin-sequence-frame--left) {
+  transform: translateY(-50%) scaleX(-1);
+  mask-image: linear-gradient(270deg, transparent 0%, rgb(0 0 0 / 20%) 10%, black 30%, black 100%);
+}
+.flash-skin-backdrop[data-flip="left"] .flash-skin-sequence-frame--left,
+.flash-skin-backdrop[data-flip="both"] .flash-skin-sequence-frame--left {
+  transform: translateY(-50%) scaleX(-1);
+  mask-image: linear-gradient(90deg, transparent 0%, rgb(0 0 0 / 20%) 10%, black 30%, black 100%);
+}
+
 /* Frames (both <img> and <video>) default to hidden; the presenter flips the
    backdrop to data-media="sequence" only when a frame is really attached, and
    the sequence rule below reveals whichever node carries the frame class. */
@@ -1085,7 +1109,8 @@ body[data-flash-skin="on"] textarea {
   min-height: 128px;
 }
 
-.flash-portrait-group__image img {
+.flash-portrait-group__image img,
+.flash-portrait-group__image video {
   display: block;
   width: 100%;
   aspect-ratio: 1 / 1;

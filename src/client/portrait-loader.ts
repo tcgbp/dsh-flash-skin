@@ -147,9 +147,17 @@ export function createPortraitLoader(options: PortraitLoaderOptions) {
     const media: PortraitMedia = asset.kind === "video"
       ? {
           kind: "video", node, src: url,
-          // video resolves once it can actually render a frame.
+          // video resolves once it can actually render a frame. `canplay`
+          // (used by handleLoad) fires strictly AFTER `loadeddata`, so by the
+          // time handleLoad runs the loadeddata event has already been missed;
+          // check readyState first and only await the event when data is not
+          // yet available.
           ready: () => new Promise<void>((resolve, reject) => {
-            node.addEventListener("loadeddata", () => resolve());
+            if (node.readyState >= 2) {
+              resolve();
+              return;
+            }
+            node.addEventListener("loadeddata", () => resolve(), { once: true });
             node.addEventListener("error", () => reject(new Error("video load error")), { once: true });
           }),
           release: () => {

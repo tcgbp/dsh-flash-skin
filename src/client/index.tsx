@@ -66,6 +66,9 @@ const SET_KEY = "dsh-flash-skin.set";
 const LEFT_SET_KEY = "dsh-flash-skin.left-set";
 // Dual left+right portrait mode on/off ("1"/"0").
 const DUAL_KEY = "dsh-flash-skin.dual";
+// Portrait horizontal flip mode: "right" (mirror the main image), "left"
+// (mirror the secondary image), "both" (mirror both sides) or "off" (none).
+const FLIP_KEY = "dsh-flash-skin.flip";
 const DRIVER_KEY = "dsh-flash-skin.driver";
 // Blend strength (%) of the translucent background chip behind chat text.
 // Persisted so the readability scrim keeps a user-tuned opacity across reloads,
@@ -447,12 +450,27 @@ const DEFAULT_PORTRAIT_SET: DefaultPortraitSet = {
   en: "Default",
 };
 
+// The portrait-set dropdown in the quick panel offers an empty option so a
+// user with configured groups can switch back to "no portrait at all" (flat
+// shell) without clearing the config. The empty option's value is the empty
+// string; the presenter keeps it as a distinct `{ id: "" }` set whose group
+// lookup finds no images, so the right-side backdrop just renders nothing.
+const EMPTY_PORTRAIT_SET_ID = "";
+
 // How the level slider is driven:
 // - "manual"  → user drags the slider; the value persists across sessions.
 // - "composite" → a read-only weighted gauge computed from live conversation
 //               signals (token usage, context pressure, reasoning effort,
 //               decode speed); never persisted as the manual level.
 type DriverMode = "manual" | "composite";
+
+// Portrait horizontal-flip mode. Independent of the dual gate: it mirrors the
+// already-rendered portrait frame(s) via a `scaleX(-1)` transform.
+// - "right" → mirror the primary (right) image only.
+// - "left"  → mirror the secondary (left) image only.
+// - "both"  → mirror both sides.
+// - "off"   → no mirroring (the default, unchanged from today).
+type FlipMode = "right" | "left" | "both" | "off";
 
 interface SkinSettings {
   enabled: boolean;
@@ -463,6 +481,8 @@ interface SkinSettings {
   leftSet?: string;
   // Dual left+right side mode. OFF keeps the classic single (right) portrait.
   dual: boolean;
+  // Horizontal flip mode (mirror the active portrait side(s)).
+  flip: FlipMode;
   driver: DriverMode;
 }
 
@@ -473,6 +493,7 @@ interface PreferenceStore {
   setSet(setId: string): Promise<void>;
   setLeftSet(setId: string): Promise<void>;
   setDual(dual: boolean): Promise<void>;
+  setFlip(flip: FlipMode): Promise<void>;
   setDriver(driver: DriverMode): Promise<void>;
   dispose(): void;
 }
@@ -659,6 +680,10 @@ class SkinPresenter {
   // on the ONE shared level axis (master axis = the primary set's frame count).
   private dual = false;
   private leftSet: PortraitSet = DEFAULT_PORTRAIT_SET;
+  // Horizontal flip mode for the rendered portrait frame(s). Independent of the
+  // dual gate: it just mirrors whichever side(s) match, via `data-flip` on the
+  // backdrop root (consumed by skin.css). Default OFF keeps today's look.
+  private flipMode: FlipMode = "off";
   private leftPortraits: ReturnType<typeof createPortraitLoader> | null = null;
   private leftPortraitsSources: readonly PortraitSource[] = [];
   private disposed = false;
@@ -742,8 +767,12 @@ class SkinPresenter {
   // Resolve a persisted/selected set id to a PortraitSet. Configured (custom)
   // ids must survive anyway: they carry their own configured group images, so
   // any unknown id resolves to `{ id }` and simply has nothing to show until a
-  // group with that id exists. Only the default set is pre-registered.
+  // group with that id exists. Only the default set is pre-registered. The
+  // empty option id (`""`) is kept verbatim as an explicit "no portrait" state
+  // so the right-side backdrop renders nothing instead of falling back to the
+  // default identity; other falsy values (unset) still mean the default set.
   private resolveSet(setId: string | undefined | null): PortraitSet {
+    if (setId === EMPTY_PORTRAIT_SET_ID) return { id: EMPTY_PORTRAIT_SET_ID };
     return { id: setId || DEFAULT_PORTRAIT_SET.id };
   }
 
@@ -786,6 +815,7 @@ class SkinPresenter {
     this.setEnabled(snapshot.enabled);
     this.setPortraitSet(this.resolveSet(snapshot.set));
     this.setDual(Boolean(snapshot.dual));
+    this.setFlip(snapshot.flip);
     this.setLeftSet(snapshot.leftSet || DEFAULT_PORTRAIT_SET.id);
   }
 
@@ -967,6 +997,26 @@ class SkinPresenter {
     return this.dual;
   }
 
+  getFlipMode() {
+    return this.flipMode;
+  }
+
+  // Set the horizontal flip mode. The stored mode is applied straight onto the
+  // backdrop root as `data-flip`; skin.css mirrors the matching frame side(s)
+  // with a `scaleX(-1)` transform. Mirroring is purely cosmetic and never
+  // touches the dual/layout gate, so flipping keeps this skin standalone.
+  setFlip(flip: FlipMode) {
+    if (this.disposed || this.flipMode === flip) return;
+    this.flipMode = flip;
+    this.applyFlip();
+  }
+
+  private applyFlip() {
+    if (this.disposed) return;
+    if (this.enabled) this.root.dataset.flip = this.flipMode;
+    else delete this.root.dataset.flip;
+  }
+
   // Rebuild the left-side loader from the persisted left set. No-op unless
   // that set is configured with at least one image and the skin is enabled.
   private rebuildLeftPortraits(nextSources = this.sourcesForSet(this.leftSet)) {
@@ -1017,6 +1067,7 @@ class SkinPresenter {
       this.applyTextBg();
       this.applyPortraitSize();
       this.applyScrim();
+      this.applyFlip();
       this.applyPalette();
       this.portraits.start();
       if (this.dual) this.rebuildLeftPortraits();
@@ -1971,6 +2022,68 @@ function DualModeRow({ scope, presenter, t }: DualModeRowProps) {
   );
 }
 
+interface FlipModeRowProps {
+  scope: PreferenceStore;
+  presenter: SkinPresenter;
+  t: (key: string) => string;
+}
+
+// 通用设置里的「翻转显示」选择行：独立于左右双图（dual）开关，纯粹对已渲染的
+// 帧施加水平镜像（scaleX(-1)）。副图判据看现有 dual 开关——dual 开启时提供四档
+// （右侧/左侧/两侧/关闭），dual 关闭（无副图）则只有「开启/关闭」两档（开启=翻转
+// 主图右侧）。读写经 presenter.setFlip + scope 持久化（FLIP_KEY），与快捷面板
+// FLIP_SWITCH 同源。
+function FlipModeRow({ scope, presenter, t }: FlipModeRowProps) {
+  const snapshot = useSyncExternalStore(
+    (listener) => scope.subscribe(listener),
+    () => scope.getSnapshot(),
+  );
+  const [pending, setPending] = useState(false);
+  if (!snapshot.enabled) return null;
+
+  // 有副图（dual 开）→ 四档；无副图（dual 关）→ 两档（开启=right, 关闭=off）。
+  const hasLeft = snapshot.dual;
+  const flip = presenter.getFlipMode();
+  const options: { value: FlipMode; label: string }[] = hasLeft
+    ? [
+        { value: "right", label: t("flip.right") },
+        { value: "left", label: t("flip.left") },
+        { value: "both", label: t("flip.both") },
+        { value: "off", label: t("flip.off") },
+      ]
+    : [
+        { value: "right", label: t("flip.on") },
+        { value: "off", label: t("flip.off") },
+      ];
+
+  return (
+    <div className="flash-appearance-binding flash-appearance-binding--flip" data-plugin={PACKAGE_ID}>
+      <span className="flash-appearance-binding__label">{t("flip")}</span>
+      <select
+        className="flash-driver-select"
+        id="flash-skin-flip"
+        aria-label={t("flip")}
+        title={t("flipHint")}
+        disabled={pending}
+        value={flip}
+        onChange={(event) => {
+          const next = event.currentTarget.value as FlipMode;
+          if (pending || flip === next) return;
+          setPending(true);
+          // 与快捷面板 FLIP_SWITCH 同一写路径：presenter 更新运行时（data-flip 属性
+          // 驱动 skin.css 镜像），scope 落 localStorage 持久化，二者独立、需同时调用。
+          presenter.setFlip(next);
+          void scope.setFlip(next).catch(() => undefined).finally(() => setPending(false));
+        }}
+      >
+        {options.map(({ value, label }) => (
+          <option key={value} value={value}>{label}</option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 interface LeftSetRowProps {
   scope: PreferenceStore;
   presenter: SkinPresenter;
@@ -2241,6 +2354,20 @@ function restoreDual(): boolean {
   return false;
 }
 
+// Restore the horizontal flip mode. Only known values are accepted; a present
+// but unrecognised value falls back to OFF (the standalone-unchanged default).
+function restoreFlip(): FlipMode {
+  try {
+    const raw = localStorage.getItem(FLIP_KEY);
+    if (raw === "right" || raw === "left" || raw === "both" || raw === "off") {
+      return raw;
+    }
+  } catch {
+    // storage may be unavailable
+  }
+  return "off";
+}
+
 // Restore the text-background blend strength (%). Defaults to DEFAULT_TEXT_BG_STRENGTH;
 // a present but non-numeric / out-of-range value snaps back to the default.
 function restoreTextBg(): number {
@@ -2337,11 +2464,12 @@ function createPreferenceStore(initialSet: string): PreferenceStore {
     set: initialSet ? initialSet : DEFAULT_PORTRAIT_SET.id,
     leftSet: restoreLeftSet(),
     dual: restoreDual(),
+    flip: restoreFlip(),
     driver: restoreDriver(),
   };
   const listeners = new Set<() => void>();
   const onStorage = (event: StorageEvent) => {
-    if (event.key !== SET_KEY && event.key !== LEFT_SET_KEY && event.key !== DUAL_KEY && event.key !== DRIVER_KEY) return;
+    if (event.key !== SET_KEY && event.key !== LEFT_SET_KEY && event.key !== DUAL_KEY && event.key !== FLIP_KEY && event.key !== DRIVER_KEY) return;
     const nextSetId = event.key === SET_KEY ? normalizeSetId(event.newValue) : undefined;
     const nextLeftSetId = event.key === LEFT_SET_KEY ? normalizeSetId(event.newValue) : undefined;
     const next = {
@@ -2349,12 +2477,18 @@ function createPreferenceStore(initialSet: string): PreferenceStore {
       set: event.key === SET_KEY ? (nextSetId ?? snapshot.set) : snapshot.set,
       leftSet: event.key === LEFT_SET_KEY ? (nextLeftSetId ?? snapshot.leftSet) : snapshot.leftSet,
       dual: event.key === DUAL_KEY ? event.newValue === "1" : snapshot.dual,
+      flip: event.key === FLIP_KEY
+        ? (event.newValue === "right" || event.newValue === "left" || event.newValue === "both" || event.newValue === "off"
+          ? event.newValue
+          : snapshot.flip)
+        : snapshot.flip,
       driver: event.key === DRIVER_KEY && (event.newValue === "manual" || event.newValue === "composite")
         ? event.newValue
         : snapshot.driver,
     };
     if (next.enabled === snapshot.enabled && next.set === snapshot.set
       && next.leftSet === snapshot.leftSet && next.dual === snapshot.dual
+      && next.flip === snapshot.flip
       && next.driver === snapshot.driver) return;
     snapshot = next;
     for (const listener of listeners) listener();
@@ -2402,6 +2536,16 @@ function createPreferenceStore(initialSet: string): PreferenceStore {
         // storage may be unavailable
       }
       snapshot = { ...snapshot, dual };
+      notify();
+    },
+    async setFlip(flip) {
+      if (flip === snapshot.flip) return;
+      try {
+        localStorage.setItem(FLIP_KEY, flip);
+      } catch {
+        // storage may be unavailable
+      }
+      snapshot = { ...snapshot, flip };
       notify();
     },
     async setDriver(driver) {
@@ -5054,6 +5198,7 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale,
                   const count = group.images.length;
                   const effectiveDark = group.darkLevel ?? MAX_LEVEL - 1;
                   const boundary = boundaryForDarkLevel(count, effectiveDark);
+                  const isVideoLike = mediaKindForUrl(src) === "video";
                   return (
                     <Fragment key={imageIndex}>
                       {imageIndex === boundary && count > 0 && (
@@ -5101,22 +5246,43 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale,
                         </>
                       ) : (
                         <>
-                          <img
-                            src={src}
-                            loading="lazy"
-                            alt=""
-                            draggable={false}
-                            className={
-                              "flash-portrait-group__img" + (hintSeen ? " flash-portrait-group__img--hinted" : "")
-                            }
-                            onClick={() => {
-                              setPreview(src);
-                              markHintSeen();
-                            }}
-                            onError={(event) => {
-                              event.currentTarget.style.opacity = "0.25";
-                            }}
-                          />
+                          {isVideoLike ? (
+                            <video
+                              src={src}
+                              muted
+                              autoPlay
+                              loop
+                              playsInline
+                              preload="metadata"
+                              className={
+                                "flash-portrait-group__img" + (hintSeen ? " flash-portrait-group__img--hinted" : "")
+                              }
+                              onClick={() => {
+                                setPreview(src);
+                                markHintSeen();
+                              }}
+                              onError={(event) => {
+                                event.currentTarget.style.opacity = "0.25";
+                              }}
+                            />
+                          ) : (
+                            <img
+                              src={src}
+                              loading="lazy"
+                              alt=""
+                              draggable={false}
+                              className={
+                                "flash-portrait-group__img" + (hintSeen ? " flash-portrait-group__img--hinted" : "")
+                              }
+                              onClick={() => {
+                                setPreview(src);
+                                markHintSeen();
+                              }}
+                              onError={(event) => {
+                                event.currentTarget.style.opacity = "0.25";
+                              }}
+                            />
+                          )}
                           {!hintSeen && (
                             <span className="flash-portrait-group__preview-hint" role="status">
                               {t("viewOriginal")}
@@ -5615,13 +5781,27 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale,
           >
             ✕
           </button>
-          <img
-            className="flash-lightbox__img"
-            src={preview}
-            alt=""
-            draggable={false}
-            onClick={(event) => event.stopPropagation()}
-          />
+          {mediaKindForUrl(preview) === "video" ? (
+            <video
+              className="flash-lightbox__img"
+              src={preview}
+              muted
+              autoPlay
+              loop
+              playsInline
+              controls
+              draggable={false}
+              onClick={(event) => event.stopPropagation()}
+            />
+          ) : (
+            <img
+              className="flash-lightbox__img"
+              src={preview}
+              alt=""
+              draggable={false}
+              onClick={(event) => event.stopPropagation()}
+            />
+          )}
         </div>
       )}
 
@@ -5842,6 +6022,13 @@ export function apply(ctx: ClientContext) {
         "primarySetHint": "主图像显示在右侧，并作为整条强度轴的基准。",
         "dual": "左右双图",
         "dualHint": "在左侧同时镜像显示一份次要图像，与右侧共用同一条强度轴、同步进退。",
+        "flip": "翻转显示",
+        "flipHint": "对已渲染的人物帧做水平镜像（scaleX）。开启左右双图时可选四档：右侧=翻转主图、左侧=翻转副图、两侧=全翻转、关闭=不翻转；未开双图时仅两档（开启=翻转主图、关闭）。",
+        "flip.right": "右侧（主图）",
+        "flip.left": "左侧（副图）",
+        "flip.both": "两侧",
+        "flip.on": "开启",
+        "flip.off": "关闭",
         "leftSet": "副图（左侧）",
         "leftSetHint": "启用左右双图后，选择显示在左侧镜像位的图组。",
         "portraitSwitch": "人物强度",
@@ -5901,6 +6088,13 @@ export function apply(ctx: ClientContext) {
         "primarySetHint": "The main image renders on the right and anchors the shared level axis.",
         "dual": "Left + right images",
         "dualHint": "Mirror a secondary image on the left, advancing in step with the right on one shared level axis.",
+        "flip": "Flip display",
+        "flipHint": "Mirror the rendered portrait frames horizontally (scaleX). With dual mode on: right=mirror main, left=mirror secondary, both=mirror both, off=none; with dual off only two options (on=mirror main, off).",
+        "flip.right": "Right (main)",
+        "flip.left": "Left (secondary)",
+        "flip.both": "Both",
+        "flip.on": "On",
+        "flip.off": "Off",
         "leftSet": "Secondary image (left)",
         "leftSetHint": "With dual mode on, pick the image group shown on the mirrored left slot.",
         "portraitSwitch": "Person level",
@@ -5984,6 +6178,20 @@ export function apply(ctx: ClientContext) {
     inject: () => ({ scope, presenter, t: setLabel }),
   }, DualModeRow));
 
+  // 「翻转显示」选择行：独立于左右双图（dual）开关、纯粹对已渲染帧做水平镜像。
+  // 与快捷面板 FLIP_SWITCH 同源，写入 scope（localStorage FLIP_KEY）；皮肤未启用时
+  // 不显示。副图判据看现有 dual 开关（dual 开→四档，dual 关→两档）。置于「左右
+  // 双人物」行之下、「次人物（左侧）」行之上。
+  ctx.slots.inject("settings.general.item", () => ctx.slots.register({
+    name: "settings.general.item",
+    id: "flash-flip-mode",
+    // Between「左右双人物」(dual at 10.51) and「次人物（左侧）」(left-set at 10.53);
+    // higher order = lower on screen.
+    order: 10.52,
+    locale: LOCALE_NAMESPACE,
+    inject: () => ({ scope, presenter, t: setLabel }),
+  }, FlipModeRow));
+
   // 左侧「次人物（左侧）」选择行：与快捷面板 LEFT_SET 开关同源，仅当皮肤启用
   // 且双人物开启时显示；选择经 presenter.setLeftSet + scope 持久化（LEFT_SET_KEY）。
   ctx.slots.inject("settings.general.item", () => ctx.slots.register({
@@ -6045,6 +6253,7 @@ export function apply(ctx: ClientContext) {
   const PORTRAIT_SIZE_SWITCH_ID = `${PACKAGE_ID}:portrait-size`;
   const SCRIM_STRENGTH_SWITCH_ID = `${PACKAGE_ID}:scrim-strength`;
   const DUAL_SWITCH_ID = `${PACKAGE_ID}:portrait-dual`;
+  const FLIP_SWITCH_ID = `${PACKAGE_ID}:portrait-flip`;
   const LEFT_SET_SWITCH_ID = `${PACKAGE_ID}:portrait-left-set`;
   const FORMULA_MODE_SWITCH_ID = `${PACKAGE_ID}:formula-mode`;
   // 这些皮肤开关共享同一个簇字符串，宿主会把它们折叠成一张以
@@ -6062,8 +6271,12 @@ export function apply(ctx: ClientContext) {
   // page) when present, else the built-in three defaults. The display name is
   // resolved against the host locale at call time; the panel re-runs
   // options() on each render, so detail-page renames surface on the next
-  // open/re-render.
-  const portraitSetOptions = () => {
+  // open/re-render. `includeEmpty` prepends an empty-looking option (value "",
+  // label a non-breaking space so the row keeps its height) used by the MAIN
+  // portrait-set dropdown: selecting it switches the right-side portrait off
+  // entirely (no images → flat shell) even when the config still holds groups.
+  // The left-set dropdown passes false so it keeps its current behavior.
+  const portraitSetOptions = (includeEmpty: boolean) => {
     let configured: readonly PortraitGroupConfig[] = [];
     try {
       const groupsSnapshot = configForm?.getSnapshot ? configForm.getSnapshot() : undefined;
@@ -6086,10 +6299,12 @@ export function apply(ctx: ClientContext) {
       // host locale missing — defaults are shown
     }
     const list = configured.length > 0 ? configured : [DEFAULT_PORTRAIT_SET];
-    return list.map((set) => ({
+    const opts = list.map((set) => ({
       label: setDisplayName(set, active),
       value: normalizeSetId(set.id) ?? set.id,
     }));
+    if (includeEmpty) opts.unshift({ label: "\u00A0", value: EMPTY_PORTRAIT_SET_ID });
+    return opts;
   };
 
   // Slot picked up by the portrait-groups settings mirror below (registered in
@@ -6194,6 +6409,7 @@ export function apply(ctx: ClientContext) {
         quickControl?.notifyChange?.(PORTRAIT_SLIDER_SWITCH_ID);
         quickControl?.notifyChange?.(DUAL_SWITCH_ID);
         quickControl?.notifyChange?.(LEFT_SET_SWITCH_ID);
+        quickControl?.notifyChange?.(FLIP_SWITCH_ID);
         quickControl?.notifyChange?.(FORMULA_MODE_SWITCH_ID);
       }
       const driver = scope.getSnapshot().driver;
@@ -6226,7 +6442,9 @@ export function apply(ctx: ClientContext) {
         type: "select",
         group: "appearance",
         order: 26,
-        options: () => portraitSetOptions(),
+        // MAIN portrait-set dropdown: include the leading empty option so the
+        // user can turn the right-side portrait off even with groups configured.
+        options: () => portraitSetOptions(true),
         getValue: () => presenter.getSet().id,
         setValue: (value) => {
           void presenter.choose(String(value)).catch(() => undefined)
@@ -6256,7 +6474,45 @@ export function apply(ctx: ClientContext) {
             .finally(() => {
               quickControl?.notifyChange?.(DUAL_SWITCH_ID);
               quickControl?.notifyChange?.(LEFT_SET_SWITCH_ID);
+              // 切换双人物会改变「翻转显示」的档位集（两档/四档），刷新其选项。
+              quickControl?.notifyChange?.(FLIP_SWITCH_ID);
             });
+        },
+        visible: () => presenter.isEnabled(),
+      });
+      // 「翻转显示」下拉 (26.12, 紧跟「左右双人物」开关)：独立于 dual 开关、纯粹对
+      // 已渲染帧做水平镜像（scaleX）。副图判据看现有 dual 开关——dual 开启时提供
+      // 四档（右侧/左侧/两侧/关闭），dual 关闭则只有两档（开启=翻转主图右侧，关闭）。
+      // 读写经 presenter.setFlip + scope.setFlip 持久化（FLIP_KEY），与通用设置行
+      // FlipModeRow 同源；只作用于本皮肤自己的 backdrop 帧节点（data-flip 属性）。
+      const flipDispose = reg.registerSwitch?.({
+        id: FLIP_SWITCH_ID,
+        label: () => setLabel("flip"),
+        cluster: FLASH_SKIN_CLUSTER,
+        icon: "palette",
+        type: "select",
+        group: "appearance",
+        order: 26.12,
+        options: () => {
+          const hasLeft = presenter.getDual();
+          return hasLeft
+            ? [
+                { value: "right", label: setLabel("flip.right") },
+                { value: "left", label: setLabel("flip.left") },
+                { value: "both", label: setLabel("flip.both") },
+                { value: "off", label: setLabel("flip.off") },
+              ]
+            : [
+                { value: "right", label: setLabel("flip.on") },
+                { value: "off", label: setLabel("flip.off") },
+              ];
+        },
+        getValue: () => presenter.getFlipMode(),
+        setValue: (value) => {
+          const flip = String(value) as FlipMode;
+          presenter.setFlip(flip);
+          void scope.setFlip(flip).catch(() => undefined)
+            .finally(() => quickControl?.notifyChange?.(FLIP_SWITCH_ID));
         },
         visible: () => presenter.isEnabled(),
       });
@@ -6272,7 +6528,9 @@ export function apply(ctx: ClientContext) {
         type: "select",
         group: "appearance",
         order: 26.15,
-        options: () => portraitSetOptions(),
+        // LEFT-set dropdown: no empty option — an empty left set (blank)
+        // simply renders no mirrored portrait and needs no extra entry.
+        options: () => portraitSetOptions(false),
         getValue: () => presenter.getLeftSet().id,
         setValue: (value) => {
           const id = String(value);
@@ -6470,6 +6728,8 @@ export function apply(ctx: ClientContext) {
         else reg.unregisterSwitch?.(PORTRAIT_SET_SWITCH_ID);
         if (typeof dualDispose === "function") dualDispose();
         else reg.unregisterSwitch?.(DUAL_SWITCH_ID);
+        if (typeof flipDispose === "function") flipDispose();
+        else reg.unregisterSwitch?.(FLIP_SWITCH_ID);
         if (typeof leftSetDispose === "function") leftSetDispose();
         else reg.unregisterSwitch?.(LEFT_SET_SWITCH_ID);
         if (typeof driverDispose === "function") driverDispose();

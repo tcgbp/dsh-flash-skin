@@ -46,11 +46,10 @@ const MEDIA_TYPE_BY_SLUG = Object.freeze({
   jpeg: "image/jpeg",
   webp: "image/webp",
   gif: "image/gif",
-  // Ambient background videos, served with their own content type.
+  // Ambient background videos, served with their own content type. Only
+  // mp4/webm are supported — mov/ogg are deliberately excluded.
   mp4: "video/mp4",
   webm: "video/webm",
-  mov: "video/quicktime",
-  ogg: "video/ogg",
 });
 const SLUG_BY_MEDIA_TYPE = Object.freeze(
   Object.fromEntries(Object.entries(MEDIA_TYPE_BY_SLUG).map(([slug, mediaType]) => [mediaType, slug])),

@@ -242,11 +242,10 @@ const MEDIA_TYPE_BY_EXT: Record<string, string> = {
   ".jpeg": "image/jpeg",
   ".webp": "image/webp",
   ".gif": "image/gif",
-  // Ambient background videos: mp4/webm (widely decodable) + mov/ogg.
+  // Ambient background videos: mp4/webm only (widely decodable). Other video
+  // containers (mov/ogg) are intentionally unsupported.
   ".mp4": "video/mp4",
   ".webm": "video/webm",
-  ".mov": "video/quicktime",
-  ".ogg": "video/ogg",
 };
 
 // Like bookkeeping: persisted per device under FLASH_SKIN_LIKED_KEY (group id →
@@ -3137,7 +3136,8 @@ interface ZipImageEntry {
 const MAX_IMAGES_PER_IMPORT = 64;
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
 // Ambient background videos that the backdrop can render as a looping layer.
-const VIDEO_EXTENSIONS = new Set([".mp4", ".webm", ".mov", ".ogg"]);
+// Only mp4/webm are supported — mov/ogg are deliberately excluded.
+const VIDEO_EXTENSIONS = new Set([".mp4", ".webm"]);
 
 // Classify a backdrop source URL by its file extension so the portrait loader
 // can build the right media element (<img> vs <video>). Unknown/extensionless
@@ -3234,9 +3234,6 @@ function mediaSniffFromBytes(bytes: Uint8Array): string {
   if (bytes.length >= 4 && bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3) {
     return "video/webm"; // EBML (webm/mkv)
   }
-  if (bytes.length >= 4 && bytes[0] === 0x4f && bytes[1] === 0x67 && bytes[2] === 0x67 && bytes[3] === 0x53) {
-    return "video/ogg"; // OggS (ogg)
-  }
   return "";
 }
 
@@ -3263,10 +3260,9 @@ const EXT_BY_MEDIA_TYPE: Record<string, string> = {
   "image/webp": ".webp",
   "image/gif": ".gif",
   // Ambient background videos keep their real extension so a re-import works.
+  // Only mp4/webm are supported (mov/ogg are not).
   "video/mp4": ".mp4",
   "video/webm": ".webm",
-  "video/quicktime": ".mov",
-  "video/ogg": ".ogg",
 };
 
 function extensionForMediaUrl(url: string, bytes: Uint8Array): string {
@@ -5080,7 +5076,7 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale,
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*,video/mp4,video/webm,video/quicktime,video/ogg,.mp4,.webm,.mov,.ogg"
+        accept="image/*,video/mp4,video/webm,.mp4,.webm"
         hidden
         aria-hidden="true"
         tabIndex={-1}

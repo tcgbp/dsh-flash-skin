@@ -84,6 +84,40 @@ const DRIVER_KEY = "dsh-flash-skin.driver";
 const TEXT_BG_KEY = "dsh-flash-skin.text-bg-strength";
 const WEIGHTS_KEY = "dsh-flash-skin.weights";
 
+// Slideshow driver persistence: JSON `{ ms: number, playing: boolean }` in a
+// single key. `ms` is the per-frame dwell time in milliseconds, `playing` the
+// play/pause state, so a user's dwell and pause carry across reloads. Guards
+// against corrupt / unknown persisted values.
+const SLIDESHOW_KEY = "dsh-flash-skin.slideshow";
+const SLIDESHOW_MIN_MS = 500;
+const SLIDESHOW_MAX_MS = 8000;
+const SLIDESHOW_STEP_MS = 500;
+const DEFAULT_SLIDESHOW_MS = 2000;
+interface SlideshowPrefs {
+  ms: number;
+  playing: boolean;
+}
+const DEFAULT_SLIDESHOW_PREFS: SlideshowPrefs = { ms: DEFAULT_SLIDESHOW_MS, playing: true };
+function clampMs(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_SLIDESHOW_MS;
+  return Math.min(SLIDESHOW_MAX_MS, Math.max(SLIDESHOW_MIN_MS, Math.round(value / SLIDESHOW_STEP_MS) * SLIDESHOW_STEP_MS));
+}
+function restoreSlideshowPrefs(): SlideshowPrefs {
+  try {
+    const raw = localStorage.getItem(SLIDESHOW_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<SlideshowPrefs>;
+      return {
+        ms: clampMs(typeof parsed.ms === "number" ? parsed.ms : NaN),
+        playing: parsed.playing === true,
+      };
+    }
+  } catch {
+    // storage may be unavailable
+  }
+  return DEFAULT_SLIDESHOW_PREFS;
+}
+
 // Weight-formula display mode for the composite input-row gauge ("full" = the
 // per-dimension term breakdown 用量×因子, "compact" = weighted sum + frame only,
 // "hidden" = no formula chip at all — just the gauge). Persisted alongside the
@@ -467,9 +501,15 @@ const EMPTY_PORTRAIT_SET_ID = "";
 // How the level slider is driven:
 // - "manual"  → user drags the slider; the value persists across sessions.
 // - "composite" → a read-only weighted gauge computed from live conversation
-//               signals (token usage, context pressure, reasoning effort,
-//               decode speed); never persisted as the manual level.
-type DriverMode = "manual" | "composite";
+// Driver mode for the strength gauge:
+// - "manual"    → user drags the slider; the level is persisted and applied.
+// - "composite" → read-only gauge recomputed from weighted live signals (token
+//                 usage, context pressure, reasoning effort, decode speed);
+//                 never persisted as the manual level.
+// - "slideshow" → auto-play: a timer advances the level through the current
+//                 group's frames in a loop (speed + pause/play controls), with
+//                 no dependency on live inference signals.
+type DriverMode = "manual" | "composite" | "slideshow";
 
 // Portrait horizontal-flip mode. Independent of the dual gate: it mirrors the
 // already-rendered portrait frame(s) via a `scaleX(-1)` transform.
@@ -1295,7 +1335,7 @@ function FlashLevelControl({
   // the datum is the same scale end to end.
   const axisMax = Math.max(MAX_LEVEL, presenter.getPortraitCount());
   const [level, setLevel] = useState(() => {
-    if (driver === "composite") return 0;
+    if (driver !== "manual") return 0;
     return clampLevel(settings.level, axisMax);
   });
   const [interacting, setInteracting] = useState(false);
@@ -1308,14 +1348,14 @@ function FlashLevelControl({
   }, [enabled, load]);
 
   useEffect(() => {
-    // Composite driver owns both the palette and the portrait through
-    // CompositeLevelControl (it maps the weighted score straight onto the
-    // portrait frames and drives the light/dark shell). Calling setLevel() here
-    // would run AFTER that component's mount effect (parent effects run last on
-    // mount) and force the portrait back to the first frame, overriding the
-    // stopped session's real score — so composite skips the level push entirely
-    // and never persists a durable level (composite has none).
-    if (driver === "composite") return;
+    // Composite/slideshow drivers own the palette and portrait through their
+    // dedicated controls (CompositeLevelControl / SlideshowLevelControl); they
+    // map their own signal (weighted score / timer) straight onto the portrait
+    // frames. Calling setLevel() here would run AFTER that component's mount
+    // effect (parent effects run last on mount) and fight the driven frame — so
+    // the non-manual drivers skip the level push and never persist a durable
+    // level (neither has one).
+    if (driver !== "manual") return;
     if (enabled) presenter.setLevel(level);
     try {
       localStorage.setItem(LEVEL_KEY, String(level));
@@ -1327,17 +1367,33 @@ function FlashLevelControl({
   if (!enabled) return null;
 
   const progressRatio = Math.min(1, level / axisMax);
-  const readOnly = driver === "composite";
+  const readOnly = driver !== "manual";
   // The grip spans the active group's staged frame count plus one (N+1 stops)
   // so every frame stays reachable; a set with no frames keeps the fixed
   // 0..MAX_LEVEL baseline instead of collapsing the slider.
   const sliderMax = axisMax;
 
+  // Slideshow driver: an independent component owns a timer that auto-advances
+  // the level through the active group's frames in a loop, with speed +
+  // pause/play controls. It needs no projection hooks, so it renders before the
+  // composite branch.
+  if (driver === "slideshow") {
+    return (
+      <SlideshowLevelControl
+        presenter={presenter}
+        axisMax={axisMax}
+        count={presenter.getPortraitCount()}
+        enabled={enabled}
+        t={t}
+      />
+    );
+  }
+
   // Composite driver: hand the render off to a dedicated component that owns
   // the projection hooks — a separate component means the useProjection calls
   // there are unconditional. A host without the standard hook renders a frozen
   // zero gauge instead of crashing.
-  if (readOnly && typeof useProjection === "function") {
+  if (driver === "composite" && readOnly && typeof useProjection === "function") {
     return (
       <CompositeLevelControl
         useProjection={useProjection}
@@ -1455,6 +1511,7 @@ function DriverRow({ scope, t }: DriverRowProps) {
   const options: { value: DriverMode; label: string }[] = [
     { value: "manual", label: t("driver.manual") },
     { value: "composite", label: t("driver.composite") },
+    { value: "slideshow", label: t("driver.slideshow") },
   ];
 
   return (
@@ -1481,6 +1538,95 @@ function DriverRow({ scope, t }: DriverRowProps) {
           <option key={value} value={value}>{label}</option>
         ))}
       </select>
+    </div>
+  );
+}
+
+// Slideshow driver view: an auto-play control that advances the level through
+// the active group's frames in a loop on a timer. The user can pause/resume and
+// tune the per-frame dwell time (速度滑块). It drives the portrait directly
+// through the presenter — with no dependence on live inference signals — and,
+// like composite, never persists a durable manual level; only the dwell time
+// and play state are remembered.
+function SlideshowLevelControl({
+  presenter,
+  axisMax,
+  count,
+  enabled,
+  t,
+}: {
+  presenter: SkinPresenter;
+  axisMax: number;
+  count: number;
+  enabled: boolean;
+  t?: (key: string) => string;
+}) {
+  const [prefs, setPrefs] = useState<SlideshowPrefs>(() => restoreSlideshowPrefs());
+  const effectiveMs = clampMs(prefs.ms);
+  const [level, setLevel] = useState(0);
+
+  // Apply the current level to the portrait whenever it changes (or on mount,
+  // when the slideshow starts from frame one).
+  useEffect(() => {
+    if (enabled) presenter.setLevel(level);
+  }, [level, enabled, presenter]);
+
+  // Timer that auto-advances the level. Recreated only when play state, dwell,
+  // the axis range, or enabled changes — not on every frame tick.
+  useEffect(() => {
+    if (!enabled || !prefs.playing) return;
+    const id = window.setInterval(() => {
+      setLevel((prev) => (prev >= axisMax ? 0 : prev + 1));
+    }, effectiveMs);
+    return () => window.clearInterval(id);
+  }, [enabled, prefs.playing, effectiveMs, axisMax]);
+
+  // Persist dwell + play state across reloads.
+  useEffect(() => {
+    try {
+      localStorage.setItem(SLIDESHOW_KEY, JSON.stringify({ ms: effectiveMs, playing: prefs.playing }));
+    } catch {
+      // storage may be unavailable
+    }
+  }, [effectiveMs, prefs.playing]);
+
+  const secondsLabel = `${(effectiveMs / 1000).toFixed(1)}s`;
+  return (
+    <div
+      className="flash-level-control flash-level-control--slideshow"
+      data-plugin={PACKAGE_ID}
+      data-state="ready"
+    >
+      <div className="flash-slideshow">
+        <button
+          type="button"
+          className="flash-slideshow__toggle"
+          disabled={!enabled}
+          aria-pressed={prefs.playing}
+          onClick={() => setPrefs((prev) => ({ ...prev, playing: !prev.playing }))}
+        >
+          {prefs.playing ? (t ? t("slideshow.pause") : "暂停") : (t ? t("slideshow.play") : "继续")}
+        </button>
+        <label className="flash-slideshow__speed" title={t ? t("slideshow.speedHint") : "每张停留时长"}>
+          <span>{t ? t("slideshow.speed") : "速度"}</span>
+          <input
+            type="range"
+            min={SLIDESHOW_MIN_MS}
+            max={SLIDESHOW_MAX_MS}
+            step={SLIDESHOW_STEP_MS}
+            value={effectiveMs}
+            aria-label={t ? t("slideshow.speed") : "速度"}
+            onChange={(event) => {
+              const next = Number(event.currentTarget.value);
+              setPrefs((prev) => ({ ...prev, ms: clampMs(Number.isFinite(next) ? next : NaN) }));
+            }}
+          />
+          <b>{secondsLabel}</b>
+        </label>
+        <span className="flash-slideshow__frame">
+          {count > 0 ? `${Math.min(level, axisMax) + 1}/${count}` : "—"}
+        </span>
+      </div>
     </div>
   );
 }
@@ -2360,7 +2506,7 @@ function restoreInitialSet(): string {
 function restoreDriver(): DriverMode {
   try {
     const raw = localStorage.getItem(DRIVER_KEY);
-    if (raw === "manual" || raw === "composite") return raw;
+    if (raw === "manual" || raw === "composite" || raw === "slideshow") return raw;
   } catch {
     // storage may be unavailable
   }
@@ -2518,7 +2664,7 @@ function createPreferenceStore(initialSet: string): PreferenceStore {
           ? event.newValue
           : snapshot.flip)
         : snapshot.flip,
-      driver: event.key === DRIVER_KEY && (event.newValue === "manual" || event.newValue === "composite")
+      driver: event.key === DRIVER_KEY && (event.newValue === "manual" || event.newValue === "composite" || event.newValue === "slideshow")
         ? event.newValue
         : snapshot.driver,
     };
@@ -2857,6 +3003,11 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "fileTooLargeVideo": "视频不能超过 48MB",
     "readFailed": "读取图片失败，请重试",
     "uploadFailed": "导入失败，请重试",
+    "pickFolderImage": "从文件夹选图",
+    "pickFolderImageHint": "选择一个含图片/视频的文件夹或散落的文件（支持多选），批量导入：可新建一个皮肤组，或追加到当前组。仅支持 mp4/webm 视频。",
+    "fileNotMediaFolder": "选择的文件夹里没有可用的图片或视频",
+    "folderImported": "已从文件夹导入 {n} 个素材，创建了新的皮肤组",
+    "folderAppended": "已向本组追加 {n} 个素材",
     "defaultGroup": "新的皮肤组",
     "darkLevel": "深浅切换点",
     "darkLevelHint": "用左右箭头逐档移动深浅切换点：箭头左侧为浅色外壳，右侧为深色外壳。",
@@ -2994,6 +3145,11 @@ const CONFIG_TEXTS: Record<string, Record<string, string>> = {
     "fileTooLargeVideo": "Video must be 48MB or smaller",
     "readFailed": "Failed to read the image, please retry",
     "uploadFailed": "Import failed, please retry",
+    "pickFolderImage": "Pick from folder",
+    "pickFolderImageHint": "Pick a folder of images/videos or loose files (multi-select supported) to batch-import: the picker can create a new group, or append to the current group. Only mp4/webm videos are supported.",
+    "fileNotMediaFolder": "The chosen folder has no usable images or videos",
+    "folderImported": "Imported {n} items from the folder and created a new group",
+    "folderAppended": "Appended {n} items to this group",
     "defaultGroup": "New group",
     "darkLevel": "Light/dark threshold",
     "darkLevelHint": "Use the arrows to move the light/dark threshold one level at a time: images to their left keep the light shell, images to their right switch to dark.",
@@ -3664,6 +3820,12 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale,
   // which slot the picked image should land in (add → append, replace → swap).
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const pendingPick = useRef<{ kind: "add" | "replace"; groupIndex: number; imageIndex?: number } | null>(null);
+  // A second hidden <input type=file webkitdirectory> backs the "从文件夹选图"
+  // buttons so the user can multi-select a whole folder of images/videos in one
+  // go. folderPickTarget records the destination: a fresh new group (optionally
+  // named after the folder) or an append into an existing group.
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
+  const folderPickTarget = useRef<{ kind: "newGroup"; name?: string } | { kind: "group"; groupIndex: number } | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   // Whether the config card body is collapsed. Defaults to collapsed so the
   // plugin detail page shows only a compact header until the user expands it
@@ -4690,6 +4852,101 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale,
     }
   };
 
+  // ── Folder batch import ───────────────────────────────────────────────────
+  // Append resolved media URL(s) to an existing group in one commit. Accepts a
+  // single URL or a list (folder pick / URL add), and no-ops on an empty list
+  // so callers can batch without an extra emptiness check.
+  const addImages = (groupIndex: number, urls: string[]) => {
+    if (urls.length === 0) return;
+    const next = withGroup(groupIndex, (group) => ({ ...group, images: [...group.images, ...urls] }));
+    void commit(next);
+  };
+
+  // Create a brand-new group seeded with the given resolved media URLs in a
+  // single commit. The optional base names (defaulting to the fixed built-in
+  // bilingual placeholders) avoid recording the live UI locale as a permanent
+  // name, mirroring addGroup's reasoning. darkLevel rides the shared dynamic
+  // axis for the new frame count.
+  const addGroupWithImages = (urls: string[], baseZh?: string, baseEn?: string) => {
+    if (urls.length === 0) return;
+    const zh = (baseZh || "").trim() || CONFIG_TEXTS.zh.defaultGroup;
+    const en = (baseEn || "").trim() || CONFIG_TEXTS.en.defaultGroup;
+    const next: PortraitGroupsConfig = [...groups, {
+      id: newGroupId(),
+      name: zh,
+      zh,
+      en,
+      darkLevel: clampLevel(MAX_LEVEL - 1, dividerAxisMax(urls.length)),
+      images: urls,
+    }];
+    void commit(next);
+  };
+
+  // Open the folder picker for a destination. "newGroup" targets a fresh group
+  // (the folder base name is used as the group name); "group" appends into an
+  // existing group at groupIndex.
+  const openFolderPicker = (target: { kind: "newGroup"; name?: string } | { kind: "group"; groupIndex: number }) => {
+    if (!writable || busy) return;
+    folderPickTarget.current = target;
+    folderInputRef.current?.click();
+  };
+
+  // Resolve one local media File into its persistent reference, mirroring the
+  // single-file picker: images embed as base64 data URLs, ambient videos go
+  // through the host verbatim-file upload route so the config only stores a
+  // serve URL. Throws on an unsupported/oversized file or a failed read/upload.
+  const resolveLocalMedia = async (file: File): Promise<string> => {
+    const isVideo = file.type.startsWith("video/");
+    if (!file.type.startsWith("image/") && !isVideo) {
+      throw new Error("unsupported media type");
+    }
+    if (file.size > (isVideo ? MAX_LOCAL_VIDEO_BYTES : MAX_LOCAL_IMAGE_BYTES)) {
+      throw new Error(isVideo ? "video too large" : "image too large");
+    }
+    return isVideo ? postSingleVideo(file) : readLocalFile(file);
+  };
+
+  const onFolderInputChange = async (event: ReactChangeEvent<HTMLInputElement>) => {
+    const input = event.currentTarget;
+    const target = folderPickTarget.current;
+    folderPickTarget.current = null;
+    const files = Array.from(input.files ?? []);
+    // Reset so re-picking the same folder re-triggers change.
+    input.value = "";
+    if (!target || files.length === 0) return;
+    setBusy(true);
+    const urls: string[] = [];
+    try {
+      for (const file of files) {
+        try {
+          urls.push(await resolveLocalMedia(file));
+        } catch {
+          // Skip unsupported/oversized/unreadable files; keep the rest.
+        }
+      }
+    } finally {
+      setBusy(false);
+    }
+    if (urls.length === 0) {
+      setFileError(t("fileNotMediaFolder"));
+      return;
+    }
+    setFileError(null);
+    let notice: string;
+    if (target.kind === "newGroup") {
+      // No single folder name exists for a loose multi-select, so name the new
+      // group after an explicit target name when given, else the first file's
+      // basename without its extension.
+      const groupName = (target.name || "") || files[0]?.name.replace(/\.[^.]+$/, "") || "";
+      addGroupWithImages(urls, groupName, groupName);
+      notice = t("folderImported").replace("{n}", String(urls.length));
+    } else {
+      addImages(target.groupIndex, urls);
+      notice = t("folderAppended").replace("{n}", String(urls.length));
+    }
+    setFileError(notice);
+  };
+
   // ── Archive batch import ──────────────────────────────────────────────────
   // A second hidden <input type=file> accepts `.zip`, `.tar`, `.tar.gz` (and
   // bare `.gz`) archives. The archive is inflated client-side (vendored fflate
@@ -5083,6 +5340,20 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale,
         onChange={onFileInputChange}
       />
       <input
+        ref={folderInputRef}
+        type="file"
+        // A plain multi-file picker (not webkitdirectory, which locks the native
+        // dialog into pick-a-folder mode and forbids multi-selecting loose
+        // files). With `multiple` the OS file dialog lets the user Ctrl/Shift
+        // select images/videos scattered across several folders in one pass.
+        multiple
+        accept="image/*,video/mp4,video/webm,.mp4,.webm"
+        hidden
+        aria-hidden="true"
+        tabIndex={-1}
+        onChange={onFolderInputChange}
+      />
+      <input
         ref={archiveInputRef}
         type="file"
         accept=".zip,.tar,.tar.gz,.tgz,.gz,application/zip,application/x-zip-compressed,application/x-tar,application/gzip,application/x-gzip"
@@ -5431,6 +5702,15 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale,
                     >
                       {t("pickLocalImage")}
                     </button>
+                    <button
+                      type="button"
+                      className="flash-portrait-group__add-pick"
+                      title={t("pickFolderImageHint")}
+                      disabled={!writable || busy}
+                      onClick={() => openFolderPicker({ kind: "group", groupIndex })}
+                    >
+                      {t("pickFolderImage")}
+                    </button>
                     <button type="button" disabled={busy} onClick={() => setEditing(null)}>
                       {t("cancel")}
                     </button>
@@ -5655,6 +5935,15 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale,
       <footer className="flash-portrait-groups__foot">
         <button type="button" disabled={!writable || busy} onClick={addGroup}>
           + {t("addGroup")}
+        </button>
+        <button
+          type="button"
+          disabled={!writable || busy}
+          onClick={() => openFolderPicker({ kind: "newGroup" })}
+          title={t("pickFolderImageHint")}
+          aria-label={t("pickFolderImageHint")}
+        >
+          {t("pickFolderImage")} +
         </button>
         <button
           type="button"
@@ -6072,6 +6361,11 @@ export function apply(ctx: ClientContext) {
         "driver.title": "强度驱动",
         "driver.manual": "手动",
         "driver.composite": "综合加权",
+        "driver.slideshow": "幻灯片",
+        "slideshow.pause": "暂停",
+        "slideshow.play": "继续",
+        "slideshow.speed": "速度",
+        "slideshow.speedHint": "每张停留时长（0.5–8 秒）",
         "weights.title": "综合加权（手动可调）",
         "weights.hint": "按权重加权实时信号合成 0–1 连续得分，直接匹配当前肖像组实际张数取帧实时驱动人物肖像；全为 0 时回退默认权重。",
         "weights.usage": "用量",
@@ -6138,6 +6432,11 @@ export function apply(ctx: ClientContext) {
         "driver.title": "Level driver",
         "driver.manual": "Manual",
         "driver.composite": "Composite",
+        "driver.slideshow": "Slideshow",
+        "slideshow.pause": "Pause",
+        "slideshow.play": "Play",
+        "slideshow.speed": "Speed",
+        "slideshow.speedHint": "Dwell time per frame (0.5–8 s)",
         "weights.title": "Composite weights (editable)",
         "weights.hint": "A continuous 0–1 score from these weighted live signals maps straight onto the portrait group's actual frame count; all-zero falls back to defaults.",
         "weights.usage": "Usage",
@@ -6592,11 +6891,12 @@ export function apply(ctx: ClientContext) {
         options: () => [
           { value: "manual", label: setLabel("driver.manual") },
           { value: "composite", label: setLabel("driver.composite") },
+          { value: "slideshow", label: setLabel("driver.slideshow") },
         ],
         getValue: () => scope.getSnapshot().driver,
         setValue: (value) => {
           const driver =
-            value === "manual" || value === "composite"
+            value === "manual" || value === "composite" || value === "slideshow"
               ? value
               : "manual";
           void scope.setDriver(driver).catch(() => undefined)

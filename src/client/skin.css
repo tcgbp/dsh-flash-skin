@@ -1836,6 +1836,76 @@ body[data-flash-skin="on"][data-flash-layout="left"] [class*="_toBottomSlot"] {
   align-items: flex-start;
 }
 
+/* 幻灯片驱动控件：暂停/继续按钮 + 速度滑杆 + 当前帧计数横排一行。
+ * 覆盖基类的固定宽高，随内容自适应。配色沿用 flash-level-control 令牌，
+ * 明暗两套主题都可辨。
+ */
+.flash-level-control--slideshow {
+  width: auto;
+  height: auto;
+  align-items: center;
+  margin: 0 3px;
+}
+
+.flash-slideshow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.flash-slideshow__toggle {
+  min-width: 44px;
+  padding: 3px 8px;
+  border: 1px solid var(--flash-accent, #4176e6);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--flash-accent, #4176e6);
+  font-size: 12px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.flash-slideshow__toggle[aria-pressed="true"] {
+  background: var(--flash-accent, #4176e6);
+  border-color: var(--flash-accent, #4176e6);
+  color: #fff;
+}
+
+.flash-slideshow__toggle:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.flash-slideshow__speed {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--flash-secondary, #5b6470);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.flash-slideshow__speed input[type="range"] {
+  width: 88px;
+  accent-color: var(--flash-accent, #4176e6);
+  cursor: pointer;
+}
+
+.flash-slideshow__speed b {
+  min-width: 34px;
+  color: var(--flash-ink, #191b1e);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.flash-slideshow__frame {
+  color: var(--flash-secondary, #5b6470);
+  font-size: 12px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
 .flash-level-control__gauge {
   display: flex;
   flex-wrap: wrap;

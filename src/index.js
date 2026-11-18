@@ -25,14 +25,18 @@ const ATTACHMENT_PATH = `/plugins/${PACKAGE_ID}/attachment`;
 // registers the bare path and the handler binds `/`-separated suffixes.
 const ATTACHMENT_PREFIX = `${ATTACHMENT_PATH}/`;
 
-// Ambient-video routes. Local videos are persisted through the host
-// `attachments` verbatim-file channel (`saveFileStream`), which accepts any byte
-// content — unlike `saveImages`, which is hard-coded to the four raster image
-// types and would reject `video/*`. The client uploads the picked video's bytes
-// here and stores the returned serve URL (never a base64 payload) in the
-// portrait-group frame list. Serve URLs are `<slug>/<hex>/<encName>` so the
-// reader can rebuild the FileAttachmentRef (digest + sanitized name) that
-// `fileHostPath` resolves, and can derive the video Content-Type from the slug.
+// Verbatim-file routes (historically the "video" channel). Local videos — and
+// any possibly-animated rasters (gif/webp) — are persisted through the host
+// `attachments` verbatim-file channel (`saveFileStream`), which stores bytes
+// raw and accepts any media type. This is required because `saveImages` is
+// hard-coded to the four raster types *and* normalizes a gif (dropping every
+// frame but the first, re-encoding it as a static webp) — so a locally-picked
+// animated gif stored through `/attachment` would lose its animation. The
+// client uploads media bytes here and stores the returned serve URL (never a
+// base64 payload) in the portrait-group frame list. Serve URLs are
+// `<slug>/<hex>/<encName>` so the reader can rebuild the FileAttachmentRef
+// (digest + sanitized name) that `fileHostPath` resolves, and can derive the
+// media Content-Type from the slug (gif/webp → image/*, mp4/webm → video/*).
 const VIDEO_PATH = `/plugins/${PACKAGE_ID}/video`;
 const VIDEO_PREFIX = `${VIDEO_PATH}/`;
 const MAX_UPLOAD_IMAGES_PER_BATCH = 16;
@@ -55,6 +59,15 @@ const SLUG_BY_MEDIA_TYPE = Object.freeze(
   Object.fromEntries(Object.entries(MEDIA_TYPE_BY_SLUG).map(([slug, mediaType]) => [mediaType, slug])),
 );
 const HEX64_RE = /^[0-9a-f]{64}$/;
+
+// Media types that may carry animation (lossless multi-frame bytes). The host
+// `attachments.saveImages` normalization drops all but the first frame of a gif
+// (and of an animated webp), so these must be persisted verbatim through the
+// file channel (`saveFileStream`) instead — otherwise a locally-picked animated
+// gif would come back as a static single-frame webp. Video is included so the
+// existing verbatim route stays the single home for any animated media.
+const ANIMATED_MEDIA_TYPES = new Set(["image/gif", "image/webp"]);
+const VERBATIM_MEDIA_TYPES = new Set(["video/mp4", "video/webm", ...ANIMATED_MEDIA_TYPES]);
 
 // ── Compaction projection unit ──────────────────────────────────────────────
 // A projection registers as a *unit* in the host's `sessionProjections` seam:
@@ -664,15 +677,17 @@ function createAttachmentHandlers(ctx, activeStreams) {
   return { upload, serve };
 }
 
-// Verbatim-file handlers for ambient background videos. Upload stores the raw
-// video bytes through `attachments.saveFileStream` (accepts any byte content,
-// unlike the image-only `saveImages`) and answers with a content-addressed
-// serve URL; the serve handler rebuilds the FileAttachmentRef from the URL's
-// digest + sanitized name, resolves it to a local path via `fileHostPath`, and
-// streams it back with Range support so <video> can seek freely. When the host
-// exposes no attachments store (or no verbatim-file methods) both handlers
-// degrade to HTTP errors — the client surfaces the usual import-failure notice,
-// never a throw.
+// Verbatim-file handlers (the shared home for any possibly-animated media:
+// gif/webp rasters plus video). Upload stores the raw bytes through
+// `attachments.saveFileStream`, which accepts any byte content verbatim —
+// unlike the image-only `saveImages`, which would re-encode a gif into a static
+// webp and lose its animation. It answers with a content-addressed serve URL;
+// the serve handler rebuilds the FileAttachmentRef from the URL's digest +
+// sanitized name, resolves it to a local path via `fileHostPath`, and streams
+// it back with Range support so <video> can seek freely while <img> keeps the
+// gif's frames. When the host exposes no attachments store (or no verbatim-file
+// methods) both handlers degrade to HTTP errors — the client surfaces the usual
+// import-failure notice, never a throw.
 function createVideoHandlers(ctx, activeStreams) {
   const attachments = ctx.get("attachments");
   const canStoreFiles = attachments !== undefined
@@ -709,7 +724,7 @@ function createVideoHandlers(ctx, activeStreams) {
     const refs = [];
     for (const item of videos) {
       const mediaType = typeof item?.mediaType === "string" ? item.mediaType : "";
-      if (!SLUG_BY_MEDIA_TYPE[mediaType] || !mediaType.startsWith("video/")) {
+      if (!SLUG_BY_MEDIA_TYPE[mediaType] || !VERBATIM_MEDIA_TYPES.has(mediaType)) {
         send(res, 415);
         return;
       }
@@ -779,7 +794,7 @@ function createVideoHandlers(ctx, activeStreams) {
     }
     const [slug, hex, encName] = parts;
     const mediaType = MEDIA_TYPE_BY_SLUG[slug];
-    if (!mediaType || !mediaType.startsWith("video/") || !HEX64_RE.test(hex) || encName === "") {
+    if (!mediaType || !VERBATIM_MEDIA_TYPES.has(mediaType) || !HEX64_RE.test(hex) || encName === "") {
       send(res, 404);
       return;
     }

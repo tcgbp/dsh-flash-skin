@@ -96,6 +96,9 @@ const DEFAULT_SLIDESHOW_MS = 2000;
 interface SlideshowPrefs {
   ms: number;
   playing: boolean;
+  /** Randomize the swap order — each switch jumps to a different random frame
+   *  instead of stepping through the sequence in order. */
+  shuffle?: boolean;
 }
 const DEFAULT_SLIDESHOW_PREFS: SlideshowPrefs = { ms: DEFAULT_SLIDESHOW_MS, playing: true };
 function clampMs(value: number): number {
@@ -110,12 +113,23 @@ function restoreSlideshowPrefs(): SlideshowPrefs {
       return {
         ms: clampMs(typeof parsed.ms === "number" ? parsed.ms : NaN),
         playing: parsed.playing === true,
+        shuffle: parsed.shuffle === true,
       };
     }
   } catch {
     // storage may be unavailable
   }
   return DEFAULT_SLIDESHOW_PREFS;
+}
+
+// Slideshow shuffle helper: return a random axis position in 0..max that is
+// different from `current`, so consecutive frames never repeat. `max` is the
+// group's dynamic axis max (shared by every consumer). Degenerate inputs fall
+// back to 0, and a single-position axis (max <= 1) has nothing to switch to.
+function randomOtherLevel(current: number, max: number): number {
+  if (!Number.isFinite(max) || max <= 1) return 0;
+  const slot = Math.floor(Math.random() * max); // 0..max-1
+  return slot >= current ? slot + 1 : slot;
 }
 
 // Weight-formula display mode for the composite input-row gauge ("full" = the
@@ -1239,6 +1253,32 @@ class SkinPresenter {
     return this.portraitsSources.length;
   }
 
+  /** Number of secondary (left) portrait frames currently staged (0 when no
+   *  dual left set is active). */
+  getLeftPortraitCount(): number {
+    return this.leftPortraitsSources.length;
+  }
+
+  /** True while a secondary (left) portrait loader is live (dual on and the left
+   *  set has at least one frame). The slideshow uses this to run an independent
+   *  left track. */
+  hasLeftPortrait(): boolean {
+    return this.dual && !!this.leftPortraits && this.leftPortraitsSources.length > 0;
+  }
+
+  /**
+   * Slideshow, dual mode: drive the LEFT portrait straight from the caller's own
+   * left-track level — NOT remapped off the shared palette level. This lets the
+   * left and right portraits swap on independent paces instead of in lockstep:
+   * the right side keeps driving setLevel (palette + primary frame) while this
+   * method only ever moves the mirrored left loader. No-op while dual is off.
+   */
+  setSlideshowLeftFrame(level: number) {
+    if (this.disposed || !this.hasLeftPortrait()) return;
+    const leftMax = dividerAxisMax(this.leftPortraitsSources.length);
+    this.leftPortraits!.select(clampLevelContinuous(level, leftMax));
+  }
+
   /** The primary (right) frame's currently-attached media node, or null when the
    *  backdrop has no sequence frame. The returned node IS the live <img>/<video>
    *  element, so a consumer (slideshow driver) can time frame switches — e.g.
@@ -1248,6 +1288,15 @@ class SkinPresenter {
   getPrimaryFrameNode(): HTMLVideoElement | HTMLImageElement | null {
     if (this.disposed) return null;
     const node = this.root.querySelector<HTMLElement>('[data-side="right"]');
+    return node instanceof HTMLVideoElement || node instanceof HTMLImageElement ? node : null;
+  }
+
+  /** The secondary (left) frame's currently-attached media node, or null when
+   *  there is no live left portrait. Mirrors getPrimaryFrameNode, so the
+   *  slideshow can time the LEFT track's video `ended` independently. */
+  getLeftFrameNode(): HTMLVideoElement | HTMLImageElement | null {
+    if (this.disposed) return null;
+    const node = this.root.querySelector<HTMLElement>('[data-side="left"]');
     return node instanceof HTMLVideoElement || node instanceof HTMLImageElement ? node : null;
   }
 
@@ -1394,7 +1443,6 @@ function FlashLevelControl({
       <SlideshowLevelControl
         presenter={presenter}
         axisMax={axisMax}
-        count={presenter.getPortraitCount()}
         enabled={enabled}
         t={t}
       />
@@ -1563,25 +1611,34 @@ function DriverRow({ scope, t }: DriverRowProps) {
 function SlideshowLevelControl({
   presenter,
   axisMax,
-  count,
   enabled,
   t,
 }: {
   presenter: SkinPresenter;
   axisMax: number;
-  count: number;
   enabled: boolean;
   t?: (key: string) => string;
 }) {
   const [prefs, setPrefs] = useState<SlideshowPrefs>(() => restoreSlideshowPrefs());
   const effectiveMs = clampMs(prefs.ms);
   const [level, setLevel] = useState(0);
+  const [leftLevel, setLeftLevel] = useState(0);
 
   // Apply the current level to the portrait whenever it changes (or on mount,
   // when the slideshow starts from frame one).
   useEffect(() => {
     if (enabled) presenter.setLevel(level);
   }, [level, enabled, presenter]);
+
+  // Left frame application in dual mode: the left portrait rides its OWN
+  // leftLevel, applied via setSlideshowLeftFrame (no remap off the shared
+  // palette level), so left and right swap on their own paces instead of in
+  // lockstep. No-op while dual is off or the left set has no frames.
+  const hasLeft = presenter.hasLeftPortrait();
+  const leftCount = presenter.getLeftPortraitCount();
+  useEffect(() => {
+    if (enabled && hasLeft && leftCount > 0) presenter.setSlideshowLeftFrame(leftLevel);
+  }, [leftLevel, enabled, hasLeft, leftCount, presenter]);
 
   // Auto-advance scheduler: re-run for every frame (depends on `level`). A
   // <video> frame is played through once — looping disabled — and advances only
@@ -1593,7 +1650,8 @@ function SlideshowLevelControl({
   // getPrimaryFrameNode() below already reflects the current level's media.
   useEffect(() => {
     if (!enabled || !prefs.playing) return;
-    const nextLevel = (prev: number) => (prev >= axisMax ? 0 : prev + 1);
+    const nextLevel = (prev: number) =>
+      prefs.shuffle ? randomOtherLevel(prev, axisMax) : (prev >= axisMax ? 0 : prev + 1);
     const node = presenter.getPrimaryFrameNode();
     if (node instanceof HTMLVideoElement) {
       node.loop = false;
@@ -1609,16 +1667,43 @@ function SlideshowLevelControl({
     }
     const id = window.setTimeout(() => setLevel(nextLevel), effectiveMs);
     return () => window.clearTimeout(id);
-  }, [enabled, prefs.playing, effectiveMs, axisMax, presenter, level]);
+  }, [enabled, prefs.playing, effectiveMs, axisMax, presenter, level, prefs.shuffle]);
+
+  // Auto-advance scheduler (LEFT track, dual only): an independent timer that
+  // advances leftLevel on its own pace. The left side is applied through
+  // setSlideshowLeftFrame, so it never advances in lockstep with the right. A
+  // <video> left frame plays through once and advances only on `ended`, exactly
+  // like the right track, but on its own schedule.
+  useEffect(() => {
+    if (!enabled || !prefs.playing || !hasLeft || leftCount === 0) return;
+    const leftAxisMax = dividerAxisMax(leftCount);
+    const nextLevel = (prev: number) =>
+      prefs.shuffle ? randomOtherLevel(prev, leftAxisMax) : (prev >= leftAxisMax ? 0 : prev + 1);
+    const node = presenter.getLeftFrameNode();
+    if (node instanceof HTMLVideoElement) {
+      node.loop = false;
+      void node.play().catch(() => {});
+      const onEnded = () => setLeftLevel(nextLevel);
+      node.addEventListener("ended", onEnded);
+      return () => {
+        node.removeEventListener("ended", onEnded);
+        // Restore the pooled element's looping so later consumers are unaffected.
+        node.loop = true;
+        node.pause();
+      };
+    }
+    const id = window.setTimeout(() => setLeftLevel(nextLevel), effectiveMs);
+    return () => window.clearTimeout(id);
+  }, [enabled, prefs.playing, effectiveMs, hasLeft, leftCount, presenter, leftLevel, prefs.shuffle]);
 
   // Persist dwell + play state across reloads.
   useEffect(() => {
     try {
-      localStorage.setItem(SLIDESHOW_KEY, JSON.stringify({ ms: effectiveMs, playing: prefs.playing }));
+      localStorage.setItem(SLIDESHOW_KEY, JSON.stringify({ ms: effectiveMs, playing: prefs.playing, shuffle: prefs.shuffle === true }));
     } catch {
       // storage may be unavailable
     }
-  }, [effectiveMs, prefs.playing]);
+  }, [effectiveMs, prefs.playing, prefs.shuffle]);
 
   const secondsLabel = `${(effectiveMs / 1000).toFixed(1)}s`;
   return (
@@ -1653,9 +1738,16 @@ function SlideshowLevelControl({
           />
           <b>{secondsLabel}</b>
         </label>
-        <span className="flash-slideshow__frame">
-          {count > 0 ? `${Math.min(level, axisMax) + 1}/${count}` : "—"}
-        </span>
+        <button
+          type="button"
+          className="flash-slideshow__toggle flash-slideshow__shuffle"
+          disabled={!enabled}
+          aria-pressed={prefs.shuffle === true}
+          title={t ? t("slideshow.shuffleHint") : "每次切换到随机一帧（不按顺序）"}
+          onClick={() => setPrefs((prev) => ({ ...prev, shuffle: prev.shuffle !== true }))}
+        >
+          {t ? t("slideshow.shuffle") : "随机"}
+        </button>
       </div>
     </div>
   );
@@ -3300,14 +3392,6 @@ const MAX_LOCAL_IMAGE_BYTES = 2 * 1024 * 1024;
 // looping .mp4/.webm is typically tens of MB where a frame is ~1 MB).
 const MAX_LOCAL_VIDEO_BYTES = 48 * 1024 * 1024;
 
-function readLocalFile(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-}
 
 // ── ZIP batch import ────────────────────────────────────────────────────────
 // A single ordinal image entry extracted from a ZIP, preserving archive order.
@@ -3332,9 +3416,16 @@ function mediaKindForUrl(url: string): PortraitMediaKind {
   // Locally-picked media are persisted as `data:` URLs. A video data URL has no
   // filename dotted extension, but its media-type marker is reliable — sniff it.
   if (url.startsWith("data:video/")) return "video";
-  // Server-persisted ambient videos come back on the plugin video route. Trust
-  // that stem directly so classification never depends on the stored filename.
-  if (url.startsWith(VIDEO_PATH + "/")) return "video";
+  // Server-persisted ambient media come back on the plugin verbatim-file route
+  // (`/video/<slug>/<hex>/<name>`). Trust the slug, never the stored filename:
+  // a `gif`/`webp` slug holds animated raster bytes that `<img>` must render
+  // (not `<video>`), while `mp4`/`webm` are true video layers.
+  if (url.startsWith(VIDEO_PATH + "/")) {
+    const rest = url.slice(VIDEO_PATH.length + 1);
+    const slash = rest.indexOf("/");
+    const slug = (slash === -1 ? rest : rest.slice(0, slash)).toLowerCase();
+    return slug === "gif" || slug === "webp" ? "image" : "video";
+  }
   let ext = "";
   try {
     const path = new URL(url, "http://dsh.local").pathname;
@@ -3729,58 +3820,92 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-// Push one ≤16-image batch to the host attachments store and return the
-// content-addressed serve URLs. Throws on any transport/HTTP failure so the
-// caller can fall back to the import-failed notice (the host may expose no
-// attachments store at all: the upload route answers 503).
-async function postImageBatch(
-  batch: ZipImageEntry[],
-): Promise<string[]> {
-  const images = batch.map((entry) => ({
-    name: entry.name,
-    mediaType: mediaTypeForEntry(entry.name, entry.bytes),
-    data: bytesToBase64(entry.bytes),
-  }));
-  const response = await fetch(ATTACHMENT_PATH, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ images }),
-  });
-  if (!response.ok) throw new Error(`attachment upload ${response.status}`);
-  const payload = (await response.json()) as { images?: { name?: string; url: string }[] };
-  const urls = Array.isArray(payload.images)
-    ? payload.images.map((entry) => entry.url).filter((url) => typeof url === "string" && url.length > 0)
-    : [];
-  if (urls.length !== images.length) throw new Error("attachment upload truncated");
-  return urls;
-}
-
-// Persist one locally-picked ambient video through the host verbatim-file
-// channel and return its serve URL. The video bytes ride as base64 inside the
-// POST (never stored in config), and the server answers with a content-
-// addressed serve URL that <video> can seek — same URL-only persistence model
-// as archive-imported images. Throws on any transport/HTTP failure so the
-// caller can show the usual import-failure notice (a host without the
-// attachments store answers 503).
-async function postSingleVideo(file: File): Promise<string> {
-  const buffer = await readLocalFileAsArrayBuffer(file);
-  const bytes = new Uint8Array(buffer);
+// Upload one media file to the host verbatim-file channel and return its serve
+// URL. The bytes ride as base64 inside the POST (never stored in config), and
+// the server answers with a content-addressed serve URL. `mediaType` must be in
+// VERBATIM_MEDIA_TYPES (video/* or image/gif|image/webp) — these formats may
+// carry multi-frame animation that the image-store normalization would strip,
+// so they persist raw through `saveFileStream`. Throws on any transport/HTTP
+// failure so the caller can show the usual import-failure notice (a host
+// without the attachments store answers 503).
+async function postVerbatimFile(name: string, mediaType: string, bytes: Uint8Array): Promise<string> {
   const response = await fetch(VIDEO_PATH, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       videos: [{
-        name: file.name,
-        mediaType: file.type || mediaTypeForEntry(file.name, bytes),
+        name,
+        mediaType,
         data: bytesToBase64(bytes),
       }],
     }),
   });
-  if (!response.ok) throw new Error(`video upload ${response.status}`);
+  if (!response.ok) throw new Error(`file upload ${response.status}`);
   const payload = (await response.json()) as { videos?: { name?: string; url: string }[] };
   const url = Array.isArray(payload.videos) ? payload.videos[0]?.url : undefined;
-  if (typeof url !== "string" || url.length === 0) throw new Error("video upload truncated");
+  if (typeof url !== "string" || url.length === 0) throw new Error("file upload truncated");
   return url;
+}
+
+// Push one ≤16-media batch to the host attachment store and return the
+// content-addressed serve URLs in the same order as the input. Static rasters
+// (png/jpeg) ride the image route (`/attachment` → `saveImages`); gif and webp
+// may be animated, so they instead ride the verbatim-file channel raw to keep
+// every frame — the image-store normalization would drop all but the first
+// frame of a gif and turn it into a static webp. Each animated entry uploads
+// individually, then all returned URLs are reassembled in the original order.
+// Throws on any transport/HTTP failure so the caller can fall back to the
+// import-failed notice (the host may expose no attachments store at all).
+async function postImageBatch(batch: ZipImageEntry[]): Promise<string[]> {
+  const urlsByEntry = new Map<ZipImageEntry, string>();
+  const rasters: { entry: ZipImageEntry; mediaType: string }[] = [];
+  for (const entry of batch) {
+    const mediaType = mediaTypeForEntry(entry.name, entry.bytes);
+    if (mediaType === "image/gif" || mediaType === "image/webp") {
+      urlsByEntry.set(entry, await postVerbatimFile(entry.name, mediaType, entry.bytes));
+    } else {
+      rasters.push({ entry, mediaType });
+    }
+  }
+  if (rasters.length > 0) {
+    const images = rasters.map(({ entry, mediaType }) => ({
+      name: entry.name,
+      mediaType,
+      data: bytesToBase64(entry.bytes),
+    }));
+    const response = await fetch(ATTACHMENT_PATH, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ images }),
+    });
+    if (!response.ok) throw new Error(`attachment upload ${response.status}`);
+    const payload = (await response.json()) as { images?: { name?: string; url: string }[] };
+    const urls = Array.isArray(payload.images)
+      ? payload.images.map((entry) => entry.url).filter((url) => typeof url === "string" && url.length > 0)
+      : [];
+    if (urls.length !== rasters.length) throw new Error("attachment upload truncated");
+    rasters.forEach(({ entry }, index) => urlsByEntry.set(entry, urls[index]));
+  }
+  return batch.map((entry) => urlsByEntry.get(entry) ?? "");
+}
+
+// Persist one locally-picked image. Any visited image may be animated, but the
+// type sniff decides the channel: png/jpeg go through `/attachment`, gif/webp
+// through the verbatim-file route (see postImageBatch). Config only ever holds a
+// compact serve URL, never a base64 payload. Throws on any transport/HTTP
+// failure (a host without the attachments store answers 503).
+async function postSingleImage(file: File): Promise<string> {
+  const bytes = new Uint8Array(await readLocalFileAsArrayBuffer(file));
+  const urls = await postImageBatch([{ name: file.name, bytes }]);
+  return urls[0];
+}
+
+// Persist one locally-picked ambient video through the host verbatim-file
+// channel and return its serve URL (see postVerbatimFile). Same URL-only
+// persistence model as any other media. Throws on transport/HTTP failure.
+async function postSingleVideo(file: File): Promise<string> {
+  const bytes = new Uint8Array(await readLocalFileAsArrayBuffer(file));
+  return postVerbatimFile(file.name, file.type || mediaTypeForEntry(file.name, bytes), bytes);
 }
 
 // Upload all archive-extracted images in ordered batches, preserving entry
@@ -4867,10 +4992,12 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale,
       return;
     }
     try {
-      // An ambient video is persisted through the host verbatim-file channel so
-      // the config only holds a serve URL (a multi-MB base64 data URL would blow
-      // the settings quota). Images keep the in-memory data-URL path.
-      const src = isVideo ? await postSingleVideo(file) : await readLocalFile(file);
+      // Both persisted media kinds now ride the same URL-only model: images go
+      // through the host attachments store (the /attachment route archive
+      // imports use), videos through the verbatim-file channel — so `config`
+      // only ever holds compact serve URLs, never multi-MB base64 data URLs
+      // that would blow the settings quota.
+      const src = isVideo ? await postSingleVideo(file) : await postSingleImage(file);
       setFileError(null);
       if (pick.kind === "replace" && pick.imageIndex !== undefined) {
         replaceImage(pick.groupIndex, pick.imageIndex, src);
@@ -4878,7 +5005,7 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale,
         addImage(pick.groupIndex, src);
       }
     } catch {
-      setFileError(t(isVideo ? "uploadFailed" : "readFailed"));
+      setFileError(t("uploadFailed"));
     }
   };
 
@@ -4922,9 +5049,10 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale,
   };
 
   // Resolve one local media File into its persistent reference, mirroring the
-  // single-file picker: images embed as base64 data URLs, ambient videos go
-  // through the host verbatim-file upload route so the config only stores a
-  // serve URL. Throws on an unsupported/oversized file or a failed read/upload.
+  // single-file picker: images are uploaded to the host attachments store so the
+  // config only stores a serve URL, ambient videos go through the host
+  // verbatim-file upload route (also URL-only). Throws on an
+  // unsupported/oversized file or a failed upload.
   const resolveLocalMedia = async (file: File): Promise<string> => {
     const isVideo = file.type.startsWith("video/");
     if (!file.type.startsWith("image/") && !isVideo) {
@@ -4933,7 +5061,7 @@ function FlashSkinConfigCard({ form, weights, scope, t: localeT, remote, locale,
     if (file.size > (isVideo ? MAX_LOCAL_VIDEO_BYTES : MAX_LOCAL_IMAGE_BYTES)) {
       throw new Error(isVideo ? "video too large" : "image too large");
     }
-    return isVideo ? postSingleVideo(file) : readLocalFile(file);
+    return isVideo ? postSingleVideo(file) : postSingleImage(file);
   };
 
   const onFolderInputChange = async (event: ReactChangeEvent<HTMLInputElement>) => {
@@ -6396,6 +6524,8 @@ export function apply(ctx: ClientContext) {
         "slideshow.play": "继续",
         "slideshow.speed": "速度",
         "slideshow.speedHint": "每张停留时长（0.5–8 秒）",
+        "slideshow.shuffle": "随机",
+        "slideshow.shuffleHint": "每次切换到随机一帧（不按顺序）",
         "weights.title": "综合加权（手动可调）",
         "weights.hint": "按权重加权实时信号合成 0–1 连续得分，直接匹配当前肖像组实际张数取帧实时驱动人物肖像；全为 0 时回退默认权重。",
         "weights.usage": "用量",
@@ -6467,6 +6597,8 @@ export function apply(ctx: ClientContext) {
         "slideshow.play": "Play",
         "slideshow.speed": "Speed",
         "slideshow.speedHint": "Dwell time per frame (0.5–8 s)",
+        "slideshow.shuffle": "Shuffle",
+        "slideshow.shuffleHint": "Jump to a random frame on each switch",
         "weights.title": "Composite weights (editable)",
         "weights.hint": "A continuous 0–1 score from these weighted live signals maps straight onto the portrait group's actual frame count; all-zero falls back to defaults.",
         "weights.usage": "Usage",

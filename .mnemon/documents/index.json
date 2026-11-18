@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "documents": [
+    {
+      "id": "a8e024c0-0034-413f-9f25-e584136cf7b6",
+      "title": "dsh-flash-skin: fix repeated Feishu tenant_access_token exchanges",
+      "description": "Root cause and fix (commit e7368c2) for recurring Feishu /open-apis/auth/v3/tenant_access_token/internal calls in the community (directory/like/dislike) backend.",
+      "status": "active",
+      "filename": "dsh-flash-skin-fix-repeated-feishu-tenant-access-a8e024c0.md",
+      "relativePath": "documents/active/dsh-flash-skin-fix-repeated-feishu-tenant-access-a8e024c0.md",
+      "sourcePaths": [
+        "src/community.js",
+        "src/index.js",
+        "test/share-like.test.mjs"
+      ],
+      "sessionIds": [
+        "mnemon-review-v1-56ecfa21-4678-4def-a983-bb68b313064b"
+      ],
+      "createdAt": "2026-11-18T08:19:00.148Z",
+      "updatedAt": "2026-11-18T08:19:00.148Z",
+      "lastAccessedAt": "2026-11-18T08:19:00.148Z",
+      "revision": 1,
+      "contentHash": "d240ed31d39ef02a57580f418c088918fdb7b4de4c27838fb922c1130430b94b",
+      "sizeBytes": 3670,
+      "memoryBodyIds": []
+    }
+  ]
+}

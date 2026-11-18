@@ -9,3 +9,8 @@ node_modules/
 *.tgz
 coverage/
 test-results/
+
+# Mnemon local runtime data (not project knowledge):
+# regenerate/change on every session; documents/ is the versioned knowledge layer.
+.mnemon/runtime/
+.mnemon/state/

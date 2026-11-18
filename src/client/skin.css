@@ -488,6 +488,21 @@ body[data-flash-skin="on"] #root [data-sidebar-right-panel="fullscreen"] :where(
   color: var(--dsw-alias-label-primary) !important;
 }
 
+/* Right-sidebar tab pane body: also lift text to the primary label color.
+ * The command/shell page the user reads sits in the expanded right sidebar's
+ * tab pane body ([class*="_paneBody"] matches the terminal tab host's
+ * _paneBody_3oazc_321, pane not panel — it never matches the _panelBody used
+ * by the text-density rules above, so those are left alone). The host renders
+ * much of this page with the low-contrast label-tertiary/secondary tokens;
+ * raising them to the primary label color keeps output readable whether the
+ * panel is expanded or fullscreen. Primary text is unchanged, concrete-color
+ * semantics (ANSI/status) are untouched, and the left rail, other panels, the
+ * tab strip chrome and the chat surface are unaffected. Does not depend on
+ * dsh-flash. */
+body[data-flash-skin="on"] #root [class*="_rightbarCol"] [class*="_paneBody"] :where(p, h1, h2, h3, h4, h5, h6, li, td, th, label, summary, pre, code, span, strong, em) {
+  color: var(--dsw-alias-label-primary) !important;
+}
+
 /* 会话标题栏表面完全透明（用户要求）：中间内容列
  * ([class*="_centerCol"]) 的常驻导航 header（conversation.header，
  * ConversationRoot.module.css 的 .header，是个 <header data-window-drag>）

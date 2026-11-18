@@ -1239,6 +1239,18 @@ class SkinPresenter {
     return this.portraitsSources.length;
   }
 
+  /** The primary (right) frame's currently-attached media node, or null when the
+   *  backdrop has no sequence frame. The returned node IS the live <img>/<video>
+   *  element, so a consumer (slideshow driver) can time frame switches — e.g.
+   *  waiting for a <video>'s `ended` before advancing. Rebuilt synchronously by
+   *  every `select`, so reading it straight after setLevel() reflects the new
+   *  frame. */
+  getPrimaryFrameNode(): HTMLVideoElement | HTMLImageElement | null {
+    if (this.disposed) return null;
+    const node = this.root.querySelector<HTMLElement>('[data-side="right"]');
+    return node instanceof HTMLVideoElement || node instanceof HTMLImageElement ? node : null;
+  }
+
   syncNativeTheme(theme: NativeThemeId = paletteForLevel(this.level, this.darkLevelForCurrentSet(), dividerAxisMax(this.portraitsSources.length)).stage === 1 ? "dark" : "light") {
     if (!this.enabled) return;
     const preference = this.theme.getTheme().preference;
@@ -1571,15 +1583,33 @@ function SlideshowLevelControl({
     if (enabled) presenter.setLevel(level);
   }, [level, enabled, presenter]);
 
-  // Timer that auto-advances the level. Recreated only when play state, dwell,
-  // the axis range, or enabled changes — not on every frame tick.
+  // Auto-advance scheduler: re-run for every frame (depends on `level`). A
+  // <video> frame is played through once — looping disabled — and advances only
+  // on its `ended` event, so the whole clip is watched before moving on. Any
+  // other frame (still image or looping GIF) dwells for the configured
+  // `effectiveMs` then advances; a GIF loops on its own, so one dwell lets the
+  // viewer watch the animation through. `presenter.setLevel()` (the effect
+  // above) runs first and synchronously re-attaches the new frame, so
+  // getPrimaryFrameNode() below already reflects the current level's media.
   useEffect(() => {
     if (!enabled || !prefs.playing) return;
-    const id = window.setInterval(() => {
-      setLevel((prev) => (prev >= axisMax ? 0 : prev + 1));
-    }, effectiveMs);
-    return () => window.clearInterval(id);
-  }, [enabled, prefs.playing, effectiveMs, axisMax]);
+    const nextLevel = (prev: number) => (prev >= axisMax ? 0 : prev + 1);
+    const node = presenter.getPrimaryFrameNode();
+    if (node instanceof HTMLVideoElement) {
+      node.loop = false;
+      void node.play().catch(() => {});
+      const onEnded = () => setLevel(nextLevel);
+      node.addEventListener("ended", onEnded);
+      return () => {
+        node.removeEventListener("ended", onEnded);
+        // Restore the pooled element's looping so later consumers are unaffected.
+        node.loop = true;
+        node.pause();
+      };
+    }
+    const id = window.setTimeout(() => setLevel(nextLevel), effectiveMs);
+    return () => window.clearTimeout(id);
+  }, [enabled, prefs.playing, effectiveMs, axisMax, presenter, level]);
 
   // Persist dwell + play state across reloads.
   useEffect(() => {

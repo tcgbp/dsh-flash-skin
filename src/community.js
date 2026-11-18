@@ -298,9 +298,20 @@ function apiError(res, step, fallback = "feishu") {
  * short-lived tenant_access_token and exposes record read/write primitives
  * that the directory/like operations below drive for any provider.
  */
+// The tenant_access_token lives ~2h server-side and is cheap to reuse, so it is
+// cached at module scope and keyed by the identity it was exchanged for
+// (provider kind + app credentials). Callers build a fresh client per operation
+// (see src/index.js communityRoutesClient), so an instance-private cache would
+// never be hit and every operation would re-exchange a new token. Sharing the
+// cache across instances fixes that: one exchange per (kind, appId, appSecret)
+// for the token's lifetime; a credential change switches to its own slot.
+const tokenCacheByCredential = new Map(); // key -> { token, expiresAt }
+const tokenInflightByCredential = new Map(); // key -> Promise that exchanges
+
 export function createCommunityClient(provider = FEISHU_PROVIDER, fetchImpl = globalThis.fetch) {
   const active = (provider && provider.kind && COMMUNITY_PROVIDERS[provider.kind]) || FEISHU_PROVIDER;
   const fetchFn = typeof fetchImpl === "function" ? fetchImpl : globalThis.fetch;
+  const tokenKey = (target) => `${active.kind}\u0000${target.appId}\u0000${target.appSecret}`;
 
   async function request(path, { method = "GET", token = "", body, timeout = 15_000, maxBytes = 512 * 1024 } = {}) {
     const { controller, timer, clear } = controllerTimeout(timeout);
@@ -331,11 +342,6 @@ export function createCommunityClient(provider = FEISHU_PROVIDER, fetchImpl = gl
     }
   }
 
-  // tenant_access_token lives ~2h server-side; cache it and prefetch/refresh lazily.
-  let cachedToken = "";
-  let cachedExpiresAt = 0;
-  let tokenInflight = null;
-
   async function exchangeToken(target) {
     const res = await request(active.tokenPath, {
       method: "POST",
@@ -348,20 +354,26 @@ export function createCommunityClient(provider = FEISHU_PROVIDER, fetchImpl = gl
     const t = typeof json.tenant_access_token === "string" ? json.tenant_access_token : "";
     if (!t) return null;
     const expire = Number(json.expire) > 0 ? Number(json.expire) : 7200;
-    cachedToken = t;
-    cachedExpiresAt = Date.now() + (expire - 60) * 1000;
+    const cached = { token: t, expiresAt: Date.now() + (expire - 60) * 1000 };
+    tokenCacheByCredential.set(tokenKey(target), cached);
+    tokenInflightByCredential.delete(tokenKey(target));
     return t;
   }
 
   async function tenantToken(target) {
     if (!target || !target.appId || !target.appSecret) return null;
-    if (cachedToken && Date.now() < cachedExpiresAt) return cachedToken;
-    if (tokenInflight) return tokenInflight;
-    tokenInflight = exchangeToken(target);
+    const key = tokenKey(target);
+    const cached = tokenCacheByCredential.get(key);
+    if (cached && Date.now() < cached.expiresAt) return cached.token;
+    let inflight = tokenInflightByCredential.get(key);
+    if (!inflight) {
+      inflight = exchangeToken(target);
+      tokenInflightByCredential.set(key, inflight);
+    }
     try {
-      return await tokenInflight;
+      return await inflight;
     } finally {
-      tokenInflight = null;
+      if (tokenInflightByCredential.get(key) === inflight) tokenInflightByCredential.delete(key);
     }
   }
 

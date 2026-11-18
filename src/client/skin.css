@@ -474,6 +474,20 @@ body[data-flash-skin="on"] #root [data-sidebar-right-panel="fullscreen"] [class*
   background: var(--flash-surface, #f5f6f8) !important;
 }
 
+/* Right-sidebar fullscreen panel: lift text to the primary label color.
+ * With the fullscreen overlay now opaque (rule above), the host's low-contrast
+ * secondary text tokens (--dsw-alias-label-tertiary/secondary, e.g. #81858c on
+ * the light surface) make command/shell output hard to read. Within the stable
+ * fullscreen panel anchor only, blanket the common text elements with the
+ * primary label color: text that is already primary is unchanged, while
+ * grey secondary/tertiary labels are raised for readability. Explicit semantic
+ * colors set with concrete color values (ANSI/status) are untouched. The left
+ * rail, other tabs, the collapsed state and the chat surface are unaffected.
+ * Does not depend on dsh-flash. */
+body[data-flash-skin="on"] #root [data-sidebar-right-panel="fullscreen"] :where(p, h1, h2, h3, h4, h5, h6, li, td, th, label, summary, pre, code, span, strong, em) {
+  color: var(--dsw-alias-label-primary) !important;
+}
+
 /* 会话标题栏表面完全透明（用户要求）：中间内容列
  * ([class*="_centerCol"]) 的常驻导航 header（conversation.header，
  * ConversationRoot.module.css 的 .header，是个 <header data-window-drag>）

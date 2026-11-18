@@ -2831,3 +2831,19 @@ body[data-flash-skin="on"] #root nav[aria-label="轮次导航"] button[class*="_
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--flash-accent, #c19a49) 40%, transparent) !important;
   opacity: 1 !important;
 }
+
+/* 文字背景浓度不改浮层提示（tooltip）：宿主悬浮提示普遍以无障碍标准 [role="tooltip"]
+ * 承载，提示文本多是正文/右栏/左栏“文字背景浓度”规则命中的 span、p、strong、em 等。
+ * 这里把落入 tooltip 容器内的这些文本从“文字背景浓度”还原为透明底（底色/配色仍由
+ * tooltip 宿主容器自带承担），提示只保留自身观感，不再叠一层半透明灰；同时撤掉浓度药丸
+ * 加的圆角/留白/片段拆行，避免提示文字糊在一块。仅命中 [role="tooltip"] 容器，
+ * 不影响正文/右栏/左栏的真实文字。置于文件末尾以覆盖其上所有同 important 浓度规则
+ * （含轮次导航胶囊底）。不依赖 dsh-flash。 */
+body[data-flash-skin="on"] [role="tooltip"] :is(p, h1, h2, h3, h4, h5, h6, li, td, th, label, summary, pre, code, span, strong, em, a) {
+  background: transparent !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  box-decoration-break: initial !important;
+  -webkit-box-decoration-break: initial !important;
+  text-shadow: none !important;
+}
